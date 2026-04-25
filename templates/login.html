@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stafflytics AI | Business Intelligence Suite</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #1e1b4b;
+            --accent: #d97706;
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --text: #f8fafc;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .login-card {
+            background: var(--surface);
+            padding: 3rem;
+            border-radius: 32px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+            border: 1px solid rgba(255,255,255,0.1);
+            animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .logo {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .logo i {
+            color: var(--accent);
+        }
+
+        h2 {
+            margin-bottom: 2rem;
+            font-weight: 400;
+            color: #94a3b8;
+        }
+
+        .form-group {
+            text-align: left;
+            margin-bottom: 1.5rem;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+            color: #94a3b8;
+        }
+
+        input {
+            width: 100%;
+            padding: 1rem;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            color: white;
+            font-family: inherit;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .btn-login {
+            width: 100%;
+            padding: 1rem;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-family: inherit;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: transform 0.2s, background 0.2s;
+            margin-top: 1rem;
+        }
+
+        .btn-login:hover {
+            background: #b45309;
+            transform: translateY(-2px);
+        }
+
+        .footer {
+            margin-top: 2rem;
+            font-size: 0.8rem;
+            color: #475569;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="logo">
+            <i class="fas fa-chart-line"></i>
+            <span>Stafflytics</span>
+        </div>
+        <h2>Enterprise Intelligence Login</h2>
+        
+        <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="username" placeholder="owner_admin" autocomplete="off">
+        </div>
+        <div class="form-group">
+            <label>Master Security Password</label>
+            <input type="password" id="password" placeholder="••••••••" autocomplete="off">
+        </div>
+
+        <button class="btn-login" onclick="handleLogin()">Authorize Access</button>
+        
+        <p id="error-msg" style="color: #ef4444; margin-top: 1rem; display: none;">Invalid master credentials.</p>
+
+        <div class="footer">
+            &copy; 2026 Stafflytics Analytics Intelligence
+        </div>
+    </div>
+
+    <script>
+        async function handleLogin() {
+            const user = document.getElementById('username').value;
+            const pass = document.getElementById('password').value;
+            const error = document.getElementById('error-msg');
+
+            const response = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: user, password: pass })
+            });
+
+            if (response.ok) {
+                window.location.reload();
+            } else {
+                error.style.display = 'block';
+            }
+        }
+    </script>
+</body>
+</html>
