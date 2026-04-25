@@ -25,7 +25,7 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/yourusername/stafflytics-ai.git
+   git clone https://github.com/minhajasghar/stafflytics-ai.git
    cd stafflytics-ai
    ```
 
