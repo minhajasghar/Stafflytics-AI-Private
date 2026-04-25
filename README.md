@@ -2,8 +2,6 @@
 
 Stafflytics AI is a professional-grade, AI-powered business intelligence system designed specifically for the restaurant industry. It leverages computer vision and machine learning to provide real-time staff tracking, automated attendance, security monitoring, and actionable labor analytics.
 
-![Stafflytics Monitor](https://via.placeholder.com/800x450?text=Stafflytics+AI+Dashboard)
-
 ## 🚀 Key Features
 
 - **Intelligence Monitor**: Real-time video stream with AI-driven bounding boxes and activity labeling.
@@ -46,13 +44,6 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
    python app.py
    ```
    Access the dashboard at `http://127.0.0.1:5000`.
-
-## ⚙️ Configuration
-
-- **Default Credentials**: 
-  - Username: `minhajasghar`
-  - Password: `minhajsahito66`
-- **Settings**: Configure your SMTP (Gmail App Password) and Telegram Bot Token directly through the **Owner Configuration** tab in the dashboard.
 
 ## 🛡️ Security & Privacy
 
