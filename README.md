@@ -2,6 +2,8 @@
 
 Stafflytics AI is a professional-grade, AI-powered business intelligence system designed specifically for the restaurant industry. It leverages computer vision and machine learning to provide real-time staff tracking, automated attendance, security monitoring, and actionable labor analytics.
 
+![Stafflytics Monitor](https://via.placeholder.com/800x450?text=Stafflytics+AI+Dashboard)
+
 ## 🚀 Key Features
 
 - **Intelligence Monitor**: Real-time video stream with AI-driven bounding boxes and activity labeling.
@@ -25,7 +27,7 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/minhajasghar/stafflytics-ai.git
+   git clone https://github.com/yourusername/stafflytics-ai.git
    cd stafflytics-ai
    ```
 
