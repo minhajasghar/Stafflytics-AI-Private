@@ -49,9 +49,5 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
 
 Stafflytics AI is designed with a **local-first** approach. All video processing and biometric matching happen on your local hardware. No video data is sent to the cloud, ensuring maximum privacy for your staff and guests.
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ---
 *Built for the future of restaurant management.*
