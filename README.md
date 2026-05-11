@@ -2,7 +2,7 @@
 
 Stafflytics AI is a professional-grade, AI-powered business intelligence system designed specifically for the restaurant industry. It leverages computer vision and machine learning to provide real-time staff tracking, automated attendance, security monitoring, and actionable labor analytics.
 
-## 🚀 Key Features
+##  Key Features
 
 - **Intelligence Monitor**: Real-time video stream with AI-driven bounding boxes and activity labeling.
 - **Vision Engine**: Powered by YOLOv8-Pose for movement analysis and `face_recognition` for automated staff/customer identification.
@@ -13,7 +13,7 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
 - **Salary Administration**: Automated tracking of work hours, efficiency scores, and monthly payroll calculation.
 - **Executive Reporting**: Generates professional Daily/Weekly BI reports in PDF and Excel formats.
 
-## 🛠️ Technology Stack
+##  Technology Stack
 
 - **Backend**: Python (Flask)
 - **AI/ML**: OpenCV, Ultralytics YOLOv8, Dlib (Face Recognition)
@@ -21,7 +21,7 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
 - **Frontend**: Vanilla HTML5, CSS3 (Modern UI), JavaScript (Async/Fetch)
 - **Communication**: SMTP (Email), Telegram Bot API
 
-## 📋 Installation
+##  Installation
 
 1. **Clone the Repository**:
    ```bash
@@ -45,7 +45,7 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
    ```
    Access the dashboard at `http://127.0.0.1:5000`.
 
-## 🛡️ Security & Privacy
+##  Security & Privacy
 
 Stafflytics AI is designed with a **local-first** approach. All video processing and biometric matching happen on your local hardware. No video data is sent to the cloud, ensuring maximum privacy for your staff and guests.
 
