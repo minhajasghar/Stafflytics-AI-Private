@@ -5,6 +5,8 @@ import database
 # from vision_engine import VisionEngine
 # import face_recognition
 import threading
+import os
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;500000|reorder_queue_size;0"
 import time
 import pickle
 import numpy as np
@@ -16,6 +18,7 @@ from datetime import datetime, timedelta
 import mailer
 from chatbot_engine import chatbot
 import requests
+import re
 from export_engine import export_engine
 from flask import send_file
 
@@ -25,9 +28,32 @@ app.secret_key = 'signature_secret_key_stafflytics_2026'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
 
 # Initialize database & Mailer
-# database.init_db() # Moved to background
 engine = None        # Initialized asynchronously
 camera_stream = None # Initialized asynchronously
+
+# RTSP Camera Configuration
+RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.137:554/cam/realmonitor?channel=1&subtype=0"
+
+
+
+
+def sync_camera_config():
+    global RTSP_URL
+    conf = database.get_system_settings()
+    saved = conf.get('rtsp_url', '')
+    print(f"[SYSTEM] sync_camera_config: DB rtsp_url='{saved}', current RTSP_URL='{RTSP_URL}'")
+    if saved and saved.strip():
+        RTSP_URL = saved.strip()
+        print(f"[SYSTEM] RTSP_URL updated to: '{RTSP_URL}'")
+def sync_camera_quality():
+    global camera_quality
+    conf = database.get_system_settings()
+    try:
+        camera_quality = max(10, min(100, int(conf.get('camera_quality', '70'))))
+    except:
+        camera_quality = 70
+
+
 system_initializing = True
 init_status = "System Awakening..."
 
@@ -50,11 +76,13 @@ def send_telegram_alert(message):
 
 # sync_mailer_config() # Moved to background
 camera_online = False # Global status for dashboard
+camera_quality = 70
 
 class CameraStream:
     def __init__(self):
         self.stream = None
         self.frame = None
+        self.frame_id = 0
         self.stopped = False
         self.online = False
         self.lock = threading.Lock()
@@ -68,7 +96,82 @@ class CameraStream:
         return self
 
     def _attempt_connection(self):
-        print("[SYSTEM] Starting Camera Synchronization Loop...")
+        global camera_online
+        print(f"[SYSTEM] Starting Camera Synchronization Loop... (RTSP_URL='{RTSP_URL}')")
+
+        # Try RTSP URL with multiple common stream paths
+        if RTSP_URL:
+            rtsp_variants = []
+
+            # 1) ALWAYS try the user's exact URL first (most important!)
+            rtsp_variants.append(RTSP_URL)
+
+            # 2) Try with TCP transport on the exact URL
+            if '?' in RTSP_URL:
+                rtsp_variants.append(RTSP_URL + "&tcp")
+            else:
+                rtsp_variants.append(RTSP_URL + "?tcp")
+
+            # 3) Extract base and try Imou/Dahua-specific paths
+            m = re.match(r'(rtsp://[^@]+@[^/]+|rtsp://[^/]+)', RTSP_URL)
+            base = m.group(1) if m else RTSP_URL
+
+            paths = [
+                '/cam/realmonitor?channel=1&subtype=0',
+                '/cam/realmonitor?channel=1&subtype=1',
+                '/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif',
+                '/cam/realmonitor?channel=1&subtype=1&unicast=true&proto=Onvif',
+                '/cam/realmonitor?channel=1&subtype=00',
+                '/cam/realmonitor?channel=1&subtype=00&authbasic=YWRtaW46',
+                '/stream1',
+                '/Streaming/Channels/101',
+                '/h264/ch1/main/av_stream',
+                '/h264_stream',
+                '/onvif1',
+                '/onvif/stream2',
+                '/live',
+                '/video',
+                '/video1',
+                '/videoMain',
+                '/h264',
+            ]
+            for p in paths:
+                variant = f"{base}{p}"
+                if variant not in rtsp_variants:
+                    rtsp_variants.append(variant)
+                tcp_suffix = "&tcp" if "?" in p else "?tcp"
+                tcp_variant = f"{base}{p}{tcp_suffix}"
+                if tcp_variant not in rtsp_variants:
+                    rtsp_variants.append(tcp_variant)
+
+            print(f"[SYSTEM] Trying {len(rtsp_variants)} RTSP variants...")
+            for url in rtsp_variants:
+                if self.stopped: return False
+                backends_to_try = [cv2.CAP_FFMPEG, cv2.CAP_ANY]
+                for be in backends_to_try:
+                    if self.stopped: return False
+                    try:
+                        display_url = url.split('://')[0] + '://[credentials]@' + url.split('@')[1] if '@' in url else url
+                        print(f"[SYSTEM] Probing RTSP: {display_url} (backend: {be})")
+                        cap = cv2.VideoCapture(url, be)
+                        if cap:
+                            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
+                            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)
+                        if cap and cap.isOpened():
+                            ret, f = cap.read()
+                            if ret and f is not None:
+                                print(f"[SYSTEM] Camera successfully synchronized via RTSP: {display_url}")
+                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                                self.stream = cap
+                                self.online = True
+                                camera_online = True
+                                return True
+                        if cap: cap.release()
+                    except Exception as e:
+                        print(f"[RTSP PROBE ERROR] {e}")
+                        continue
+
+        # Fallback to local camera indices
         for idx in self.indices:
             for be in self.backeneds:
                 if self.stopped: return False
@@ -76,7 +179,6 @@ class CameraStream:
                     print(f"[SYSTEM] Probing Index {idx} with Backend {be}...")
                     cap = cv2.VideoCapture(idx, be)
                     if cap and cap.isOpened():
-                        # Quick validation read
                         ret, f = cap.read()
                         if ret and f is not None:
                             print(f"[SYSTEM] Camera successfully synchronized at Index {idx}.")
@@ -85,7 +187,6 @@ class CameraStream:
                             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                             self.stream = cap
                             self.online = True
-                            global camera_online
                             camera_online = True
                             return True
                     if cap: cap.release()
@@ -95,13 +196,17 @@ class CameraStream:
 
     def update(self):
         global camera_online
+        retry_count = 0
         while not self.stopped:
             if not self.online:
                 if self._attempt_connection():
                     print("[SYSTEM] Camera Signal Established.")
+                    retry_count = 0
                 else:
-                    print("[SYSTEM] Camera hardware not found. Retrying in 5s...")
-                    time.sleep(5)
+                    retry_count += 1
+                    wait = min(5 * retry_count, 30)
+                    print(f"[SYSTEM] Camera hardware not found. Retrying in {wait}s...")
+                    time.sleep(wait)
                     continue
 
             try:
@@ -110,20 +215,31 @@ class CameraStream:
                     print("[SYSTEM] Camera Signal Lost. Attempting Reconnection...")
                     self.online = False
                     camera_online = False
-                    if self.stream: self.stream.release()
+                    if self.stream:
+                        try: self.stream.release()
+                        except: pass
+                        self.stream = None
+                    retry_count += 1
+                    time.sleep(min(retry_count, 10))
                     continue
                 
+                retry_count = 0
                 with self.lock:
                     self.frame = frame
+                    self.frame_id += 1
             except Exception as e:
                 print(f"[CAMERA STREAM ERROR] {e}")
                 self.online = False
                 camera_online = False
-                time.sleep(2)
+                if self.stream:
+                    try: self.stream.release()
+                    except: pass
+                    self.stream = None
+                time.sleep(5)
 
     def read(self):
         with self.lock:
-            return self.frame.copy() if self.frame is not None else None
+            return (self.frame.copy(), self.frame_id) if self.frame is not None else (None, 0)
 
     def stop(self):
         self.stopped = True
@@ -140,6 +256,8 @@ def background_system_init():
         init_status = "Synchronizing Database..."
         database.init_db()
         sync_mailer_config()
+        sync_camera_config()
+        sync_camera_quality()
         print("[SYSTEM] Database Ready.")
     except Exception as e:
         print(f"[SYSTEM ERROR] Database init failed: {e}")
@@ -164,6 +282,13 @@ def background_system_init():
         print("[SYSTEM] Camera Background Sync Done.")
     except Exception as e:
         print(f"[SYSTEM ERROR] Camera initialization failed: {e}")
+
+    # 4. Pre-connect ONVIF for PTZ (saves ~18s on first click)
+    try:
+        init_status = "Connecting PTZ..."
+        _get_onvif_connection()
+    except Exception as e:
+        print(f"[PTZ] Pre-connect skipped: {e}")
         
     init_status = "Ready"
     elapsed = time.time() - start_time
@@ -173,14 +298,13 @@ def background_system_init():
 threading.Thread(target=background_system_init, daemon=True, name="SystemInitThread").start()
 
 def generate_frames():
-    global camera_stream, engine, system_initializing
-    last_process_time = 0
-    processed_frame = None
+    global camera_stream, engine, system_initializing, camera_quality
+    refresh_counter = 0
+    last_frame_id = -1
     
     while True:
         try:
             if system_initializing or camera_stream is None:
-                # Show loading screen instead of black frame
                 loading = np.zeros((480, 640, 3), np.uint8)
                 cv2.putText(loading, "INITIALIZING AI...", (150, 220), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
                 cv2.putText(loading, "Please wait...", (240, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
@@ -188,28 +312,39 @@ def generate_frames():
                 yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
                 time.sleep(0.5); continue
 
-            frame = camera_stream.read()
-            if frame is None:
+            refresh_counter += 1
+            if refresh_counter >= 300:
+                sync_camera_quality()
+                refresh_counter = 0
+
+            res = camera_stream.read()
+            if res[0] is None:
                 err = np.zeros((480,640,3), np.uint8)
                 cv2.putText(err, "CAMERA OFFLINE", (140,240), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50,50,255), 3)
                 ret, buf = cv2.imencode('.jpg', err)
                 yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
                 time.sleep(1); continue
 
-            # Only process AI every 100ms to keep stream smooth at 30 FPS
-            current_time = time.time()
-            if engine and current_time - last_process_time > 0.1:
-                start_ai = time.time()
-                processed_frame = engine.process_frame(cv2.flip(frame, 1))
-                last_process_time = current_time
-                # print(f"[DEBUG] AI Latency: {int((time.time() - start_ai)*1000)}ms")
+            frame, frame_id = res
+            if frame_id == last_frame_id:
+                time.sleep(0.005)
+                continue
+                
+            last_frame_id = frame_id
+
+            if engine:
+                display_frame = engine.process_frame(frame)
+            else:
+                display_frame = frame
             
-            # If AI is still thinking, show the raw frame (flipped) or the last processed one
-            display_frame = processed_frame if processed_frame is not None else cv2.flip(frame, 1)
+            ret, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, camera_quality])
+            if ret:
+                yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
+            del buf
             
-            ret, buf = cv2.imencode('.jpg', display_frame)
-            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
-            time.sleep(0.01) # Small sleep to prevent CPU pegging
+        except GeneratorExit:
+            print("[STREAM] Client disconnected, cleaning up.")
+            break
         except Exception as e:
             print(f"[STREAM ERROR] {e}")
             time.sleep(0.5)
@@ -231,12 +366,7 @@ def nightly_scheduler():
             summary = database.get_comprehensive_summary()
             html = mailer.get_daily_report_template(summary)
             # Fetch admin email
-            with database.db_lock:
-                conn = sqlite3.connect(database.DB_PATH)
-                c = conn.cursor()
-                c.execute("SELECT email FROM admins LIMIT 1")
-                row = c.fetchone()
-                email = row[0] if row else None
+            email = database.get_admin_email()
             if email:
                 mailer.send_email_async(email, f"Stafflytics Daily Report - {now.strftime('%d %b')}", html)
             sent_today = True
@@ -275,13 +405,17 @@ def chat():
 
 @app.route('/video_feed')
 def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    resp = Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    return resp
 
 @app.route('/api/analytics/engagement')
 @login_required
 def get_engagement_analytics():
     return jsonify(database.get_service_engagement_analytics())
-
 @app.route('/api/analytics/wellbeing')
 @login_required
 def get_wellbeing_analytics():
@@ -301,6 +435,11 @@ def get_performance_analytics():
 @login_required
 def get_optimization_analytics():
     return jsonify(database.get_shift_optimization_data())
+
+@app.route('/api/analytics/synergy')
+@login_required
+def get_synergy_analytics():
+    return jsonify(database.get_synergy_metrics())
 
 @app.route('/api/sales/add', methods=['POST'])
 @login_required
@@ -375,10 +514,141 @@ def get_status():
 @login_required
 def refresh_camera():
     global camera_stream
+    sync_camera_config()
+    _onvif_cache["cam"] = None
+    _onvif_cache["ptz"] = None
+    _onvif_cache["profile"] = None
+    _onvif_cache["port"] = None
     if camera_stream:
+        print(f"[SYSTEM] Manual camera refresh triggered. RTSP_URL='{RTSP_URL}'")
         camera_stream.online = False # Forces update loop to re-probe
         return jsonify({"status": "success", "message": "Camera re-synchronization triggered."})
     return jsonify({"status": "error", "message": "Camera stream not initialized."}), 500
+
+from requests.auth import HTTPDigestAuth
+from onvif import ONVIFCamera
+import zeep
+import socket
+import xml.etree.ElementTree as ET
+
+_DIRECTION_VECTORS = {
+    'Up':        (0,  1, 0),
+    'Down':      (0, -1, 0),
+    'Left':      (-1, 0, 0),
+    'Right':     (1,  0, 0),
+    'UpLeft':    (-1, 1, 0),
+    'UpRight':   (1,  1, 0),
+    'DownLeft':  (-1,-1, 0),
+    'DownRight': (1, -1, 0),
+    'ZoomIn':    (0, 0, 1),
+    'ZoomOut':   (0, 0,-1),
+}
+
+_onvif_cache = {"cam": None, "ptz": None, "profile": None, "port": None}
+
+def _parse_rtsp():
+    """Parse RTSP_URL into (ip, user, password, rtsp_port)."""
+    m = re.match(r'rtsp://(.+?):(.+?)@(.+?)(?::(\d+))?(?:/|$)', RTSP_URL)
+    if m:
+        return m.group(3), m.group(1), m.group(2), int(m.group(4) or 554)
+    return None, None, None, None
+
+def _get_onvif_connection():
+    """Get cached ONVIF connection or create a new one."""
+    if _onvif_cache["ptz"] is not None:
+        return _onvif_cache["ptz"], _onvif_cache["profile"]
+
+    ip, user, pwd, _ = _parse_rtsp()
+    if not ip:
+        return None, None
+
+    onvif_ports = [80, 8080, 8899, 8000, 8081]
+    for port in onvif_ports:
+        try:
+            cam = ONVIFCamera(ip, port, user, pwd)
+            media = cam.create_media_service()
+            profiles = media.GetProfiles()
+            if not profiles:
+                continue
+            profile = profiles[0]
+            ptz = cam.create_ptz_service()
+            _onvif_cache["cam"] = cam
+            _onvif_cache["ptz"] = ptz
+            _onvif_cache["profile"] = profile
+            _onvif_cache["port"] = port
+            print(f"[PTZ-ONVIF] Connected on port {port}, profile={profile.token}")
+            return ptz, profile
+        except Exception as e:
+            print(f"[PTZ-ONVIF] Port {port} failed: {e}")
+            continue
+    return None, None
+
+def _ptz_send(direction, action):
+    """Send PTZ command via ONVIF with cached connection, fallback to CGI."""
+    ptz, profile = _get_onvif_connection()
+    if ptz and profile:
+        try:
+            if action == 'stop':
+                ptz.Stop({'ProfileToken': profile.token})
+                print(f"[PTZ-ONVIF] Stopped")
+                return True, ""
+            x, y, z = _DIRECTION_VECTORS.get(direction, (0, 0, 0))
+            ptz.ContinuousMove({
+                'ProfileToken': profile.token,
+                'Velocity': {
+                    'PanTilt': {'x': float(x), 'y': float(y)},
+                    'Zoom':    {'x': float(z)}
+                }
+            })
+            print(f"[PTZ-ONVIF] Moved {direction}")
+            return True, ""
+        except Exception as e:
+            print(f"[PTZ-ONVIF] Command failed: {e}")
+            _onvif_cache["ptz"] = None
+            _onvif_cache["profile"] = None
+
+    ip, user, pwd, _ = _parse_rtsp()
+    if not ip:
+        return False, "Could not parse camera URL"
+
+    last_err = ""
+    for http_port in ['80', '8080']:
+        base = f"http://{ip}:{http_port}"
+        for channel in ['1', '0']:
+            url = f"{base}/cgi-bin/ptz.cgi?action={action}&channel={channel}&code={direction}&arg1=0&arg2=5"
+            for auth in [None, (user, pwd), HTTPDigestAuth(user, pwd)]:
+                try:
+                    r = requests.get(url, timeout=3, auth=auth)
+                    print(f"[PTZ-CGI] {url[:90]} -> status={r.status_code}")
+                    if r.ok or 'OK' in r.text:
+                        return True, ""
+                    if r.status_code == 401:
+                        continue
+                    last_err = f"HTTP {r.status_code}: {r.text[:80]}"
+                    break
+                except Exception as e:
+                    last_err = str(e)[:100]
+                    continue
+
+    return False, f"ONVIF unavailable, CGI failed: {last_err}"
+
+@app.route('/api/camera/ptz', methods=['POST'])
+@login_required
+def camera_ptz():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"status": "error", "message": "Invalid JSON body"}), 400
+    direction = data.get('direction', '')
+    action = data.get('action', 'start')
+
+    valid = {'Up', 'Down', 'Left', 'Right', 'UpLeft', 'UpRight', 'DownLeft', 'DownRight', 'ZoomIn', 'ZoomOut'}
+    if direction not in valid:
+        return jsonify({"status": "error", "message": "Invalid direction"}), 400
+
+    ok, msg = _ptz_send(direction, action)
+    if ok:
+        return jsonify({"status": "success"})
+    return jsonify({"status": "error", "message": msg}), 502
 
 @app.route('/api/export/attendance/<format>')
 @login_required
@@ -513,8 +783,86 @@ def email_settings():
     if request.method == 'POST':
         database.update_system_settings(request.json)
         sync_mailer_config()
+        sync_camera_config()
+        sync_camera_quality()
         return jsonify({"status": "success"})
     return jsonify(database.get_system_settings())
+
+@app.route('/api/camera/test', methods=['POST'])
+@login_required
+def test_camera():
+    data = request.json
+    url = data.get('url', '')
+    if not url:
+        return jsonify({"status": "error", "message": "No URL provided"})
+
+    backends = [cv2.CAP_FFMPEG, cv2.CAP_ANY]
+    result = {"status": "error", "message": "Could not connect"}
+
+    def try_connect(test_url, be, results):
+        try:
+            cap = cv2.VideoCapture(test_url, be)
+            if cap:
+                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
+                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 8000)
+            if cap and cap.isOpened():
+                ret, f = cap.read()
+                if ret and f is not None:
+                    display = test_url.split('://')[0] + '://[credentials]@' + test_url.split('@')[1] if '@' in url else test_url
+                    results.append({"status": "success", "message": f"Connected: {display}"})
+            if cap: cap.release()
+        except:
+            pass
+
+    # 1) Try user's exact URL first
+    for be in backends:
+        thread_results = []
+        t = threading.Thread(target=try_connect, args=(url, be, thread_results))
+        t.daemon = True
+        t.start()
+        t.join(timeout=10)
+        if thread_results:
+            return jsonify(thread_results[0])
+
+    # 2) Try user's exact URL with TCP
+    tcp_url = url + ("&tcp" if "?" in url else "?tcp")
+    for be in backends:
+        thread_results = []
+        t = threading.Thread(target=try_connect, args=(tcp_url, be, thread_results))
+        t.daemon = True
+        t.start()
+        t.join(timeout=10)
+        if thread_results:
+            return jsonify(thread_results[0])
+
+    # 3) Try with path variants
+    m = re.match(r'(rtsp://[^@]+@[^/]+|rtsp://[^/]+)', url)
+    base = m.group(1) if m else url
+    paths = [
+        '/cam/realmonitor?channel=1&subtype=0',
+        '/cam/realmonitor?channel=1&subtype=1',
+        '/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif',
+        '/cam/realmonitor?channel=1&subtype=1&unicast=true&proto=Onvif',
+        '/cam/realmonitor?channel=1&subtype=00',
+        '/stream1', '/Streaming/Channels/101',
+        '/h264/ch1/main/av_stream', '/h264_stream',
+        '/onvif1', '/onvif/stream2',
+        '/live', '/video', '/video1', '/videoMain', '/h264',
+    ]
+    for p in paths:
+        tcp_suffix = "&tcp" if "?" in p else "?tcp"
+        for suffix in ['', tcp_suffix]:
+            test_url = f"{base}{p}{suffix}"
+            for be in backends:
+                thread_results = []
+                t = threading.Thread(target=try_connect, args=(test_url, be, thread_results))
+                t.daemon = True
+                t.start()
+                t.join(timeout=10)
+                if thread_results:
+                    return jsonify(thread_results[0])
+
+    return jsonify({"status": "error", "message": "Camera not reachable. Check: 1) Camera powered on  2) IP correct  3) RTSP enabled in Imou app  4) No firewall blocking port 554  5) Try subtype=1 for H.264 sub-stream"})
 
 import sqlite3
 if __name__ == '__main__':

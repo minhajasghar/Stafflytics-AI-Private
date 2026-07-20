@@ -73,6 +73,7 @@ function handleNavClick(element) {
                 loadEvents(); 
                 loadEmailSettings(); 
                 loadTelegramSettings(); 
+                loadCameraSettings(); 
             } catch (e) { console.error("Settings load error", e); }
         }
     }
@@ -251,6 +252,119 @@ async function saveEmailSettings() {
         });
         if (res.ok) alert("✅ Email configuration saved successfully!");
     } catch (e) { alert("❌ Error saving email configuration."); }
+}
+
+// --- CAMERA SETTINGS ---
+async function loadCameraSettings() {
+    try {
+        const res = await fetch('/api/settings/emails');
+        const data = await res.json();
+        const urlEl = document.getElementById('cam-rtsp-url');
+        if (urlEl) urlEl.value = data.rtsp_url || 'rtsp://admin:L2DD2594@192.168.50.137:554/cam/realmonitor?channel=1&subtype=0';
+        const qualityEl = document.getElementById('cam-quality');
+        const qualityVal = document.getElementById('cam-quality-value');
+        if (qualityEl) {
+            const q = parseInt(data.camera_quality) || 70;
+            qualityEl.value = q;
+            if (qualityVal) qualityVal.textContent = q + '%';
+        }
+    } catch (e) { console.error("Error loading camera settings", e); }
+}
+
+async function saveCameraSettings() {
+    const data = {
+        rtsp_url: document.getElementById('cam-rtsp-url').value,
+        camera_quality: document.getElementById('cam-quality').value
+    };
+    try {
+        const res = await fetch('/api/settings/emails', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (res.ok) {
+            alert("✅ Camera settings saved! Reconnecting...");
+            await refreshCamera();
+        }
+    } catch (e) { alert("❌ Error saving camera settings."); }
+}
+
+// --- PTZ CONTROLS ---
+let ptzDir = 'Up';
+
+function ptzStart(direction) {
+    ptzDir = direction;
+    fetch('/api/camera/ptz', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction, action: 'start' })
+    }).then(r => r.json()).then(d => {
+        if (d.status !== 'success') console.warn('[PTZ]', d.message);
+    }).catch(e => console.warn('[PTZ]', e));
+}
+
+function ptzStop() {
+    fetch('/api/camera/ptz', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction: ptzDir, action: 'stop' })
+    }).then(r => r.json()).then(d => {
+        if (d.status !== 'success') console.warn('[PTZ]', d.message);
+    }).catch(e => console.warn('[PTZ]', e));
+}
+
+async function testPtz() {
+    const btn = document.getElementById('btn-test-ptz');
+    if (btn) { btn.innerHTML = '⏳ Testing...'; btn.disabled = true; }
+    try {
+        const r = await fetch('/api/camera/ptz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ direction: 'Up', action: 'start' })
+        });
+        const d = await r.json();
+        if (d.status === 'success') {
+            setTimeout(() => {
+                fetch('/api/camera/ptz', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ direction: 'Up', action: 'stop' })
+                });
+            }, 1000);
+            alert('✅ PTZ working! Camera moved Up.');
+        } else {
+            alert('❌ PTZ failed: ' + (d.message || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('❌ PTZ error: ' + e.message);
+    }
+    if (btn) { btn.innerHTML = 'Test PTZ'; btn.disabled = false; }
+}
+
+async function testCameraConnection() {
+    const url = document.getElementById('cam-rtsp-url').value;
+    if (!url) { alert("Enter a camera URL first"); return; }
+    const resultEl = document.getElementById('cam-test-result');
+    resultEl.innerHTML = '⏳ Testing connection...';
+    resultEl.style.color = 'var(--text-muted)';
+    try {
+        const res = await fetch('/api/camera/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: url })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            resultEl.innerHTML = '✅ ' + data.message;
+            resultEl.style.color = 'var(--green)';
+        } else {
+            resultEl.innerHTML = '❌ ' + data.message;
+            resultEl.style.color = 'var(--red)';
+        }
+    } catch (e) {
+        resultEl.innerHTML = '❌ Connection test failed';
+        resultEl.style.color = 'var(--red)';
+    }
 }
 
 async function loadEvents() {
@@ -457,6 +571,10 @@ async function loadSynergyMetrics() {
     if (!grid) return;
     try {
         const res = await fetch('/api/analytics/synergy');
+        if (!res.ok) {
+            grid.innerHTML = '<div class="standard-card">No metric data</div>';
+            return;
+        }
         const data = await res.json();
         
         if (!data.metrics || data.metrics.length === 0) {
@@ -472,6 +590,7 @@ async function loadSynergyMetrics() {
         `).join('');
     } catch (e) {
         console.error("Synergy Metrics Error", e);
+        grid.innerHTML = '<div class="standard-card">No metric data</div>';
     }
 }
 
@@ -692,10 +811,38 @@ async function refreshCamera() {
     }
 }
 
+function toggleFullscreen() {
+    const el = document.getElementById('camera-canvas');
+    if (!el) return;
+    if (!document.fullscreenElement) {
+        el.requestFullscreen().then(() => {
+            const icon = document.getElementById('fullscreen-icon');
+            if (icon) { icon.classList.remove('fa-expand'); icon.classList.add('fa-compress'); }
+        }).catch(() => {});
+    } else {
+        document.exitFullscreen().then(() => {
+            const icon = document.getElementById('fullscreen-icon');
+            if (icon) { icon.classList.remove('fa-compress'); icon.classList.add('fa-expand'); }
+        });
+    }
+}
+
 function toggleZoneEditor() {
     isEditingZones = !isEditingZones;
-    if (canvas) canvas.style.display = isEditingZones ? 'block' : 'none';
-    if (isEditingZones) { zonePoints = []; alert("Draw a box by clicking 4 points."); }
+    if (canvas) {
+        if (isEditingZones) {
+            const wrapper = canvas.parentElement;
+            if (wrapper) {
+                canvas.width = wrapper.clientWidth;
+                canvas.height = wrapper.clientHeight;
+            }
+            canvas.style.display = 'block';
+            zonePoints = [];
+            alert("Draw a box by clicking 4 points.");
+        } else {
+            canvas.style.display = 'none';
+        }
+    }
 }
 
 if (canvas) {
@@ -703,7 +850,9 @@ if (canvas) {
         if (!isEditingZones) return;
         const r = canvas.getBoundingClientRect();
         const x = e.clientX - r.left, y = e.clientY - r.top;
-        zonePoints.push([Math.round(x), Math.round(y)]);
+        const scaleX = 640 / r.width, scaleY = 480 / r.height;
+        const mappedX = Math.round(x * scaleX), mappedY = Math.round(y * scaleY);
+        zonePoints.push([mappedX, mappedY]);
         ctx.fillStyle = "#4f46e5"; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
         if (zonePoints.length === 4) {
             const name = prompt("Zone Name:");

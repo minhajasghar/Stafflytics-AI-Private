@@ -36,14 +36,16 @@
     <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
         <nav class="sidebar">
             <div class="logo-icon"><i class="fas fa-utensils"></i></div>
-            <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
-            <div class="nav-item" title="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i></div>
-            <div class="nav-item" title="Staff List" onclick="handleNavClick(this)"><i class="fas fa-user-friends"></i></div>
-            <div class="nav-item" title="Reporting" onclick="handleNavClick(this)"><i class="fas fa-file-invoice"></i></div>
-            <div class="nav-item" title="Performance" onclick="handleNavClick(this)"><i class="fas fa-bolt"></i></div>
-            <div class="nav-item" title="ROI Analysis" onclick="handleNavClick(this)"><i class="fas fa-hand-holding-dollar"></i></div>
-            <div class="nav-item" title="Shift Optimizer" onclick="handleNavClick(this)"><i class="fas fa-calendar-check"></i></div>
-            <div class="nav-item" title="Settings" style="margin-top: auto;" onclick="handleNavClick(this)"><i class="fas fa-cog"></i></div>
+            <div class="sidebar-nav">
+                <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
+                <div class="nav-item" title="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i></div>
+                <div class="nav-item" title="Staff List" onclick="handleNavClick(this)"><i class="fas fa-user-friends"></i></div>
+                <div class="nav-item" title="Reporting" onclick="handleNavClick(this)"><i class="fas fa-file-invoice"></i></div>
+                <div class="nav-item" title="Performance" onclick="handleNavClick(this)"><i class="fas fa-bolt"></i></div>
+                <div class="nav-item" title="ROI Analysis" onclick="handleNavClick(this)"><i class="fas fa-hand-holding-dollar"></i></div>
+                <div class="nav-item" title="Shift Optimizer" onclick="handleNavClick(this)"><i class="fas fa-calendar-check"></i></div>
+                <div class="nav-item" title="Settings" onclick="handleNavClick(this)"><i class="fas fa-cog"></i></div>
+            </div>
             <div class="nav-item" title="Logout" onclick="handleLogout()" style="color: #ef4444;"><i class="fas fa-sign-out-alt"></i></div>
         </nav>
 
@@ -55,14 +57,22 @@
                         <span class="status-dot" id="system-status-dot"></span> <span id="system-status-text">System Live</span>
                     </div>
                 </header>
-                <section class="camera-canvas">
+                <section class="camera-canvas" id="camera-canvas">
                     <div class="video-header"><h3><i class="fas fa-video"></i> Intelligence Stream</h3>
                         <div style="display:flex; gap:10px;">
                             <button class="btn-zone" style="background:var(--primary); color:white;" onclick="refreshCamera()"><i class="fas fa-sync"></i> Refresh Camera</button>
                             <button class="btn-zone" onclick="toggleZoneEditor()">Edit Zones</button>
+                            <button class="btn-zone" onclick="toggleFullscreen()" style="background:rgba(255,255,255,0.25); color:white;"><i class="fas fa-expand" id="fullscreen-icon"></i></button>
                         </div>
                     </div>
-                    <div style="position:relative;"><img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed"><canvas id="zone-canvas" width="640" height="480" style="position:absolute; top:0; left:0; cursor:crosshair; display:none;"></canvas></div>
+                    <div class="video-wrapper"><img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed"><canvas id="zone-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none;"></canvas>
+                        <div class="ptz-controls" id="ptz-controls">
+                            <button class="ptz-btn ptz-up" data-dir="Up" onmousedown="ptzStart('Up')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-up"></i></button>
+                            <button class="ptz-btn ptz-left" data-dir="Left" onmousedown="ptzStart('Left')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-left"></i></button>
+                            <button class="ptz-btn ptz-right" data-dir="Right" onmousedown="ptzStart('Right')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-right"></i></button>
+                            <button class="ptz-btn ptz-down" data-dir="Down" onmousedown="ptzStart('Down')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-down"></i></button>
+                        </div>
+                    </div>
                 </section>
                 <section class="stats-bar">
                     <div class="stat-pill"><i class="fas fa-users-viewfinder stat-blue"></i><div class="stat-info"><span>Active Staff</span><div id="active-count">0</div></div></div>
@@ -263,6 +273,34 @@
                         <div class="form-group" style="margin-bottom:10px;"><label>Sender Gmail</label><input type="email" id="sender-email" placeholder="restaurant@gmail.com"></div>
                         <div class="form-group" style="margin-bottom:15px;"><label>App Password</label><input type="password" id="sender-password" placeholder="••••••••••••••••"></div>
                         <button onclick="saveEmailSettings()" class="btn-primary" style="width:100%; justify-content:center; background:var(--green);">Save Configuration</button>
+                    </div>
+                    <div class="standard-card">
+                        <h3 style="margin-bottom:1.5rem;"><i class="fas fa-video" style="color:var(--primary);"></i> Camera Configuration</h3>
+                        <div class="form-group" style="margin-bottom:10px;">
+                            <label>RTSP Camera URL</label>
+                            <div style="display:flex; align-items:flex-start; gap:10px;">
+                                <input type="text" id="cam-rtsp-url" placeholder="rtsp://admin:password@192.168.1.100:554/stream1" style="flex:1;">
+                                <div style="width:80px; height:56px; border-radius:6px; overflow:hidden; background:#000; flex-shrink:0; position:relative; border:1px solid #e2e8f0;">
+                                    <img src="{{ url_for('video_feed') }}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                    <div style="display:none; position:absolute; inset:0; flex-direction:column; align-items:center; justify-content:center; color:#64748b; font-size:0.5rem; gap:1px;">
+                                        <i class="fas fa-video-slash" style="font-size:0.6rem;"></i>
+                                        <span>Offline</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="cam-test-result" style="font-size:0.75rem; margin-bottom:10px; font-weight:700;"></div>
+                        <div style="margin-bottom:10px;">
+                            <label style="font-size:0.75rem; font-weight:700; color:var(--text-muted); display:flex; justify-content:space-between;">
+                                <span>Video Quality</span>
+                                <span id="cam-quality-value">70%</span>
+                            </label>
+                            <input type="range" id="cam-quality" min="10" max="100" value="70" style="width:100%; margin-top:5px;" oninput="document.getElementById('cam-quality-value').textContent=this.value+'%'">
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <button onclick="testCameraConnection()" class="btn-primary" style="flex:1; background:var(--accent);"><i class="fas fa-plug"></i> Test</button>
+                            <button onclick="saveCameraSettings()" class="btn-primary" style="flex:1;"><i class="fas fa-save"></i> Save & Reconnect</button>
+                        </div>
                     </div>
                     <div class="standard-card">
                         <h3 style="margin-bottom:1.5rem;">Telegram Integration</h3>

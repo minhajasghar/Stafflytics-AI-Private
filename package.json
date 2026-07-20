@@ -1,0 +1,13 @@
+{
+  "name": "stafflytics-ai",
+  "version": "1.0.0",
+  "description": "Stafflytics AI | Business Intelligence Suite",
+  "main": "app.py",
+  "scripts": {
+"start": "run.bat",
+"dev": "run.bat"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

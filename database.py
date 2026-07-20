@@ -1,6 +1,8 @@
 import sqlite3
 import threading
 import os
+import json
+import re
 from datetime import datetime, timedelta
 
 # Use RLock to prevent deadlocks when functions call each other
@@ -8,16 +10,228 @@ db_lock = threading.RLock()
 
 DB_PATH = "data/stafflytics.db"
 
+# Load database configuration from config.json
+DB_CONFIG = {
+    "DB_TYPE": "sqlite",
+    "MYSQL_HOST": "localhost",
+    "MYSQL_PORT": 3306,
+    "MYSQL_USER": "root",
+    "MYSQL_PASSWORD": "",
+    "MYSQL_DATABASE": "stafflytics"
+}
+
+if os.path.exists("config.json"):
+    try:
+        with open("config.json", "r") as f:
+            DB_CONFIG.update(json.load(f))
+    except Exception as e:
+        print(f"[DB] Error reading config.json, using defaults: {e}")
+
+# MySQL compatibility layer to emulate sqlite3.Row
+class MySQLRow:
+    def __init__(self, tuple_data, column_names):
+        self.tuple_data = tuple_data
+        self.column_names = {name.lower(): idx for idx, name in enumerate(column_names)}
+        
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.tuple_data[key]
+        elif isinstance(key, str):
+            idx = self.column_names.get(key.lower())
+            if idx is not None:
+                return self.tuple_data[idx]
+            raise KeyError(f"Column '{key}' not found in row")
+        raise TypeError("Index must be int or str")
+        
+    def keys(self):
+        return list(self.column_names.keys())
+        
+    def __iter__(self):
+        return iter(self.tuple_data)
+        
+    def __len__(self):
+        return len(self.tuple_data)
+
+# Translates SQLite syntax to MySQL syntax dynamically
+def translate_sqlite_to_mysql(query):
+    # MySQL uses %s parameter placeholders
+    query = query.replace('?', '%s')
+    
+    # Insert OR keywords
+    query = query.replace('INSERT OR IGNORE', 'INSERT IGNORE')
+    query = query.replace('INSERT OR REPLACE', 'REPLACE')
+    
+    # Escape reserved 'key' and 'value' columns in system_settings
+    query = query.replace('(key, value)', '(`key`, `value`)')
+    query = query.replace('key TEXT PRIMARY KEY', '`key` VARCHAR(255) PRIMARY KEY')
+    query = query.replace('value TEXT', '`value` VARCHAR(1000)')
+    query = query.replace('key, value FROM system_settings', '`key`, `value` FROM system_settings')
+    query = query.replace('key = %s', '`key` = %s')
+    query = query.replace('value = %s', '`value` = %s')
+    
+    # Date/Time functions
+    query = query.replace("date('now', 'localtime')", "CURDATE()")
+    query = query.replace("time('now', 'localtime')", "CURTIME()")
+    query = query.replace("datetime('now', 'localtime')", "NOW()")
+    
+    # Translate relative offsets like date('now', '-7 days') or date('now', '-30 days')
+    query = re.sub(r"date\('now',\s*'-(\d+)\s+days'\)", r"DATE_SUB(CURDATE(), INTERVAL \1 DAY)", query)
+    
+    # Handle localized dates
+    query = query.replace("date(entry_time, 'localtime')", "DATE(entry_time)")
+    query = query.replace("date(a.entry_time, 'localtime')", "DATE(a.entry_time)")
+    query = query.replace("date(exit_time, 'localtime')", "DATE(exit_time)")
+    query = query.replace("date(timestamp, 'localtime')", "DATE(timestamp)")
+    query = query.replace("date(entry_time)", "DATE(entry_time)")
+    query = query.replace("date(a.entry_time)", "DATE(a.entry_time)")
+    query = query.replace("date(exit_time)", "DATE(exit_time)")
+    
+    # Local timestamps
+    query = query.replace("strftime('%s', exit_time, 'localtime')", "UNIX_TIMESTAMP(exit_time)")
+    query = query.replace("strftime('%s', entry_time, 'localtime')", "UNIX_TIMESTAMP(entry_time)")
+    query = query.replace("strftime('%s', a.exit_time, 'localtime')", "UNIX_TIMESTAMP(a.exit_time)")
+    query = query.replace("strftime('%s', a.entry_time, 'localtime')", "UNIX_TIMESTAMP(a.entry_time)")
+    query = query.replace("strftime('%s', 'now', 'localtime')", "UNIX_TIMESTAMP(NOW())")
+    
+    # Local months and years
+    query = query.replace("strftime('%m', entry_time, 'localtime')", "DATE_FORMAT(entry_time, '%m')")
+    query = query.replace("strftime('%m', a.entry_time, 'localtime')", "DATE_FORMAT(a.entry_time, '%m')")
+    query = query.replace("strftime('%m', 'now', 'localtime')", "DATE_FORMAT(NOW(), '%m')")
+    query = query.replace("strftime('%m', last_seen, 'localtime')", "DATE_FORMAT(last_seen, '%m')")
+    query = query.replace("strftime('%Y', entry_time, 'localtime')", "DATE_FORMAT(entry_time, '%Y')")
+    query = query.replace("strftime('%Y', a.entry_time, 'localtime')", "DATE_FORMAT(a.entry_time, '%Y')")
+    query = query.replace("strftime('%Y', 'now', 'localtime')", "DATE_FORMAT(NOW(), '%Y')")
+    query = query.replace("strftime('%w', entry_time, 'localtime')", "(DAYOFWEEK(entry_time) - 1)")
+    query = query.replace("strftime('%H', a.entry_time, 'localtime')", "HOUR(a.entry_time)")
+    
+    # Scalar MAX/MIN functions (MySQL uses GREATEST/LEAST for scalar operations)
+    query = query.replace('MAX(1,', 'GREATEST(1,')
+    query = query.replace('MAX(0,', 'GREATEST(0,')
+    query = query.replace('MIN(20,', 'LEAST(20,')
+    
+    # Table type compatibility mappings
+    query = query.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'INTEGER PRIMARY KEY AUTO_INCREMENT')
+    query = query.replace('TEXT PRIMARY KEY', 'VARCHAR(255) PRIMARY KEY')
+    query = query.replace('staff_id TEXT', 'staff_id VARCHAR(255)')
+    query = query.replace('table_id TEXT', 'table_id VARCHAR(255)')
+    query = query.replace('role TEXT', 'role VARCHAR(255)')
+    query = query.replace('name TEXT', 'name VARCHAR(255)')
+    query = query.replace('username TEXT PRIMARY KEY', 'username VARCHAR(255) PRIMARY KEY')
+    query = query.replace('password TEXT', 'password VARCHAR(255)')
+    query = query.replace('email TEXT', 'email VARCHAR(255)')
+    query = query.replace('shift_start TEXT', 'shift_start VARCHAR(255)')
+    query = query.replace('shift TEXT', 'shift VARCHAR(255)')
+    query = query.replace('salary_type TEXT', 'salary_type VARCHAR(255)')
+    query = query.replace('zone TEXT', 'zone VARCHAR(255)')
+    query = query.replace('action TEXT', 'action VARCHAR(255)')
+    query = query.replace('details TEXT', 'details VARCHAR(1000)')
+    query = query.replace('event_type TEXT', 'event_type VARCHAR(255)')
+    query = query.replace('intensity TEXT', 'intensity VARCHAR(255)')
+    query = query.replace('points_json TEXT', 'points_json VARCHAR(2000)')
+    query = query.replace('unauthorized_roles TEXT', 'unauthorized_roles VARCHAR(1000)')
+    query = query.replace('CAST(a.is_late AS REAL)', 'CAST(a.is_late AS DECIMAL(10,4))')
+    query = query.replace('CAST(SUM(a.is_late) AS REAL)', 'CAST(SUM(a.is_late) AS DECIMAL(10,4))')
+    
+    return query
+
+class MySQLCursorWrapper:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.is_pragma_table_info = False
+        
+    def execute(self, query, params=None):
+        if "pragma table_info" in query.lower():
+            self.is_pragma_table_info = True
+            m = re.search(r"pragma table_info\((.+?)\)", query, re.IGNORECASE)
+            table_name = m.group(1).strip() if m else "staff"
+            query = f"DESCRIBE {table_name}"
+        else:
+            self.is_pragma_table_info = False
+            
+        translated_query = translate_sqlite_to_mysql(query)
+        if params is not None:
+            self.cursor.execute(translated_query, params)
+        else:
+            self.cursor.execute(translated_query)
+            
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        if row is not None:
+            if self.is_pragma_table_info:
+                # DESCRIBE fields: (Field, Type, Null, Key, Default, Extra) -> c[1] is name
+                return MySQLRow((0, row[0], 2, 3, 4, 5), ["cid", "name", "type", "notnull", "dflt_value", "pk"])
+            return MySQLRow(row, self.cursor.column_names)
+        return None
+        
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        if self.is_pragma_table_info:
+            return [MySQLRow((0, r[0], 2, 3, 4, 5), ["cid", "name", "type", "notnull", "dflt_value", "pk"]) for r in rows]
+        column_names = self.cursor.column_names
+        return [MySQLRow(r, column_names) for r in rows]
+        
+    @property
+    def lastrowid(self):
+        return self.cursor.lastrowid
+        
+    def close(self):
+        self.cursor.close()
+
+class MySQLConnectionWrapper:
+    def __init__(self, conn):
+        self.conn = conn
+        
+    def cursor(self, **kwargs):
+        return MySQLCursorWrapper(self.conn.cursor(**kwargs))
+        
+    def commit(self):
+        self.conn.commit()
+        
+    def rollback(self):
+        self.conn.rollback()
+        
+    def close(self):
+        self.conn.close()
+
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=20)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 10000;")
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
+    if DB_CONFIG["DB_TYPE"] == "mysql":
+        import mysql.connector
+        conn = mysql.connector.connect(
+            host=DB_CONFIG["MYSQL_HOST"],
+            port=DB_CONFIG["MYSQL_PORT"],
+            user=DB_CONFIG["MYSQL_USER"],
+            password=DB_CONFIG["MYSQL_PASSWORD"],
+            database=DB_CONFIG["MYSQL_DATABASE"]
+        )
+        return MySQLConnectionWrapper(conn)
+    else:
+        conn = sqlite3.connect(DB_PATH, timeout=20)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 10000;")
+        conn.execute("PRAGMA journal_mode=WAL;")
+        return conn
 
 def init_db():
-    if not os.path.exists("data"):
-        os.makedirs("data")
+    if DB_CONFIG["DB_TYPE"] == "mysql":
+        import mysql.connector
+        try:
+            conn = mysql.connector.connect(
+                host=DB_CONFIG["MYSQL_HOST"],
+                port=DB_CONFIG["MYSQL_PORT"],
+                user=DB_CONFIG["MYSQL_USER"],
+                password=DB_CONFIG["MYSQL_PASSWORD"]
+            )
+            cursor = conn.cursor()
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['MYSQL_DATABASE']}")
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print(f"[DB] Verified/Created MySQL database '{DB_CONFIG['MYSQL_DATABASE']}'")
+        except Exception as e:
+            print(f"[DB ERROR] MySQL pre-init database creation failed: {e}")
+    else:
+        if not os.path.exists("data"):
+            os.makedirs("data")
         
     with db_lock:
         conn = get_db_connection()
@@ -166,7 +380,8 @@ def init_db():
             ('sender_email', ''),
             ('sender_password', ''),
             ('telegram_bot_token', ''),
-            ('telegram_chat_id', '')
+            ('telegram_chat_id', ''),
+            ('rtsp_url', '')
         ]
         for key, val in defaults:
             cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
@@ -429,6 +644,56 @@ def get_dashboard_summary():
         incidents = cursor.fetchone()[0] or 0
         conn.close()
         return {"avg_efficiency": round(avg_efficiency, 1), "present_today": present, "late_today": lates, "incidents_today": incidents}
+
+def get_synergy_metrics():
+    """Cross-domain KPIs combining sales, staff, and customer data"""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Total sales today
+        cursor.execute("SELECT COALESCE(SUM(amount), 0) FROM sales WHERE date(timestamp, 'localtime') = date('now', 'localtime')")
+        sales_today = cursor.fetchone()[0]
+
+        # Staff hours worked today
+        cursor.execute("""
+            SELECT COALESCE(SUM(
+                CAST(COALESCE(active_seconds, 0) AS REAL) / 3600.0
+            ), 0) FROM attendance WHERE date(entry_time, 'localtime') = date('now', 'localtime')
+        """)
+        staff_hours = cursor.fetchone()[0]
+
+        # Customers today
+        cursor.execute("SELECT COUNT(*) FROM customers WHERE date(entry_time, 'localtime') = date('now', 'localtime')")
+        customers_today = cursor.fetchone()[0]
+
+        # Average efficiency today
+        cursor.execute("""
+            SELECT COALESCE(AVG(CAST(active_seconds AS REAL) /
+                CASE WHEN exit_time IS NOT NULL
+                     THEN MAX(1, (strftime('%s', exit_time, 'localtime') - strftime('%s', entry_time, 'localtime')))
+                     ELSE MAX(1, (strftime('%s', 'now', 'localtime') - strftime('%s', entry_time, 'localtime'))) END) * 100, 0)
+            FROM attendance WHERE date(entry_time, 'localtime') = date('now', 'localtime')
+        """)
+        avg_efficiency = cursor.fetchone()[0]
+        
+        # Late arrivals today
+        cursor.execute("SELECT COUNT(*) FROM attendance WHERE date(entry_time, 'localtime') = date('now', 'localtime') AND is_late = 1")
+        late_count = cursor.fetchone()[0]
+
+        conn.close()
+
+        rev_per_hour = round(sales_today / staff_hours, 0) if staff_hours > 0 else 0
+        cust_per_staff = round(customers_today / max(staff_hours / 8, 1), 1) if staff_hours > 0 else 0
+
+        return {
+            "metrics": [
+                {"label": "Revenue per Hour", "value": f"Rs. {rev_per_hour:,.0f}"},
+                {"label": "Team Efficiency", "value": f"{avg_efficiency:.0f}%"},
+                {"label": "Customers Served", "value": str(customers_today)},
+                {"label": "Late Arrivals", "value": str(late_count)}
+            ]
+        }
 
 def get_comprehensive_summary():
     """Returns a full summary for PDF/Excel reporting"""
@@ -870,6 +1135,14 @@ def get_monthly_customer_stats():
             "peak_day": busiest_day[0] if busiest_day else "Pending Data"
         }
 
+def get_admin_email():
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT email FROM admins LIMIT 1")
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
 
 if __name__ == "__main__":
     init_db()

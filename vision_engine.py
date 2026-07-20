@@ -4,6 +4,8 @@ import os
 import time
 import database
 import pickle
+import queue
+import threading
 
 # YOLO and face_recognition moved inside for lazy loading
 model = None
@@ -45,6 +47,11 @@ class VisionEngine:
         ]
 
     def __init__(self):
+        self.lock = threading.Lock()
+        self.recognition_queue = queue.Queue()
+        self.processing_tracks = set()
+        self.last_rec_attempt = {}
+
         self.known_face_encodings = []
         self.known_face_metadata = [] 
         self.known_customer_encodings = []
@@ -73,6 +80,9 @@ class VisionEngine:
         self.load_known_faces()
         self.reload_zones()
 
+        # Start the background face recognition thread
+        threading.Thread(target=self._recognition_worker, daemon=True, name="FaceRecWorkerThread").start()
+
     def load_known_faces(self):
         try:
             import face_recognition # Local import
@@ -86,8 +96,6 @@ class VisionEngine:
                     except: encoding = np.frombuffer(encoding_blob, dtype=np.float64)
                     new_encodings.append(encoding)
                     new_metadata.append({"id": s_id, "name": name, "role": role})
-            self.known_face_encodings = new_encodings
-            self.known_face_metadata = new_metadata
             
             # Load Customers
             cust_data = database.get_known_customers()
@@ -98,11 +106,112 @@ class VisionEngine:
                 except: encoding = np.frombuffer(encoding_blob, dtype=np.float64)
                 c_encodings.append(encoding)
                 c_metadata.append({"id": c_id, "name": name})
-            self.known_customer_encodings = c_encodings
-            self.known_customer_metadata = c_metadata
             
-            print(f"[AI] System Ready: {len(self.known_face_encodings)} Staff, {len(self.known_customer_encodings)} Customers loaded.")
+            with self.lock:
+                self.known_face_encodings = new_encodings
+                self.known_face_metadata = new_metadata
+                self.known_customer_encodings = c_encodings
+                self.known_customer_metadata = c_metadata
+            
+            print(f"[AI] System Ready: {len(new_encodings)} Staff, {len(c_encodings)} Customers loaded.")
         except Exception as e: print(f"[AI Initialization Error] {e}")
+
+    def _recognition_worker(self):
+        while True:
+            try:
+                track_id, face_crop, current_zone, current_time = self.recognition_queue.get()
+                if face_crop is None or face_crop.size == 0:
+                    self.recognition_queue.task_done()
+                    with self.lock:
+                        self.processing_tracks.discard(track_id)
+                    continue
+                
+                import face_recognition
+                rgb_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+                face_encodings = face_recognition.face_encodings(rgb_face)
+                
+                match_id = "Unknown"
+                if face_encodings:
+                    with self.lock:
+                        known_staff_enc = list(self.known_face_encodings)
+                        known_staff_meta = list(self.known_face_metadata)
+                        known_cust_enc = list(self.known_customer_encodings)
+                        known_cust_meta = list(self.known_customer_metadata)
+                    
+                    if known_staff_enc:
+                        matches = face_recognition.compare_faces(known_staff_enc, face_encodings[0], tolerance=0.55)
+                        if True in matches:
+                            match_id = known_staff_meta[matches.index(True)]["id"]
+                    
+                    if match_id == "Unknown" and known_cust_enc:
+                        # Check Customers in all zones
+                        c_matches = face_recognition.compare_faces(known_cust_enc, face_encodings[0], tolerance=0.6)
+                        if True in c_matches:
+                            match_id = f"CUST:{known_cust_meta[c_matches.index(True)]['id']}"
+                
+                # Update consensus and state under lock
+                with self.lock:
+                    if track_id not in self.recognition_consensus:
+                        self.recognition_consensus[track_id] = []
+                    self.recognition_consensus[track_id].append(match_id)
+                    if len(self.recognition_consensus[track_id]) > 5:
+                        self.recognition_consensus[track_id].pop(0)
+                        
+                    counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])}
+                    winner = max(counts, key=counts.get)
+                    
+                    # Update state if it still exists
+                    if track_id in self.person_states:
+                        state = self.person_states[track_id]
+                        if counts[winner] >= 3:
+                            if winner.startswith("CUST:"):
+                                c_id = int(winner.split(":")[1])
+                                meta = next((m for m in self.known_customer_metadata if m["id"] == c_id), None)
+                                if meta:
+                                    state["id"] = f"GUEST #{c_id}"
+                                    state["db_id"] = f"C_{c_id}"
+                                    state["name"] = meta["name"]
+                                    state["last_sync"] = current_time
+                            elif winner != "Unknown":
+                                meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
+                                if meta:
+                                    state["id"] = f"ID: {meta['id']}"
+                                    state["name"] = meta["name"]
+                                    state["role"] = meta["role"]
+                                    state["db_id"] = meta["id"]
+                                    state["last_sync"] = current_time
+                                    database.record_attendance(meta["id"])
+                
+                # Handle auto-registration outside lock
+                if match_id == "Unknown" and face_encodings:
+                    with self.lock:
+                        consensus_len = len(self.recognition_consensus.get(track_id, []))
+                        counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])} if track_id in self.recognition_consensus else {}
+                        winner = max(counts, key=counts.get) if counts else "Unknown"
+                    
+                    if consensus_len >= 5 and winner == "Unknown":
+                        new_c_id = database.register_customer(pickle.dumps(face_encodings[0]))
+                        self.load_known_faces() # Reloads inside its own lock
+                        with self.lock:
+                            if track_id in self.person_states:
+                                state = self.person_states[track_id]
+                                state["db_id"] = f"C_{new_c_id}"
+                                state["id"] = f"GUEST #{new_c_id}"
+                                state["name"] = "New Guest"
+                                state["last_sync"] = current_time
+                                
+                self.recognition_queue.task_done()
+                with self.lock:
+                    self.processing_tracks.discard(track_id)
+            except Exception as e:
+                print(f"[AI BACKGROUND ERROR] {e}")
+                try:
+                    self.recognition_queue.task_done()
+                except:
+                    pass
+                if 'track_id' in locals():
+                    with self.lock:
+                        self.processing_tracks.discard(track_id)
 
     def process_frame(self, frame):
         try:
@@ -134,18 +243,83 @@ class VisionEngine:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
                 track_ids = results[0].boxes.id.int().cpu().numpy() if results[0].boxes.id is not None else []
                 
+                # Check for tracks to stitch / merge
+                with self.lock:
+                    for box, track_id in zip(boxes, track_ids):
+                        x1, y1, x2, y2 = map(int, box)
+                        center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+                        
+                        if track_id not in self.person_states:
+                            merged = False
+                            candidates = []
+                            for old_tid, old_state in list(self.person_states.items()):
+                                time_since_last_active = current_time - old_state["last_active"]
+                                if old_tid != track_id and old_tid not in track_ids and time_since_last_active < 3.0:
+                                    old_pos = self.last_positions.get(old_tid)
+                                    if old_pos:
+                                        dist = np.sqrt((center[0] - old_pos[0])**2 + (center[1] - old_pos[1])**2)
+                                        if dist < 100:
+                                            candidates.append((dist, old_tid, old_state))
+                            
+                            if candidates:
+                                candidates.sort(key=lambda x: x[0])
+                                best_dist, old_tid, old_state = candidates[0]
+                                self.person_states[track_id] = {
+                                    "id": old_state["id"],
+                                    "db_id": old_state["db_id"],
+                                    "zone": "Main Hall",
+                                    "last_active": current_time,
+                                    "last_sync": old_state.get("last_sync", 0),
+                                    "role": old_state.get("role", "None"),
+                                    "name": old_state.get("name", "")
+                                }
+                                if "pose_multiplier" in old_state:
+                                    self.person_states[track_id]["pose_multiplier"] = old_state["pose_multiplier"]
+                                if "pose_label" in old_state:
+                                    self.person_states[track_id]["pose_label"] = old_state["pose_label"]
+                                    
+                                if old_tid in self.recognition_consensus:
+                                    self.recognition_consensus[track_id] = self.recognition_consensus[old_tid].copy()
+                                
+                                if old_tid in self.customer_timers:
+                                    self.customer_timers[track_id] = self.customer_timers[old_tid]
+                                    del self.customer_timers[old_tid]
+                                    
+                                to_add = []
+                                for tid, zname in list(self.alerted_tracks):
+                                    if tid == old_tid:
+                                        to_add.append((track_id, zname))
+                                self.alerted_tracks = {(tid, zname) for tid, zname in self.alerted_tracks if tid != old_tid}
+                                for item in to_add:
+                                    self.alerted_tracks.add(item)
+                                    
+                                if old_tid in self.person_states:
+                                    del self.person_states[old_tid]
+                                if old_tid in self.last_positions:
+                                    del self.last_positions[old_tid]
+                                
+                                print(f"[AI] Merged track {old_tid} into new track {track_id} (dist={best_dist:.1f})")
+                                merged = True
+                                
+                            if not merged:
+                                self.person_states[track_id] = {
+                                    "id": "Unknown", "db_id": None, "zone": "Main Hall", 
+                                    "last_active": current_time, "last_sync": 0, "role": "None"
+                                }
+                
+                # Process active tracks
                 for box, track_id in zip(boxes, track_ids):
                     x1, y1, x2, y2 = map(int, box)
                     center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
                     
-                    if track_id not in self.person_states:
-                        self.person_states[track_id] = {
-                            "id": "Unknown", "db_id": None, "zone": "Main Hall", 
-                            "last_active": current_time, "last_sync": 0, "role": "None"
-                        }
-                    
-                    state = self.person_states[track_id]
-                    state["last_active"] = current_time
+                    with self.lock:
+                        if track_id not in self.person_states:
+                            self.person_states[track_id] = {
+                                "id": "Unknown", "db_id": None, "zone": "Main Hall", 
+                                "last_active": current_time, "last_sync": 0, "role": "None"
+                            }
+                        state = self.person_states[track_id]
+                        state["last_active"] = current_time
                     
                     # Zone Detection
                     current_zone = "Main Hall"
@@ -153,7 +327,8 @@ class VisionEngine:
                         if zone.is_inside(center):
                             current_zone = zone.name
                             break
-                    state["zone"] = current_zone
+                    with self.lock:
+                        state["zone"] = current_zone
                     
                     # Pose & Action Analysis
                     keypoints = results[0].keypoints.xy.cpu().numpy()[0] if results[0].keypoints is not None else None
@@ -162,7 +337,6 @@ class VisionEngine:
                     
                     if keypoints is not None and len(keypoints) > 10:
                         try:
-                            # 5:L_Shoulder, 6:R_Shoulder, 9:L_Wrist, 10:R_Wrist, 11:L_Hip, 12:R_Hip
                             l_shoulder, r_shoulder = keypoints[5], keypoints[6]
                             l_wrist, r_wrist = keypoints[9], keypoints[10]
                             l_hip, r_hip = keypoints[11], keypoints[12]
@@ -171,13 +345,8 @@ class VisionEngine:
                             shoulder_y = (l_shoulder[1] + r_shoulder[1]) / 2
                             torso_height = abs(hip_y - shoulder_y)
                             
-                            # Detection 1: Active Hands (Wrists above hip line - 20% of torso)
                             hands_active = l_wrist[1] < (hip_y - 0.1*torso_height) or r_wrist[1] < (hip_y - 0.1*torso_height)
-                            
-                            # Detection 2: Leaning (Working Posture)
                             is_leaning = abs(l_shoulder[0] - l_hip[0]) > (0.15 * torso_height)
-                            
-                            # Detection 3: Hands in Pockets / Relaxed (Wrists very close to hips and each other)
                             hands_at_side = abs(l_wrist[1] - l_hip[1]) < (0.1 * torso_height) and abs(r_wrist[1] - r_hip[1]) < (0.1 * torso_height)
                             
                             if hands_active:
@@ -190,69 +359,47 @@ class VisionEngine:
                                 pose_label = "RELAXED"
                                 pose_multiplier = 0.5
                             
-                            state["pose_multiplier"] = pose_multiplier
-                            state["pose_label"] = pose_label
+                            with self.lock:
+                                state["pose_multiplier"] = pose_multiplier
+                                state["pose_label"] = pose_label
                         except: pass
 
-                    # Identification Logic
-                    if state["db_id"] is None:
-                        if self.frame_count % self.rec_throttle_frames == 0:
-                            face_img = small_frame[max(0, y1):min(480, y2), max(0, x1):min(640, x2)]
+                    # Identification Logic (Offloaded to background queue)
+                    with self.lock:
+                        db_id = state["db_id"]
+                    
+                    if db_id is None:
+                        with self.lock:
+                            is_processing = track_id in self.processing_tracks
+                        
+                        last_attempt = self.last_rec_attempt.get(track_id, 0)
+                        if not is_processing and (current_time - last_attempt > 2.0):
+                            self.last_rec_attempt[track_id] = current_time
+                            
+                            # Optimize face crop: crop only upper 35% of the body box
+                            y1_face = max(0, y1)
+                            y2_face = min(480, y1 + int((y2 - y1) * 0.35))
+                            face_img = small_frame[y1_face:y2_face, max(0, x1):min(640, x2)]
+                            
                             if face_img.size > 0:
-                                try:
-                                    import face_recognition
-                                    rgb_face = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-                                    face_encodings = face_recognition.face_encodings(rgb_face)
-                                    match_id = "Unknown"
-                                    if face_encodings:
-                                        # Check Staff
-                                        matches = face_recognition.compare_faces(self.known_face_encodings, face_encodings[0], tolerance=0.55)
-                                        if True in matches: 
-                                            match_id = self.known_face_metadata[matches.index(True)]["id"]
-                                        else:
-                                            # Check Customers (if in Dining Area)
-                                            if current_zone == "Dining Area":
-                                                c_matches = face_recognition.compare_faces(self.known_customer_encodings, face_encodings[0], tolerance=0.6)
-                                                if True in c_matches:
-                                                    match_id = f"CUST:{self.known_customer_metadata[c_matches.index(True)]['id']}"
-
-                                    if track_id not in self.recognition_consensus: self.recognition_consensus[track_id] = []
-                                    self.recognition_consensus[track_id].append(match_id)
-                                    if len(self.recognition_consensus[track_id]) > 5: self.recognition_consensus[track_id].pop(0)
-                                    counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])}
-                                    winner = max(counts, key=counts.get)
-                                    
-                                    if counts[winner] >= 3:
-                                        if winner.startswith("CUST:"):
-                                            c_id = int(winner.split(":")[1])
-                                            meta = next((m for m in self.known_customer_metadata if m["id"] == c_id), None)
-                                            if meta:
-                                                state["id"] = f"GUEST #{c_id}"; state["db_id"] = f"C_{c_id}"; state["name"] = meta["name"]
-                                                state["last_sync"] = current_time
-                                        elif winner != "Unknown":
-                                            meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
-                                            if meta:
-                                                state["id"] = f"ID: {meta['id']}"; state["name"] = meta["name"]
-                                                state["role"] = meta["role"]; state["db_id"] = meta["id"]
-                                                state["last_sync"] = current_time
-                                                database.record_attendance(meta["id"])
-                                    
-                                    # Auto-Register New Customer if seen enough in Dining Area
-                                    if current_zone == "Dining Area" and winner == "Unknown" and len(self.recognition_consensus[track_id]) >= 5:
-                                        if face_encodings:
-                                            new_c_id = database.register_customer(pickle.dumps(face_encodings[0]))
-                                            self.load_known_faces() # Refresh
-                                            state["db_id"] = f"C_{new_c_id}"; state["id"] = f"GUEST #{new_c_id}"
-                                            state["last_sync"] = current_time
-                                except: pass
+                                with self.lock:
+                                    self.processing_tracks.add(track_id)
+                                self.recognition_queue.put((track_id, face_img.copy(), current_zone, current_time))
                     else:
                         # Sync presence heartbeat
-                        if current_time - state["last_sync"] > self.heartbeat_interval:
-                            database.record_attendance(state["db_id"])
-                            state["last_sync"] = current_time
+                        with self.lock:
+                            last_sync = state["last_sync"]
+                        if current_time - last_sync > self.heartbeat_interval:
+                            database.record_attendance(db_id)
+                            with self.lock:
+                                state["last_sync"] = current_time
                         
                     # Path Context & Exact Efficiency Logic
-                    if state["db_id"] and not str(state["db_id"]).startswith("C_"):
+                    with self.lock:
+                        db_id = state["db_id"]
+                        role = state["role"]
+                        
+                    if db_id and not str(db_id).startswith("C_"):
                         prev_pos = self.last_positions.get(track_id)
                         if prev_pos:
                             dist = np.sqrt((center[0]-prev_pos[0])**2 + (center[1]-prev_pos[1])**2)
@@ -263,7 +410,7 @@ class VisionEngine:
                                 multiplier = 1.0
                             
                             # 2. Zone Precision check (Anti-Fake)
-                            authorized_zones = self.role_work_zones.get(state["role"], ["Main Hall"])
+                            authorized_zones = self.role_work_zones.get(role, ["Main Hall"])
                             if current_zone not in authorized_zones:
                                 multiplier *= 0.1 # Severe penalty for being in unauthorized areas
                             elif current_zone == "Main Hall":
@@ -271,43 +418,42 @@ class VisionEngine:
                             
                             # 3. Service Engagement (Customer Proximity)
                             is_near_customer = False
-                            for other_tid, other_state in self.person_states.items():
-                                if other_tid != track_id and str(other_state.get("db_id", "")).startswith("C_"):
-                                    other_pos = self.last_positions.get(other_tid)
-                                    if other_pos:
-                                        p_dist = np.sqrt((center[0]-other_pos[0])**2 + (center[1]-other_pos[1])**2)
-                                        if p_dist < 150: # Proximity to a registered customer (approx 5ft)
-                                            is_near_customer = True
-                                            break
+                            with self.lock:
+                                for other_tid, other_state in self.person_states.items():
+                                    if other_tid != track_id and str(other_state.get("db_id", "")).startswith("C_"):
+                                        other_pos = self.last_positions.get(other_tid)
+                                        if other_pos:
+                                            p_dist = np.sqrt((center[0]-other_pos[0])**2 + (center[1]-other_pos[1])**2)
+                                            if p_dist < 150: # Proximity to a registered customer (approx 5ft)
+                                                is_near_customer = True
+                                                break
                             
                             if is_near_customer:
                                 multiplier *= 2.0 # DOUBLE efficiency for guest interaction
                             
-                            # 4. Pose-Based Action Refinement (NEW)
-                            p_mult = state.get("pose_multiplier", 1.0)
+                            # 4. Pose-Based Action Refinement
+                            with self.lock:
+                                p_mult = state.get("pose_multiplier", 1.0)
                             multiplier *= p_mult
                             
                             # 5. Stationary Work Check
-                            # If they are in their CORE work zone (Kitchen for Chef) but moving slowly, 
-                            # they might be cooking/prepping. Give partial credit.
                             if dist <= 3 and current_zone in authorized_zones and current_zone != "Main Hall":
-                                # Give 30% credit for standing in a work zone
                                 multiplier = 0.3
                             
-                            self.activity_buffer[state["db_id"]] = self.activity_buffer.get(state["db_id"], 0) + multiplier
+                            self.activity_buffer[db_id] = self.activity_buffer.get(db_id, 0) + multiplier
                         
                     self.last_positions[track_id] = center
                     
                     # RESTRICTED ZONE MONITORING
-                    if state["db_id"]:
+                    if db_id:
                         in_unauth_zone = False
                         for zone in self.zones:
-                            if zone.is_inside(center) and state["role"] in zone.unauthorized_roles:
+                            if zone.is_inside(center) and role in zone.unauthorized_roles:
                                 in_unauth_zone = True
                                 if (track_id, zone.name) not in self.alerted_tracks:
-                                    database.log_activity(state["db_id"], zone.name, "Security Alert", f"Unauthorized role ({state['role']}) detected in restricted zone.")
-                                    # Signal for immediate email (this will be handled by app.py via callback or polling)
-                                    state["needs_security_email"] = zone.name
+                                    database.log_activity(db_id, zone.name, "Security Alert", f"Unauthorized role ({role}) detected in restricted zone.")
+                                    with self.lock:
+                                        state["needs_security_email"] = zone.name
                                     self.alerted_tracks.add((track_id, zone.name))
                                 break
                         
@@ -316,10 +462,10 @@ class VisionEngine:
                             self.alerted_tracks = {(tid, zname) for tid, zname in self.alerted_tracks if tid != track_id}
 
                     # CUSTOMER INTELLIGENCE (Unknown or Guest in Dining Area)
-                    is_staff = state["db_id"] and not str(state["db_id"]).startswith("C_")
+                    is_staff = db_id and not str(db_id).startswith("C_")
                     if not is_staff and current_zone == "Dining Area":
                         if track_id not in self.customer_timers:
-                            c_id = int(str(state["db_id"]).split("_")[1]) if str(state["db_id"]).startswith("C_") else None
+                            c_id = int(str(db_id).split("_")[1]) if db_id and str(db_id).startswith("C_") else None
                             self.customer_timers[track_id] = {"start": current_time, "zone": "Dining Area", "c_id": c_id}
                     elif track_id in self.customer_timers:
                         # If they move out of Dining Area or leave, finalize their customer session
@@ -329,14 +475,20 @@ class VisionEngine:
                         del self.customer_timers[track_id]
 
                     # Visuals (Bounding Boxes for EVERYONE)
-                    if state["db_id"]:
-                        if str(state["db_id"]).startswith("C_"):
+                    with self.lock:
+                        db_id = state.get("db_id")
+                        state_id = state.get("id")
+                        state_name = state.get("name", "Unknown")
+                        state_role = state.get("role", "None")
+                        status = state.get("pose_label", "NEUTRAL")
+                        
+                    if db_id:
+                        if str(db_id).startswith("C_"):
                             color = (0, 215, 255) # Gold/Yellow for Recognized Guest
-                            label = f"REGULAR {state['id']}"
+                            label = f"REGULAR {state_id}"
                         else:
                             color = (229, 70, 79) # Indigo for Staff
-                            status = state.get("pose_label", "NEUTRAL")
-                            label = f"STAFF: {state['name']} [{status}]"
+                            label = f"STAFF: {state_name} [{status}]"
                     else:
                         color = (6, 119, 217) # Amber for Unknown
                         label = f"CUSTOMER #{track_id}"
@@ -347,16 +499,17 @@ class VisionEngine:
                     cv2.rectangle(small_frame, (x1, y1 - th - 10), (x1 + tw + 10, y1), color, -1)
                     cv2.putText(small_frame, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
-            # Cleanup expired tracks
-            expired = [tid for tid, s in self.person_states.items() if current_time - s["last_active"] > 5]
-            for tid in expired:
-                if tid in self.customer_timers:
-                    duration = current_time - self.customer_timers[tid]["start"]
-                    if duration > 20: 
-                        database.record_customer_session("Auto-Table", duration, self.customer_timers[tid]["c_id"])
-                    del self.customer_timers[tid]
-                del self.person_states[tid]
-                if tid in self.recognition_consensus: del self.recognition_consensus[tid]
+            # Cleanup expired tracks under lock
+            with self.lock:
+                expired = [tid for tid, s in self.person_states.items() if current_time - s["last_active"] > 5]
+                for tid in expired:
+                    if tid in self.customer_timers:
+                        duration = current_time - self.customer_timers[tid]["start"]
+                        if duration > 20: 
+                            database.record_customer_session("Auto-Table", duration, self.customer_timers[tid]["c_id"])
+                        del self.customer_timers[tid]
+                    del self.person_states[tid]
+                    if tid in self.recognition_consensus: del self.recognition_consensus[tid]
 
             self.frame_count += 1
             
@@ -375,7 +528,8 @@ class VisionEngine:
 
     def get_active_staff(self):
         active_dict = {}
-        for tid, state in self.person_states.items():
-            if time.time() - state["last_active"] < 2 and state["db_id"] is not None:
-                active_dict[state["db_id"]] = {"id": state["id"], "name": state.get("name", "Unknown"), "role": state.get("role", "None"), "zone": state["zone"]}
+        with self.lock:
+            for tid, state in self.person_states.items():
+                if time.time() - state["last_active"] < 2 and state["db_id"] is not None:
+                    active_dict[state["db_id"]] = {"id": state["id"], "name": state.get("name", "Unknown"), "role": state.get("role", "None"), "zone": state["zone"]}
         return list(active_dict.values())
