@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS customers (
     entry_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     exit_time DATETIME,
     table_id VARCHAR(255),
-    duration_minutes INT,
+    duration_minutes FLOAT,
     customer_id INT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -105,6 +105,4 @@ INSERT IGNORE INTO system_settings (`key`, `value`) VALUES
 ('owner_email', 'admin@stafflytics.ai'),
 ('sender_email', ''),
 ('sender_password', ''),
-('telegram_bot_token', ''),
-('telegram_chat_id', ''),
 ('rtsp_url', '');

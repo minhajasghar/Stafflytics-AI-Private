@@ -1,0 +1,25 @@
+# MediaMTX configuration for Stafflytics
+rtspAddress: :8554
+rtpAddress: :8556
+rtcpAddress: :8557
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+webrtcLocalUDPAddress: :8189
+
+# Increase read timeout to prevent disconnects during brief background AI processing spikes
+readTimeout: 30s
+
+# Disable unused protocols to prevent port conflicts with Node/Express/Next.js
+rtmp: no
+hls: no
+srt: no
+
+paths:
+  cam:
+    source: rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0
+    rtspTransport: tcp
+
+  mystream:
+    source: publisher

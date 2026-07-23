@@ -129,8 +129,15 @@ def translate_sqlite_to_mysql(query):
     query = query.replace('intensity TEXT', 'intensity VARCHAR(255)')
     query = query.replace('points_json TEXT', 'points_json VARCHAR(2000)')
     query = query.replace('unauthorized_roles TEXT', 'unauthorized_roles VARCHAR(1000)')
-    query = query.replace('CAST(a.is_late AS REAL)', 'CAST(a.is_late AS DECIMAL(10,4))')
+    query = query.replace('duration_minutes REAL', 'duration_minutes FLOAT')
+    query = query.replace('hourly_rate REAL', 'hourly_rate DECIMAL(10,2)')
+    query = query.replace('active_seconds REAL', 'active_seconds DECIMAL(10,4)')
+    query = query.replace('amount REAL NOT NULL', 'amount DECIMAL(10,2) NOT NULL')
+    query = re.sub(r'\bCAST\(([^()]+)\s+AS\s+REAL\)', r'CAST(\1 AS DECIMAL(10,4))', query)
+    query = query.replace('CAST(COALESCE(active_seconds, 0) AS REAL)', 'CAST(COALESCE(active_seconds, 0) AS DECIMAL(10,4))')
     query = query.replace('CAST(SUM(a.is_late) AS REAL)', 'CAST(SUM(a.is_late) AS DECIMAL(10,4))')
+    query = query.replace('CAST(sessions AS REAL)', 'CAST(sessions AS DECIMAL(10,4))')
+    query = query.replace('CAST(total_active AS REAL)', 'CAST(total_active AS DECIMAL(10,4))')
     
     return query
 
@@ -314,7 +321,7 @@ def init_db():
             entry_time DATETIME DEFAULT CURRENT_TIMESTAMP,
             exit_time DATETIME,
             table_id TEXT,
-            duration_minutes INTEGER,
+            duration_minutes REAL,
             customer_id INTEGER
         )
         ''')
@@ -323,6 +330,14 @@ def init_db():
         cursor.execute("PRAGMA table_info(customers)")
         if 'customer_id' not in [c[1] for c in cursor.fetchall()]:
             cursor.execute("ALTER TABLE customers ADD COLUMN customer_id INTEGER")
+
+        # Migration: Ensure duration_minutes is REAL or FLOAT
+        if DB_CONFIG["DB_TYPE"] == "mysql":
+            try:
+                cursor.execute("ALTER TABLE customers MODIFY COLUMN duration_minutes FLOAT")
+                conn.commit()
+            except Exception as e:
+                print(f"[DB MIGRATION] ALTER TABLE customers failed (might already be FLOAT): {e}")
 
         # Customer Profiles (Recognized Individuals)
         cursor.execute('''
@@ -379,8 +394,6 @@ def init_db():
             ('owner_email', 'admin@stafflytics.ai'),
             ('sender_email', ''),
             ('sender_password', ''),
-            ('telegram_bot_token', ''),
-            ('telegram_chat_id', ''),
             ('rtsp_url', '')
         ]
         for key, val in defaults:
@@ -811,7 +824,7 @@ def record_customer_session(table_id, duration, customer_id=None):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("INSERT INTO customers (table_id, duration_minutes, exit_time, customer_id) VALUES (?, ?, CURRENT_TIMESTAMP, ?)", 
-                       (table_id, int(duration/60), customer_id))
+                       (table_id, round(duration / 60.0, 2), customer_id))
         
         if customer_id:
             cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP, visit_count = visit_count + 1 WHERE id = ?", (customer_id,))
@@ -823,7 +836,7 @@ def get_known_customers():
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, face_encoding FROM customer_profiles")
+        cursor.execute("SELECT id, name, face_encoding, visit_count FROM customer_profiles")
         rows = cursor.fetchall()
         conn.close()
         return rows
@@ -837,6 +850,14 @@ def register_customer(encoding):
         conn.commit()
         conn.close()
         return new_id
+
+def update_customer_encoding(customer_id, encoding_blob):
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE customer_profiles SET face_encoding = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?", (encoding_blob, customer_id))
+        conn.commit()
+        conn.close()
 
 def get_loyalty_analytics():
     with db_lock:
@@ -1128,11 +1149,20 @@ def get_monthly_customer_stats():
         """)
         busiest_day = cursor.fetchone()
         
+        # Total Repeating Customers this month
+        cursor.execute("""
+            SELECT COUNT(*) FROM customer_profiles 
+            WHERE visit_count > 1 
+              AND strftime('%m', last_seen, 'localtime') = strftime('%m', 'now', 'localtime')
+        """)
+        repeat_count = cursor.fetchone()[0] or 0
+        
         conn.close()
         return {
             "monthly_total": monthly_total,
             "avg_visit": round(avg_stay, 1) if avg_stay else 0,
-            "peak_day": busiest_day[0] if busiest_day else "Pending Data"
+            "peak_day": busiest_day[0] if busiest_day else "Pending Data",
+            "repeat_customers": repeat_count
         }
 
 def get_admin_email():

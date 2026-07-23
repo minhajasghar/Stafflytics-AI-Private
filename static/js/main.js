@@ -72,7 +72,6 @@ function handleNavClick(element) {
             try {
                 loadEvents(); 
                 loadEmailSettings(); 
-                loadTelegramSettings(); 
                 loadCameraSettings(); 
             } catch (e) { console.error("Settings load error", e); }
         }
@@ -262,11 +261,8 @@ async function loadCameraSettings() {
         const urlEl = document.getElementById('cam-rtsp-url');
         if (urlEl) urlEl.value = data.rtsp_url || 'rtsp://admin:L2DD2594@192.168.50.137:554/cam/realmonitor?channel=1&subtype=0';
         const qualityEl = document.getElementById('cam-quality');
-        const qualityVal = document.getElementById('cam-quality-value');
         if (qualityEl) {
-            const q = parseInt(data.camera_quality) || 70;
-            qualityEl.value = q;
-            if (qualityVal) qualityVal.textContent = q + '%';
+            qualityEl.value = data.camera_preset || '480p';
         }
     } catch (e) { console.error("Error loading camera settings", e); }
 }
@@ -274,7 +270,7 @@ async function loadCameraSettings() {
 async function saveCameraSettings() {
     const data = {
         rtsp_url: document.getElementById('cam-rtsp-url').value,
-        camera_quality: document.getElementById('cam-quality').value
+        camera_preset: document.getElementById('cam-quality').value
     };
     try {
         const res = await fetch('/api/settings/emails', {
@@ -447,7 +443,7 @@ async function fetchStatus() {
         if (document.getElementById('incidents-today')) document.getElementById('incidents-today').innerText = data.incidents_today;
         if (document.getElementById('monthly-customers')) document.getElementById('monthly-customers').innerText = data.monthly_customers;
         if (document.getElementById('repeat-customers')) document.getElementById('repeat-customers').innerText = data.repeat_customers;
-        if (data.customer_avg && document.getElementById('customer-time')) document.getElementById('customer-time').innerText = `${data.customer_avg} min`;
+        if (data.customer_avg !== undefined && data.customer_avg !== null && document.getElementById('customer-time')) document.getElementById('customer-time').innerText = `${data.customer_avg} min`;
         
         // Update Roster
         if (data.roster) renderShiftRoster(data.roster);
@@ -697,30 +693,6 @@ async function loadShiftOptimization() {
     } catch (e) { console.error("Optimization Load Error", e); }
 }
 
-async function loadTelegramSettings() {
-    try {
-        const res = await fetch('/api/settings/emails');
-        const data = await res.json();
-        if (document.getElementById('tg-token')) document.getElementById('tg-token').value = data.telegram_bot_token || '';
-        if (document.getElementById('tg-chatid')) document.getElementById('tg-chatid').value = data.telegram_chat_id || '';
-    } catch (e) {}
-}
-
-async function saveTelegramSettings() {
-    const data = {
-        telegram_bot_token: document.getElementById('tg-token').value,
-        telegram_chat_id: document.getElementById('tg-chatid').value
-    };
-    try {
-        await fetch('/api/settings/emails', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        alert("✅ Telegram alerts enabled!");
-    } catch (e) { alert("❌ Error enabling telegram."); }
-}
-
 async function saveWellnessSettings() {
     const val = document.getElementById('wellness-threshold').value;
     await fetch('/api/settings/emails', { 
@@ -758,7 +730,9 @@ async function submitRegistration() {
         btn.innerText = "Processing... Wait";
         btn.disabled = true;
 
-        const v = document.getElementById('video-feed');
+        const webrtcVideo = document.getElementById('webrtc-video');
+        const videoFeed = document.getElementById('video-feed');
+        const v = (webrtcVideo && webrtcVideo.style.display !== 'none') ? webrtcVideo : videoFeed;
         const c = document.createElement('canvas'); 
         c.width = 640; c.height = 480; 
         if (v) c.getContext('2d').drawImage(v, 0, 0, 640, 480);

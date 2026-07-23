@@ -9,7 +9,7 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
 - **Automated Attendance**: Seamless clock-in/out based on visual presence, with anti-fake protection and late arrival tracking.
 - **Peak Traffic Planner**: Replaces traditional holiday calendars with a high-intensity event planner to manage busy periods like festivals and weddings.
 - **Exact Efficiency Metrics**: Measures staff performance based on authorized zone presence, movement intensity, and customer proximity.
-- **Security Alerts**: Instant notifications via Email and Telegram for unauthorized entry into restricted zones (e.g., kitchen, office).
+- **Security Alerts**: Instant notifications via Email for unauthorized entry into restricted zones (e.g., kitchen, office).
 - **Salary Administration**: Automated tracking of work hours, efficiency scores, and monthly payroll calculation.
 - **Executive Reporting**: Generates professional Daily/Weekly BI reports in PDF and Excel formats.
 
@@ -19,7 +19,7 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
 - **AI/ML**: OpenCV, Ultralytics YOLOv8, Dlib (Face Recognition)
 - **Database**: SQLite3 with WAL mode for concurrent access
 - **Frontend**: Vanilla HTML5, CSS3 (Modern UI), JavaScript (Async/Fetch)
-- **Communication**: SMTP (Email), Telegram Bot API
+- **Communication**: SMTP (Email)
 
 ##  Installation
 

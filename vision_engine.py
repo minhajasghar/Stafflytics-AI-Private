@@ -101,11 +101,11 @@ class VisionEngine:
             cust_data = database.get_known_customers()
             c_encodings = []
             c_metadata = []
-            for c_id, name, encoding_blob in cust_data:
+            for c_id, name, encoding_blob, visit_count in cust_data:
                 try: encoding = pickle.loads(encoding_blob)
                 except: encoding = np.frombuffer(encoding_blob, dtype=np.float64)
                 c_encodings.append(encoding)
-                c_metadata.append({"id": c_id, "name": name})
+                c_metadata.append({"id": c_id, "name": name, "visits": visit_count})
             
             with self.lock:
                 self.known_face_encodings = new_encodings
@@ -144,10 +144,11 @@ class VisionEngine:
                             match_id = known_staff_meta[matches.index(True)]["id"]
                     
                     if match_id == "Unknown" and known_cust_enc:
-                        # Check Customers in all zones
-                        c_matches = face_recognition.compare_faces(known_cust_enc, face_encodings[0], tolerance=0.6)
+                        c_matches = face_recognition.compare_faces(known_cust_enc, face_encodings[0], tolerance=0.65)
                         if True in c_matches:
                             match_id = f"CUST:{known_cust_meta[c_matches.index(True)]['id']}"
+                            matched_cust_idx = c_matches.index(True)
+                            database.update_customer_encoding(known_cust_meta[matched_cust_idx]['id'], pickle.dumps(face_encodings[0]))
                 
                 # Update consensus and state under lock
                 with self.lock:
@@ -171,6 +172,7 @@ class VisionEngine:
                                     state["id"] = f"GUEST #{c_id}"
                                     state["db_id"] = f"C_{c_id}"
                                     state["name"] = meta["name"]
+                                    state["visits"] = meta.get("visits", 1)
                                     state["last_sync"] = current_time
                             elif winner != "Unknown":
                                 meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
@@ -190,7 +192,32 @@ class VisionEngine:
                         winner = max(counts, key=counts.get) if counts else "Unknown"
                     
                     if consensus_len >= 5 and winner == "Unknown":
-                        new_c_id = database.register_customer(pickle.dumps(face_encodings[0]))
+                        with self.lock:
+                            known_cust_enc = list(self.known_customer_encodings)
+                            known_cust_meta = list(self.known_customer_metadata)
+                        fallback_match = False
+                        if known_cust_enc:
+                            c_matches = face_recognition.compare_faces(known_cust_enc, face_encodings[0], tolerance=0.7)
+                            if True in c_matches:
+                                match_id = f"CUST:{known_cust_meta[c_matches.index(True)]['id']}"
+                                database.update_customer_encoding(known_cust_meta[c_matches.index(True)]['id'], pickle.dumps(face_encodings[0]))
+                                fallback_match = True
+                                with self.lock:
+                                    if track_id in self.recognition_consensus:
+                                        self.recognition_consensus[track_id].append(match_id)
+                                    if track_id in self.person_states:
+                                        state = self.person_states[track_id]
+                                        c_id = int(known_cust_meta[c_matches.index(True)]['id'])
+                                        state["db_id"] = f"C_{c_id}"
+                                        state["id"] = f"GUEST #{c_id}"
+                                        state["name"] = known_cust_meta[c_matches.index(True)]["name"]
+                                        state["visits"] = known_cust_meta[c_matches.index(True)].get("visits", 1)
+                                        state["last_sync"] = current_time
+                        if not fallback_match:
+                            new_c_id = database.register_customer(pickle.dumps(face_encodings[0]))
+                            with self.lock:
+                                if track_id in self.person_states:
+                                    self.person_states[track_id]["visits"] = 1
                         self.load_known_faces() # Reloads inside its own lock
                         with self.lock:
                             if track_id in self.person_states:
@@ -213,7 +240,7 @@ class VisionEngine:
                     with self.lock:
                         self.processing_tracks.discard(track_id)
 
-    def process_frame(self, frame):
+    def process_frame(self, frame, target_size=(640, 480)):
         try:
             global model, model_loading_active
             if model is None:
@@ -223,25 +250,67 @@ class VisionEngine:
                         global model, model_loading_active
                         try:
                             from ultralytics import YOLO
-                            model_path = os.path.join('models', 'yolov8n-pose.pt')
+                            base_dir = os.path.abspath(os.path.dirname(__file__))
+                            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose.pt')
+                            print(f"[AI] Attempting to load YOLO model from: {model_path}")
                             if os.path.exists(model_path):
                                 model = YOLO(model_path)
                                 print("[AI] Background Model Load Complete.")
+                            else:
+                                print(f"[AI ERROR] YOLO model file does not exist at {model_path}!")
                         except Exception as e:
                             print(f"[AI ERROR] Lazy load failed: {e}")
                         finally:
                             model_loading_active = False
                     import threading
                     threading.Thread(target=load, daemon=True).start()
-                return cv2.resize(frame, (640, 480))
+                return cv2.resize(frame, target_size)
                 
+            # Run YOLO on a lightweight 640x480 frame for CPU efficiency
             small_frame = cv2.resize(frame, (640, 480))
             results = model.track(small_frame, persist=True, verbose=False)
             current_time = time.time()
             
+            # Prepare output frame at target resolution
+            output_frame = cv2.resize(frame, target_size)
+            h_out, w_out = output_frame.shape[:2]
+            scale_x = target_size[0] / 640.0
+            scale_y = target_size[1] / 480.0
+            
             if results and results[0].boxes:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
-                track_ids = results[0].boxes.id.int().cpu().numpy() if results[0].boxes.id is not None else []
+                if results[0].boxes.id is not None:
+                    track_ids = results[0].boxes.id.int().cpu().numpy()
+                else:
+                    # Spatial proximity-based fallback tracker when results[0].boxes.id is None
+                    track_ids = []
+                    with self.lock:
+                        used_tids = set()
+                        for box in boxes:
+                            x1, y1, x2, y2 = map(int, box)
+                            center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+                            
+                            best_tid = None
+                            best_dist = 100  # Association distance threshold (pixels)
+                            
+                            for tid, pos in self.last_positions.items():
+                                if tid not in used_tids:
+                                    dist = np.sqrt((center[0] - pos[0])**2 + (center[1] - pos[1])**2)
+                                    if dist < best_dist:
+                                        best_dist = dist
+                                        best_tid = tid
+                                        
+                            if best_tid is not None:
+                                track_ids.append(best_tid)
+                                used_tids.add(best_tid)
+                            else:
+                                # Generate a new unique track ID
+                                new_tid = 1
+                                while new_tid in self.person_states or new_tid in self.last_positions or new_tid in used_tids:
+                                    new_tid += 1
+                                track_ids.append(new_tid)
+                                used_tids.add(new_tid)
+                    track_ids = np.array(track_ids, dtype=np.int32)
                 
                 # Check for tracks to stitch / merge
                 with self.lock:
@@ -312,6 +381,12 @@ class VisionEngine:
                     x1, y1, x2, y2 = map(int, box)
                     center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
                     
+                    # Scaled coordinates for drawing on the HD output frame
+                    x1_out = int(x1 * scale_x)
+                    y1_out = int(y1 * scale_y)
+                    x2_out = int(x2 * scale_x)
+                    y2_out = int(y2 * scale_y)
+                    
                     with self.lock:
                         if track_id not in self.person_states:
                             self.person_states[track_id] = {
@@ -377,11 +452,11 @@ class VisionEngine:
                             self.last_rec_attempt[track_id] = current_time
                             
                             # Optimize face crop: crop only upper 35% of the body box
-                            y1_face = max(0, y1)
-                            y2_face = min(480, y1 + int((y2 - y1) * 0.35))
-                            face_img = small_frame[y1_face:y2_face, max(0, x1):min(640, x2)]
+                            y1_face = max(0, y1_out)
+                            y2_face = min(h_out, y1_out + int((y2_out - y1_out) * 0.35))
+                            face_img = output_frame[y1_face:y2_face, max(0, x1_out):min(w_out, x2_out)]
                             
-                            if face_img.size > 0:
+                            if face_img.size > 0 and face_img.shape[0] >= 32 and face_img.shape[1] >= 32:
                                 with self.lock:
                                     self.processing_tracks.add(track_id)
                                 self.recognition_queue.put((track_id, face_img.copy(), current_zone, current_time))
@@ -484,20 +559,21 @@ class VisionEngine:
                         
                     if db_id:
                         if str(db_id).startswith("C_"):
-                            color = (0, 215, 255) # Gold/Yellow for Recognized Guest
-                            label = f"REGULAR {state_id}"
+                            color = (0, 215, 255)
+                            visits = state.get("visits", 1)
+                            label = f"REGULAR {state_id} ({visits}x)"
                         else:
                             color = (229, 70, 79) # Indigo for Staff
                             label = f"STAFF: {state_name} [{status}]"
                     else:
-                        color = (6, 119, 217) # Amber for Unknown
-                        label = f"CUSTOMER #{track_id}"
+                        color = (6, 119, 217)
+                        label = "NEW FACE"
                     
-                    # Draw Box
-                    cv2.rectangle(small_frame, (x1, y1), (x2, y2), color, 2)
+                    # Draw Box on the HD output frame
+                    cv2.rectangle(output_frame, (x1_out, y1_out), (x2_out, y2_out), color, 2)
                     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                    cv2.rectangle(small_frame, (x1, y1 - th - 10), (x1 + tw + 10, y1), color, -1)
-                    cv2.putText(small_frame, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                    cv2.rectangle(output_frame, (x1_out, y1_out - th - 10), (x1_out + tw + 10, y1_out), color, -1)
+                    cv2.putText(output_frame, label, (x1_out + 5, y1_out - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
             # Cleanup expired tracks under lock
             with self.lock:
@@ -521,10 +597,10 @@ class VisionEngine:
                 self.activity_buffer = {}
                 self.last_activity_sync = current_time
 
-            return small_frame
+            return output_frame
         except Exception as e:
             print(f"[VISION ERROR] {e}")
-            return cv2.resize(frame, (640, 480))
+            return cv2.resize(frame, target_size)
 
     def get_active_staff(self):
         active_dict = {}

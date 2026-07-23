@@ -23,6 +23,26 @@
         #init-splash { position: fixed; inset: 0; background: var(--primary); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; transition: 0.5s opacity; }
         .spinner { width: 50px; height: 50px; border: 5px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 1s infinite linear; margin-bottom: 20px; }
         @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .webrtc-pulse-dot { animation: webrtc-pulse 1.5s infinite ease-in-out; }
+        @keyframes webrtc-pulse {
+            0%, 100% { transform: scale(1); opacity: 0.5; }
+            50% { transform: scale(1.3); opacity: 1; }
+        }
+
+        /* Force WebRTC video and fallback image to fill the container exactly without cutting corners */
+        #webrtc-video, img#video-feed {
+            width: 100% !important;
+            height: 100% !important;
+            object-fit: fill !important;
+        }
+        
+        .camera-canvas:fullscreen #webrtc-video,
+        .camera-canvas:fullscreen img#video-feed {
+            width: 100% !important;
+            height: 100% !important;
+            object-fit: fill !important;
+        }
     </style>
 </head>
 <body>
@@ -65,7 +85,18 @@
                             <button class="btn-zone" onclick="toggleFullscreen()" style="background:rgba(255,255,255,0.25); color:white;"><i class="fas fa-expand" id="fullscreen-icon"></i></button>
                         </div>
                     </div>
-                    <div class="video-wrapper"><img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed"><canvas id="zone-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none;"></canvas>
+                    <div class="video-wrapper">
+                        <!-- WebRTC Video Feed (Hardware Accelerated & Stable) -->
+                        <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:cover; display:none;"></video>
+                        <!-- Fallback MJPEG Image Feed -->
+                        <img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed" style="width:100%; height:100%; object-fit:cover; display:block;">
+                        
+                        <!-- WebRTC Status Overlay -->
+                        <div id="webrtc-status-overlay" style="position:absolute; top:15px; left:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s;">
+                            <span class="webrtc-pulse-dot" id="webrtc-status-dot" style="width:8px; height:8px; background:#94a3b8; border-radius:50%; display:inline-block;"></span>
+                            <span id="webrtc-status-text">WebRTC Checking...</span>
+                        </div>
+                        <canvas id="zone-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none;"></canvas>
                         <div class="ptz-controls" id="ptz-controls">
                             <button class="ptz-btn ptz-up" data-dir="Up" onmousedown="ptzStart('Up')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-up"></i></button>
                             <button class="ptz-btn ptz-left" data-dir="Left" onmousedown="ptzStart('Left')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-left"></i></button>
@@ -293,21 +324,19 @@
                         <div style="margin-bottom:10px;">
                             <label style="font-size:0.75rem; font-weight:700; color:var(--text-muted); display:flex; justify-content:space-between;">
                                 <span>Video Quality</span>
-                                <span id="cam-quality-value">70%</span>
                             </label>
-                            <input type="range" id="cam-quality" min="10" max="100" value="70" style="width:100%; margin-top:5px;" oninput="document.getElementById('cam-quality-value').textContent=this.value+'%'">
+                            <select id="cam-quality" style="width:100%; margin-top:5px; padding:8px; border-radius:6px; border:1px solid #e2e8f0; background:white; font-size:0.8rem;">
+                                <option value="480p">Standard (480p)</option>
+                                <option value="720p">Enhanced (720p)</option>
+                                <option value="1080p">HD (1080p)</option>
+                            </select>
                         </div>
                         <div style="display:flex; gap:10px;">
                             <button onclick="testCameraConnection()" class="btn-primary" style="flex:1; background:var(--accent);"><i class="fas fa-plug"></i> Test</button>
                             <button onclick="saveCameraSettings()" class="btn-primary" style="flex:1;"><i class="fas fa-save"></i> Save & Reconnect</button>
                         </div>
                     </div>
-                    <div class="standard-card">
-                        <h3 style="margin-bottom:1.5rem;">Telegram Integration</h3>
-                        <div class="form-group" style="margin-bottom:10px;"><label>Bot Token</label><input type="text" id="tg-token" placeholder="123456:ABC-DEF..."></div>
-                        <div class="form-group" style="margin-bottom:15px;"><label>Chat ID</label><input type="text" id="tg-chatid" placeholder="987654321"></div>
-                        <button onclick="saveTelegramSettings()" class="btn-primary" style="width:100%; justify-content:center;">Enable Notifications</button>
-                    </div>
+
                 </div>
             </div>
         </main>
@@ -375,5 +404,133 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    
+    <!-- WebRTC WHEP Streaming Script -->
+    <script>
+        let webrtcPeerConnection = null;
+
+        async function initWebRTCStream() {
+            const video = document.getElementById('webrtc-video');
+            const fallbackImg = document.getElementById('video-feed');
+            const dot = document.getElementById('webrtc-status-dot');
+            const label = document.getElementById('webrtc-status-text');
+            const overlay = document.getElementById('webrtc-status-overlay');
+
+            if (!video || !fallbackImg || !dot || !label || !overlay) return;
+
+            function setStatus(text, color, pulse = true) {
+                label.innerText = text;
+                dot.style.background = color;
+                if (pulse) {
+                    dot.classList.add('webrtc-pulse-dot');
+                } else {
+                    dot.classList.remove('webrtc-pulse-dot');
+                }
+                overlay.style.opacity = '1';
+            }
+
+            try {
+                const statusRes = await fetch('/api/webrtc/status');
+                const statusData = await statusRes.json();
+
+                if (!statusData.complete) {
+                    if (statusData.status && statusData.status.includes('Error')) {
+                        setStatus('WebRTC Error: ' + (statusData.error || 'Setup failed'), '#ef4444', false);
+                    } else {
+                        setStatus(statusData.status || 'Downloading Media Server...', '#eab308');
+                        setTimeout(initWebRTCStream, 3000);
+                    }
+                    return;
+                }
+
+                setStatus('Connecting WebRTC...', '#3b82f6');
+
+                if (webrtcPeerConnection) {
+                    try { webrtcPeerConnection.close(); } catch(e) {}
+                }
+
+                const pc = new RTCPeerConnection({
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                });
+                webrtcPeerConnection = pc;
+
+                pc.addTransceiver('video', { direction: 'recvonly' });
+
+                pc.ontrack = (event) => {
+                    if (event.streams && event.streams[0]) {
+                        video.srcObject = event.streams[0];
+                        video.style.display = 'block';
+                        fallbackImg.style.display = 'none';
+                        setStatus('WebRTC Live', '#22c55e', false);
+                        
+                        // Force browser video tag to play
+                        video.play().catch(e => console.warn("[WebRTC] play() failed:", e));
+                        
+                        setTimeout(() => {
+                            if (label.innerText === 'WebRTC Live') {
+                                overlay.style.opacity = '0';
+                            }
+                        }, 3000);
+                    }
+                };
+
+                pc.oniceconnectionstatechange = () => {
+                    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+                        console.warn("[WebRTC] Connection lost. Falling back to MJPEG.");
+                        handleWebRTCFallback('WebRTC Disconnected (MJPEG Fallback)');
+                    }
+                };
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                await new Promise((resolve) => {
+                    if (pc.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        function checkState() {
+                            if (pc.iceGatheringState === 'complete') {
+                                pc.removeEventListener('icegatheringstatechange', checkState);
+                                resolve();
+                            }
+                        }
+                        pc.addEventListener('icegatheringstatechange', checkState);
+                    }
+                });
+
+                const whepUrl = `http://${window.location.hostname}:8889/mystream/whep`;
+                const response = await fetch(whepUrl, {
+                    method: 'POST',
+                    body: pc.localDescription.sdp,
+                    headers: { 'Content-Type': 'application/sdp' }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`WHEP endpoint returned status ${response.status}`);
+                }
+
+                const answerSdp = await response.text();
+                await pc.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: answerSdp
+                }));
+
+            } catch (err) {
+                console.error("[WebRTC Setup Error]", err);
+                handleWebRTCFallback('WebRTC Offline (MJPEG Fallback)');
+            }
+
+            function handleWebRTCFallback(msg) {
+                video.style.display = 'none';
+                fallbackImg.style.display = 'block';
+                setStatus(msg, '#ef4444', false);
+                setTimeout(initWebRTCStream, 2000);
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            setTimeout(initWebRTCStream, 1500);
+        });
+    </script>
 </body>
 </html>
