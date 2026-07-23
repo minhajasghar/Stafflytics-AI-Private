@@ -261,9 +261,8 @@ class CameraStream:
                         ret, f = cap.read()
                         if ret and f is not None:
                             print(f"[SYSTEM] Camera successfully synchronized at Index {idx}.")
-                            preset_cfg = QUALITY_PRESETS.get(camera_preset, QUALITY_PRESETS['480p'])
-                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, preset_cfg["size"][0])
-                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, preset_cfg["size"][1])
+                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                             cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
                             self.stream = cap
                             self.online = True
@@ -836,6 +835,7 @@ def export_attendance(format):
     summary = database.get_comprehensive_summary()
     
     if format == 'excel':
+        
         buf = export_engine.generate_attendance_excel(data)
         return send_file(buf, as_attachment=True, download_name=f"Stafflytics_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
     elif format == 'pdf':

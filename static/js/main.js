@@ -782,7 +782,6 @@ const CAPTURE_STEPS = [
     { heading: "Capture 5: Neutral Smile", instruction: "Look straight with a natural smile", key: "smile" }
 ];
 let currentCaptureStep = 0;
-let captureStream = null;
 
 function showEnrollModal() {
     enrollmentCaptures = [];
