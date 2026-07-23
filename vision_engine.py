@@ -40,10 +40,12 @@ class VisionEngine:
         except: pass
         
         # Default Fallback Zones (Must include 'Dining Area' for customer tracking)
+        # IMPORTANT: Main Hall must be LAST — it covers the full frame and would
+        # prevent smaller zones (Kitchen, Dining Area) from ever matching.
         self.zones = [
-            Zone("Main Hall", [[10, 10], [630, 10], [630, 470], [10, 470]]),
             Zone("Kitchen", [[50, 200], [250, 200], [250, 450], [50, 450]]),
-            Zone("Dining Area", [[260, 50], [600, 50], [600, 450], [260, 450]])
+            Zone("Dining Area", [[260, 50], [600, 50], [600, 450], [260, 450]]),
+            Zone("Main Hall", [[10, 10], [630, 10], [630, 470], [10, 470]])
         ]
 
     def __init__(self):
@@ -125,9 +127,28 @@ class VisionEngine:
                     with self.lock:
                         self.processing_tracks.discard(track_id)
                     continue
-                
                 import face_recognition
+                
+                # Ensure the face crop is a valid 8-bit uint8 array
+                if not isinstance(face_crop, np.ndarray):
+                    raise ValueError("face_crop must be a numpy array")
+                if face_crop.dtype != np.uint8:
+                    face_crop = face_crop.astype(np.uint8)
+                    
+                # Standardize channel layout (must be 3-channel BGR)
+                if len(face_crop.shape) == 2:
+                    face_crop = cv2.cvtColor(face_crop, cv2.COLOR_GRAY2BGR)
+                elif len(face_crop.shape) == 3 and face_crop.shape[2] == 4:
+                    face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGRA2BGR)
+                elif len(face_crop.shape) == 3 and face_crop.shape[2] == 3:
+                    pass
+                else:
+                    raise ValueError(f"Unexpected image shape for face recognition: {face_crop.shape}")
+                    
+                # Convert to RGB and enforce contiguous memory layout
                 rgb_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+                rgb_face = np.ascontiguousarray(rgb_face, dtype=np.uint8)
+                
                 face_encodings = face_recognition.face_encodings(rgb_face)
                 
                 match_id = "Unknown"
@@ -215,17 +236,18 @@ class VisionEngine:
                                         state["last_sync"] = current_time
                         if not fallback_match:
                             new_c_id = database.register_customer(pickle.dumps(face_encodings[0]))
+                            self.load_known_faces()
                             with self.lock:
                                 if track_id in self.person_states:
-                                    self.person_states[track_id]["visits"] = 1
-                        self.load_known_faces() # Reloads inside its own lock
-                        with self.lock:
-                            if track_id in self.person_states:
-                                state = self.person_states[track_id]
-                                state["db_id"] = f"C_{new_c_id}"
-                                state["id"] = f"GUEST #{new_c_id}"
-                                state["name"] = "New Guest"
-                                state["last_sync"] = current_time
+                                    state = self.person_states[track_id]
+                                    state["db_id"] = f"C_{new_c_id}"
+                                    state["id"] = f"GUEST #{new_c_id}"
+                                    state["name"] = "New Guest"
+                                    state["last_sync"] = current_time
+                                    state["visits"] = 1
+                        else:
+                            # Returning customer — state already updated in fallback block above
+                            self.load_known_faces()
                                 
                 self.recognition_queue.task_done()
                 with self.lock:
@@ -264,12 +286,13 @@ class VisionEngine:
                             model_loading_active = False
                     import threading
                     threading.Thread(target=load, daemon=True).start()
-                return cv2.resize(frame, target_size)
+                return cv2.resize(frame, target_size), []
                 
             # Run YOLO on a lightweight 640x480 frame for CPU efficiency
             small_frame = cv2.resize(frame, (640, 480))
             results = model.track(small_frame, persist=True, verbose=False)
             current_time = time.time()
+            detections = []
             
             # Prepare output frame at target resolution
             output_frame = cv2.resize(frame, target_size)
@@ -536,17 +559,14 @@ class VisionEngine:
                             # Clear alerts for zones this track is no longer in
                             self.alerted_tracks = {(tid, zname) for tid, zname in self.alerted_tracks if tid != track_id}
 
-                    # CUSTOMER INTELLIGENCE (Unknown or Guest in Dining Area)
+                    # CUSTOMER INTELLIGENCE (Track every non-staff person as a customer)
                     is_staff = db_id and not str(db_id).startswith("C_")
-                    if not is_staff and current_zone == "Dining Area":
+                    if not is_staff:
                         if track_id not in self.customer_timers:
                             c_id = int(str(db_id).split("_")[1]) if db_id and str(db_id).startswith("C_") else None
-                            self.customer_timers[track_id] = {"start": current_time, "zone": "Dining Area", "c_id": c_id}
+                            self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": c_id}
                     elif track_id in self.customer_timers:
-                        # If they move out of Dining Area or leave, finalize their customer session
-                        duration = current_time - self.customer_timers[track_id]["start"]
-                        if duration > 15: # Minimum 15 seconds
-                            database.record_customer_session("Auto-Table", duration, self.customer_timers[track_id]["c_id"])
+                        # Person identified as staff — remove any stale customer timer
                         del self.customer_timers[track_id]
 
                     # Visuals (Bounding Boxes for EVERYONE)
@@ -559,21 +579,22 @@ class VisionEngine:
                         
                     if db_id:
                         if str(db_id).startswith("C_"):
-                            color = (0, 215, 255)
+                            color_hex = "#ffd700" # Golden yellow
                             visits = state.get("visits", 1)
                             label = f"REGULAR {state_id} ({visits}x)"
                         else:
-                            color = (229, 70, 79) # Indigo for Staff
+                            color_hex = "#4f46e5" # Indigo for Staff
                             label = f"STAFF: {state_name} [{status}]"
                     else:
-                        color = (6, 119, 217)
+                        color_hex = "#d97706" # Accent orange
                         label = "NEW FACE"
                     
-                    # Draw Box on the HD output frame
-                    cv2.rectangle(output_frame, (x1_out, y1_out), (x2_out, y2_out), color, 2)
-                    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                    cv2.rectangle(output_frame, (x1_out, y1_out - th - 10), (x1_out + tw + 10, y1_out), color, -1)
-                    cv2.putText(output_frame, label, (x1_out + 5, y1_out - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                    # Compile detection metadata for canvas rendering
+                    detections.append({
+                        "box": [float(x1), float(y1), float(x2), float(y2)],
+                        "label": label,
+                        "color": color_hex
+                    })
 
             # Cleanup expired tracks under lock
             with self.lock:
@@ -581,7 +602,7 @@ class VisionEngine:
                 for tid in expired:
                     if tid in self.customer_timers:
                         duration = current_time - self.customer_timers[tid]["start"]
-                        if duration > 20: 
+                        if duration > 15:
                             database.record_customer_session("Auto-Table", duration, self.customer_timers[tid]["c_id"])
                         del self.customer_timers[tid]
                     del self.person_states[tid]
@@ -597,10 +618,10 @@ class VisionEngine:
                 self.activity_buffer = {}
                 self.last_activity_sync = current_time
 
-            return output_frame
+            return output_frame, detections
         except Exception as e:
             print(f"[VISION ERROR] {e}")
-            return cv2.resize(frame, target_size)
+            return cv2.resize(frame, target_size), []
 
     def get_active_staff(self):
         active_dict = {}

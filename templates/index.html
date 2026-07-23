@@ -96,6 +96,8 @@
                             <span class="webrtc-pulse-dot" id="webrtc-status-dot" style="width:8px; height:8px; background:#94a3b8; border-radius:50%; display:inline-block;"></span>
                             <span id="webrtc-status-text">WebRTC Checking...</span>
                         </div>
+                        <!-- AI Detection Canvas Overlay (Z-index high but click-through) -->
+                        <canvas id="detection-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:5;"></canvas>
                         <canvas id="zone-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none;"></canvas>
                         <div class="ptz-controls" id="ptz-controls">
                             <button class="ptz-btn ptz-up" data-dir="Up" onmousedown="ptzStart('Up')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-up"></i></button>
@@ -405,9 +407,95 @@
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
     
-    <!-- WebRTC WHEP Streaming Script -->
     <script>
         let webrtcPeerConnection = null;
+        let detectionSocket = null;
+
+        function initDetectionWebSocket() {
+            if (detectionSocket && (detectionSocket.readyState === WebSocket.OPEN || detectionSocket.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/api/detection`;
+            console.log("[WebSocket] Connecting to AI metadata stream:", wsUrl);
+            
+            detectionSocket = new WebSocket(wsUrl);
+            
+            detectionSocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    drawDetections(data.detections);
+                } catch (e) {
+                    console.error("[WebSocket] Error parsing detection metadata:", e);
+                }
+            };
+            
+            detectionSocket.onclose = () => {
+                console.warn("[WebSocket] Connection lost. Reconnecting in 2 seconds...");
+                setTimeout(initDetectionWebSocket, 2000);
+            };
+            
+            detectionSocket.onerror = (err) => {
+                console.error("[WebSocket] Connection error:", err);
+            };
+        }
+
+        function resizeCanvas() {
+            const canvas = document.getElementById('detection-canvas');
+            if (!canvas) return;
+            const container = canvas.parentElement;
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+
+        function drawDetections(detections) {
+            const canvas = document.getElementById('detection-canvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (!detections || detections.length === 0) return;
+
+            // Coordinates from backend YOLOv8-pose are scaled to 640x480
+            const scaleX = canvas.width / 640.0;
+            const scaleY = canvas.height / 480.0;
+
+            detections.forEach(det => {
+                const x1 = det.box[0] * scaleX;
+                const y1 = det.box[1] * scaleY;
+                const x2 = det.box[2] * scaleX;
+                const y2 = det.box[3] * scaleY;
+                const w = x2 - x1;
+                const h = y2 - y1;
+
+                // Draw outer bounding box
+                ctx.strokeStyle = det.color;
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x1, y1, w, h);
+
+                // Draw label background flag
+                ctx.fillStyle = det.color;
+                ctx.font = '600 11px Outfit, sans-serif';
+                const labelText = det.label;
+                const textWidth = ctx.measureText(labelText).width;
+                
+                // Adjust label position so it stays inside canvas boundaries
+                const labelHeight = 18;
+                let labelY = y1 - labelHeight;
+                if (labelY < 0) {
+                    labelY = y1 + 2;
+                }
+                
+                ctx.fillRect(x1 - 1, labelY, textWidth + 10, labelHeight);
+
+                // Draw label text
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText(labelText, x1 + 4, labelY + 13);
+            });
+        }
 
         async function initWebRTCStream() {
             const video = document.getElementById('webrtc-video');
@@ -449,9 +537,15 @@
                     try { webrtcPeerConnection.close(); } catch(e) {}
                 }
 
-                const pc = new RTCPeerConnection({
-                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-                });
+                // If connecting locally, omit stun servers to prevent NAT hairpinning loops
+                let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+                const host = window.location.hostname;
+                const isLocal = host === 'localhost' || host === '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.');
+                if (isLocal) {
+                    iceServers = [];
+                }
+
+                const pc = new RTCPeerConnection({ iceServers });
                 webrtcPeerConnection = pc;
 
                 pc.addTransceiver('video', { direction: 'recvonly' });
@@ -498,6 +592,7 @@
                     }
                 });
 
+                // Connect to the H.264 transcoded /mystream/whep stream served by MediaMTX
                 const whepUrl = `http://${window.location.hostname}:8889/mystream/whep`;
                 const response = await fetch(whepUrl, {
                     method: 'POST',
@@ -524,12 +619,34 @@
                 video.style.display = 'none';
                 fallbackImg.style.display = 'block';
                 setStatus(msg, '#ef4444', false);
-                setTimeout(initWebRTCStream, 2000);
+                
+                if (webrtcPeerConnection) {
+                    try { webrtcPeerConnection.close(); } catch(e) {}
+                    webrtcPeerConnection = null;
+                }
+                
+                if (window.webrtcRetryTimer) {
+                    clearTimeout(window.webrtcRetryTimer);
+                }
+                window.webrtcRetryTimer = setTimeout(initWebRTCStream, 5000);
             }
         }
 
         window.addEventListener('DOMContentLoaded', () => {
-            setTimeout(initWebRTCStream, 1500);
+            setTimeout(() => {
+                initWebRTCStream();
+                resizeCanvas();
+                initDetectionWebSocket();
+                
+                // Hook ResizeObserver to automatically adjust canvas overlay bounds on layout changes
+                const canvas = document.getElementById('detection-canvas');
+                if (canvas) {
+                    const resizeObserver = new ResizeObserver(() => {
+                        resizeCanvas();
+                    });
+                    resizeObserver.observe(canvas.parentElement);
+                }
+            }, 1500);
         });
     </script>
 </body>

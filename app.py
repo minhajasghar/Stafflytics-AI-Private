@@ -1,4 +1,6 @@
 from flask import Flask, render_template, Response, jsonify, request, session, redirect, url_for
+from flask_sock import Sock
+import json
 import cv2
 import database
 # Heavy imports moved to background thread
@@ -27,6 +29,38 @@ from flask import send_file
 app = Flask(__name__)
 app.secret_key = 'signature_secret_key_stafflytics_2026'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
+sock = Sock(app)
+
+websocket_clients = set()
+websocket_lock = threading.Lock()
+
+def broadcast_detections(detections):
+    payload = json.dumps({"detections": detections})
+    with websocket_lock:
+        inactive = set()
+        for client in websocket_clients:
+            try:
+                client.send(payload)
+            except Exception:
+                inactive.add(client)
+        for client in inactive:
+            websocket_clients.discard(client)
+
+@sock.route('/api/detection')
+def detection_ws(ws):
+    with websocket_lock:
+        websocket_clients.add(ws)
+    try:
+        while True:
+            msg = ws.receive()
+            if msg is None:
+                break
+    except Exception:
+        pass
+    finally:
+        with websocket_lock:
+            websocket_clients.discard(ws)
+
 
 # Initialize database & Mailer
 engine = None        # Initialized asynchronously
@@ -87,9 +121,10 @@ rtsp_writer = None
 import atexit
 
 def get_rtsp_writer():
-    global rtsp_writer, camera_width, camera_height
-    w = camera_width or 640
-    h = camera_height or 480
+    global rtsp_writer
+    # Force 640x480 stream resolution for live display in dashboard
+    # This prevents WebRTC packet drops and high CPU contention on the host machine.
+    w, h = 640, 480
     if rtsp_writer is None or rtsp_writer.width != w or rtsp_writer.height != h:
         if rtsp_writer is not None:
             try: rtsp_writer.stop()
@@ -323,17 +358,13 @@ def vision_engine_loop():
             last_processed_frame_id = frame_id
             
             # Process frame for analytics (YOLOv8 + Face recognition + metrics)
-            annotated = engine.process_frame(frame, target_size=(camera_width or 640, camera_height or 480))
+            raw_frame, detections = engine.process_frame(frame, target_size=(camera_width or 640, camera_height or 480))
             
             with processed_frame_lock:
-                latest_processed_frame = annotated.copy() if annotated is not None else None
+                latest_processed_frame = raw_frame.copy() if raw_frame is not None else None
             
-            if annotated is not None:
-                try:
-                    writer = get_rtsp_writer()
-                    writer.write_frame(annotated)
-                except Exception as e:
-                    print(f"[SYSTEM ERROR] Failed to write frame to WebRTC/RTSP stream: {e}")
+            # Broadcast detection coordinates to all websocket clients
+            broadcast_detections(detections)
             # Throttle to max ~10 FPS to conserve CPU resources while retaining real-time analytics
             time.sleep(0.1)
         except Exception as e:
@@ -586,11 +617,13 @@ def get_status():
     try:
         summ = database.get_dashboard_summary()
         cst = database.get_monthly_customer_stats()
+        today_cst = database.get_today_customer_stats()
         roster = database.get_todays_shift_roster()
     except Exception as e:
         print(f"[DB STATUS ERROR] {e}")
         summ = {"payroll_monthly": 0, "late_today": 0, "incidents_today": 0, "avg_efficiency": 0.0}
         cst = {"avg_visit": 0, "monthly_total": 0}
+        today_cst = {"today_count": 0, "today_minutes": 0}
         roster = []
 
     # If AI is still loading or failed, return partial data
@@ -602,7 +635,9 @@ def get_status():
             "avg_efficiency": summ.get("avg_efficiency", 0), "late_today": summ.get("late_today", 0),
             "incidents_today": summ.get("incidents_today", 0), "customer_avg": cst.get("avg_visit", 0),
             "repeat_customers": cst.get("repeat_customers", 0),
-            "roster": roster, "active_list": [], "monthly_customers": cst.get("monthly_total", 0)
+            "roster": roster, "active_list": [], "monthly_customers": cst.get("monthly_total", 0),
+            "today_customers": today_cst.get("today_count", 0),
+            "today_customer_minutes": today_cst.get("today_minutes", 0)
         })
 
     stf = engine.get_active_staff() if engine else []
@@ -632,7 +667,9 @@ def get_status():
         "roster": database.get_todays_shift_roster(),
         "active_list": stf,
         "alert_details": {"name": alert_name, "zone": alert_zone} if new_alert else None,
-        "monthly_customers": cst.get("monthly_total", 0)
+        "monthly_customers": cst.get("monthly_total", 0),
+        "today_customers": today_cst.get("today_count", 0),
+        "today_customer_minutes": today_cst.get("today_minutes", 0)
     })
 
 @app.route('/api/camera/refresh')
@@ -721,8 +758,15 @@ def _ptz_send(direction, action):
             ptz.ContinuousMove({
                 'ProfileToken': profile.token,
                 'Velocity': {
-                    'PanTilt': {'x': float(x), 'y': float(y)},
-                    'Zoom':    {'x': float(z)}
+                    'PanTilt': {
+                        'x': float(x), 
+                        'y': float(y),
+                        'space': 'http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace'
+                    },
+                    'Zoom': {
+                        'x': float(z),
+                        'space': 'http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace'
+                    }
                 }
             })
             print(f"[PTZ-ONVIF] Moved {direction}")

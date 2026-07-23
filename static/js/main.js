@@ -443,7 +443,11 @@ async function fetchStatus() {
         if (document.getElementById('incidents-today')) document.getElementById('incidents-today').innerText = data.incidents_today;
         if (document.getElementById('monthly-customers')) document.getElementById('monthly-customers').innerText = data.monthly_customers;
         if (document.getElementById('repeat-customers')) document.getElementById('repeat-customers').innerText = data.repeat_customers;
-        if (data.customer_avg !== undefined && data.customer_avg !== null && document.getElementById('customer-time')) document.getElementById('customer-time').innerText = `${data.customer_avg} min`;
+        if (data.today_customers !== undefined && document.getElementById('customer-time')) {
+            const mins = data.today_customer_minutes || 0;
+            const count = data.today_customers || 0;
+            document.getElementById('customer-time').innerText = `${count} today · ${mins} min`;
+        }
         
         // Update Roster
         if (data.roster) renderShiftRoster(data.roster);

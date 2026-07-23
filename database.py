@@ -819,6 +819,19 @@ def get_customer_stats():
         conn.close()
         return {"avg_stay": round(r[0] or 0, 1), "total_customers": r[1] or 0, "repeat_customers": repeat_count}
 
+def get_today_customer_stats():
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*), COALESCE(SUM(duration_minutes), 0)
+            FROM customers
+            WHERE date(entry_time, 'localtime') = date('now', 'localtime')
+        """)
+        r = cursor.fetchone()
+        conn.close()
+        return {"today_count": r[0] or 0, "today_minutes": round(r[1] or 0, 1)}
+
 def record_customer_session(table_id, duration, customer_id=None):
     with db_lock:
         conn = get_db_connection()
