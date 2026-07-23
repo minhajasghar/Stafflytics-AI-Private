@@ -408,7 +408,9 @@ def init_db():
             ('owner_email', 'admin@stafflytics.ai'),
             ('sender_email', ''),
             ('sender_password', ''),
-            ('rtsp_url', '')
+            ('rtsp_url', ''),
+            ('late_grace_minutes', '10'),
+            ('wellness_threshold', '4')
         ]
         for key, val in defaults:
             cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
@@ -591,9 +593,14 @@ def record_attendance(staff_id):
                 res = cursor.fetchone()
                 shift_start = res[0] if res else "10:00"
                 
-                # Compare time safely
-                cursor.execute("SELECT time('now', 'localtime') > time(?)", (shift_start,))
-                is_late = cursor.fetchone()[0] # No holiday exemption anymore
+                # Apply configurable grace period (default 10 minutes)
+                cursor.execute("SELECT value FROM system_settings WHERE key = 'late_grace_minutes'")
+                grace_row = cursor.fetchone()
+                grace_minutes = int(grace_row[0]) if grace_row and grace_row[0] else 10
+                
+                # Compare with grace: time('now') > time(shift_start + grace_minutes)
+                cursor.execute("SELECT time('now', 'localtime') > time(?, '+' || ? || ' minutes')", (shift_start, grace_minutes))
+                is_late = cursor.fetchone()[0]
 
                 # Entry and Exit both initialized to now
                 cursor.execute("INSERT INTO attendance (staff_id, entry_time, exit_time, is_late) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)", (staff_id, is_late))
@@ -717,7 +724,7 @@ def get_synergy_metrics():
             "metrics": [
                 {"label": "Revenue per Hour", "value": f"Rs. {rev_per_hour:,.0f}"},
                 {"label": "Team Efficiency", "value": f"{avg_efficiency:.0f}%"},
-                {"label": "Customers Served", "value": str(customers_today)},
+                {"label": "Customers Today", "value": str(customers_today)},
                 {"label": "Late Arrivals", "value": str(late_count)}
             ]
         }
@@ -768,13 +775,20 @@ def get_performance_rankings():
             FROM staff s
             JOIN attendance a ON s.id = a.staff_id
             WHERE strftime('%m', a.entry_time, 'localtime') = strftime('%m', 'now', 'localtime')
-            GROUP BY s.id
+            GROUP BY s.id, s.name, s.role
             HAVING total_sec > 0
-            ORDER BY (CAST(active_sec AS REAL) / total_sec) DESC
         """)
         rows = cursor.fetchall()
         conn.close()
-        return [{"name":r[0], "role":r[1], "score": round(((r[3] or 0)/(r[2] or 1)*100), 1) if (r[2] or 0)>0 else 0} for r in rows]
+        
+        results = []
+        for r in rows:
+            total_sec = float(r[2] or 1)
+            active_sec = float(r[3] or 0)
+            score = round((active_sec / total_sec * 100.0), 1) if total_sec > 0 else 0
+            results.append({"name": r[0], "role": r[1], "score": score})
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results
 
 def get_monthly_attendance(month=None, year=None):
     if not month: month = "strftime('%m', 'now', 'localtime')"
@@ -948,7 +962,17 @@ def record_customer_session(table_id, duration, customer_id=None):
                        (table_id, round(duration / 60.0, 2), customer_id))
         
         if customer_id:
-            cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP, visit_count = visit_count + 1 WHERE id = ?", (customer_id,))
+            # Deduplication: only increment visit_count if last visit was on a different day
+            cursor.execute("SELECT date(last_seen, 'localtime') FROM customer_profiles WHERE id = ?", (customer_id,))
+            row = cursor.fetchone()
+            if row:
+                last_visit_date = row[0]
+                cursor.execute("SELECT date('now', 'localtime')")
+                today_str = cursor.fetchone()[0]
+                if last_visit_date != today_str:
+                    cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP, visit_count = visit_count + 1 WHERE id = ?", (customer_id,))
+                else:
+                    cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", (customer_id,))
             
         conn.commit()
         conn.close()
@@ -1002,29 +1026,35 @@ def record_sale(staff_id, amount):
         conn.close()
 
 def get_service_engagement_analytics():
-    """Calculates how much time staff spend in 'Dining Area' with customers"""
+    """Calculates service engagement: percentage of staff activity in 'Dining Area' vs total tracked zones.
+    Higher percentage = more time serving customers (for waitstaff/servers, this is the primary work zone)."""
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT s.name, s.role,
-                   COUNT(DISTINCT l.id) as interactions,
-                   SUM(CASE WHEN l.zone = 'Dining Area' THEN 1 ELSE 0 END) * 10 as engagement_seconds
+                   SUM(CASE WHEN l.zone = 'Dining Area' THEN 1 ELSE 0 END) as dining_events,
+                   COUNT(l.id) as total_events,
+                   ROUND(100.0 * SUM(CASE WHEN l.zone = 'Dining Area' THEN 1 ELSE 0 END) / NULLIF(COUNT(l.id), 0), 1) as engagement_pct
             FROM staff s
             JOIN activity_logs l ON s.id = l.staff_id
             WHERE l.timestamp >= date('now', '-7 days')
             GROUP BY s.id
-            ORDER BY engagement_seconds DESC
+            ORDER BY engagement_pct DESC
         """)
         rows = cursor.fetchall()
         conn.close()
-        return [{"name":r[0], "role":r[1], "interactions":r[2], "engagement_time":round(r[3]/60, 1)} for r in rows]
+        return [{"name":r[0], "role":r[1], "dining_events":r[2], "total_events":r[3], "engagement_pct":r[4]} for r in rows]
 
 def get_wellbeing_data():
-    """Checks for long consecutive work hours without breaks"""
+    """Checks for long consecutive work hours without breaks. Uses configurable threshold."""
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
+        # Get configurable threshold from system settings
+        cursor.execute("SELECT value FROM system_settings WHERE key = 'wellness_threshold'")
+        thr_row = cursor.fetchone()
+        break_threshold = int(thr_row[0]) if thr_row and thr_row[0] else 4
         cursor.execute("""
             SELECT s.name, s.role, 
                    (strftime('%s', 'now', 'localtime') - strftime('%s', a.entry_time, 'localtime')) / 3600.0 as hours_on_shift
@@ -1035,7 +1065,7 @@ def get_wellbeing_data():
         """)
         rows = cursor.fetchall()
         conn.close()
-        return [{"name":r[0], "role":r[1], "hours":round(r[2], 1), "needs_break": r[2] > 4} for r in rows]
+        return [{"name":r[0], "role":r[1], "hours":round(r[2], 1), "needs_break": r[2] > break_threshold} for r in rows]
 
 def save_zone_config(name, points_json, roles):
     with db_lock:

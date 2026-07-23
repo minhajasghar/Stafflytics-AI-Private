@@ -3,6 +3,23 @@ let isEditingZones = false;
 const canvas = document.getElementById('zone-canvas');
 const ctx = canvas ? canvas.getContext('2d') : null;
 
+function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('stafflytics-theme', theme);
+    const btn = document.getElementById('theme-toggle');
+    if (btn) btn.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+}
+
+function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme');
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+function loadSavedTheme() {
+    const saved = localStorage.getItem('stafflytics-theme');
+    if (saved) applyTheme(saved);
+}
+
 function renderEmptyState(containerId, message, icon = 'fa-chart-bar') {
     const container = document.getElementById(containerId);
     if (!container) return;
@@ -96,12 +113,12 @@ async function loadEngagementAnalytics() {
                 <div style="display:flex; align-items:center; gap:12px;">
                     <div>
                         <div style="font-weight:800; font-size:0.9rem;">${item.name}</div>
-                        <div style="font-size:0.6rem; color:var(--text-muted); font-weight:700;">${item.interactions} ACTIVE INTERACTIONS</div>
+                        <div style="font-size:0.6rem; color:var(--text-muted); font-weight:700;">${item.dining_events} DINING EVENTS / ${item.total_events} TOTAL</div>
                     </div>
                 </div>
                 <div style="text-align:right;">
-                    <div style="font-weight:800; color:var(--accent); font-size:1.1rem;">${item.engagement_time}h</div>
-                    <div style="font-size:0.6rem; font-weight:800; opacity:0.6;">SERVICE</div>
+                    <div style="font-weight:800; color:var(--accent); font-size:1.1rem;">${item.engagement_pct}%</div>
+                    <div style="font-size:0.6rem; font-weight:800; opacity:0.6;">SERVICE ENGAGEMENT</div>
                 </div>
             </div>
         `).join('');
@@ -301,6 +318,7 @@ async function loadEmailSettings() {
         if (document.getElementById('sender-email')) document.getElementById('sender-email').value = data.sender_email || '';
         if (document.getElementById('sender-password')) document.getElementById('sender-password').value = data.sender_password || '';
         if (document.getElementById('wellness-threshold')) document.getElementById('wellness-threshold').value = data.wellness_threshold || '4';
+        if (document.getElementById('late-grace-minutes')) document.getElementById('late-grace-minutes').value = data.late_grace_minutes || '10';
     } catch (e) { console.error("Error loading email settings", e); }
 }
 
@@ -466,15 +484,16 @@ async function deleteEvent(date) {
 }
 
 async function editStaff(id, name, role, shift_time, shift, rate, salType) {
+    const newShiftTime = prompt("Enter Shift Start Time (HH:MM, e.g. 09:00):", shift_time);
     const newRate = prompt("Enter new Rate/Salary (Rs.):", rate);
     const newShift = prompt("Enter Shift Type (Morning/Evening):", shift);
     const newType = prompt("Enter Salary Type (Monthly/Hourly):", salType);
-    if (!newRate || !newShift || !newType) return;
+    if (!newShiftTime || !newRate || !newShift || !newType) return;
     
     await fetch(`/api/staff/update/${id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, role, shift_time, shift: newShift, rate: parseInt(newRate), salary_type: newType })
+        body: JSON.stringify({ name, role, shift_time: newShiftTime, shift: newShift, rate: parseInt(newRate), salary_type: newType })
     });
     loadStaffDirectory();
 }
@@ -765,13 +784,14 @@ async function loadShiftOptimization() {
 }
 
 async function saveWellnessSettings() {
-    const val = document.getElementById('wellness-threshold').value;
+    const wellness = document.getElementById('wellness-threshold').value;
+    const grace = document.getElementById('late-grace-minutes').value;
     await fetch('/api/settings/emails', { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ wellness_threshold: val }) 
+        body: JSON.stringify({ wellness_threshold: wellness, late_grace_minutes: grace }) 
     });
-    alert("✅ Wellness policy updated!");
+    alert("✅ Staff policies updated!");
 }
 
 // --- FACE ENROLLMENT WIZARD ---
@@ -826,28 +846,36 @@ let captureAnimFrame = null;
 function startCaptureStream() {
     const canvas = document.getElementById('capture-canvas');
     const img = document.getElementById('video-feed');
+    const webrtcVideo = document.getElementById('webrtc-video');
     if (!canvas || !img) return;
     const ctx = canvas.getContext('2d');
     if (captureAnimFrame) cancelAnimationFrame(captureAnimFrame);
 
-    // Match canvas internal resolution to the live feed's natural dimensions
-    function syncCanvasSize() {
-        if (img.complete && img.naturalWidth > 0) {
-            const bw = 640, bh = 480;
-            canvas.width = img.naturalWidth || bw;
-            canvas.height = img.naturalHeight || bh;
+    function getActiveSource() {
+        if (webrtcVideo && webrtcVideo.style.display !== 'none' && webrtcVideo.readyState >= 2) {
+            return webrtcVideo;
         }
+        return img;
+    }
+
+    function syncCanvasSize() {
+        const src = getActiveSource();
+        const w = src.videoWidth || src.naturalWidth || 640;
+        const h = src.videoHeight || src.naturalHeight || 480;
+        canvas.width = w;
+        canvas.height = h;
     }
 
     function frameLoop() {
-        if (img.complete && img.naturalWidth > 0) {
-            if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
-                canvas.width = img.naturalWidth;
-                canvas.height = img.naturalHeight;
-            }
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const src = getActiveSource();
+        const w = src.videoWidth || src.naturalWidth || 640;
+        const h = src.videoHeight || src.naturalHeight || 480;
+        if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
         }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
         captureAnimFrame = requestAnimationFrame(frameLoop);
     }
     syncCanvasSize();
@@ -894,21 +922,28 @@ function captureFace() {
     if (currentCaptureStep >= CAPTURE_STEPS.length) return;
 
     const img = document.getElementById('video-feed');
-    if (!img || !img.complete || img.naturalWidth === 0) {
+    const webrtcVideo = document.getElementById('webrtc-video');
+    
+    let src = img;
+    let isWebRTC = webrtcVideo && webrtcVideo.style.display !== 'none' && webrtcVideo.readyState >= 2;
+    if (isWebRTC) {
+        src = webrtcVideo;
+    }
+
+    const w = isWebRTC ? src.videoWidth : src.naturalWidth;
+    const h = isWebRTC ? src.videoHeight : src.naturalHeight;
+    if (!src || w === 0 || h === 0) {
         alert('Camera feed not ready. Please wait...');
         return;
     }
 
     const canvas = document.createElement('canvas');
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-    // Cap maximum capture resolution to avoid oversized payloads
     const MAX_CAPTURE_DIM = 1920;
     const scale = Math.min(1, MAX_CAPTURE_DIM / Math.max(w, h));
     canvas.width = Math.round(w * scale);
     canvas.height = Math.round(h * scale);
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
 
     // Brief flash feedback

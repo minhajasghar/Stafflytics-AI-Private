@@ -68,7 +68,7 @@ camera_stream = None # Initialized asynchronously
 
 # RTSP Camera Configuration
 PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
-RTSP_URL = "rtsp://127.0.0.1:8554/cam"
+RTSP_URL = "rtsp://127.0.0.1:8554/mystream"
 
 def sync_camera_config():
     global RTSP_URL, PHYSICAL_RTSP_URL
@@ -78,7 +78,7 @@ def sync_camera_config():
         PHYSICAL_RTSP_URL = saved.strip()
         print(f"[SYSTEM] PHYSICAL_RTSP_URL updated to: '{PHYSICAL_RTSP_URL}'")
     # Route through local MediaMTX proxy to multiplex camera connections and save CPU/bandwidth
-    RTSP_URL = "rtsp://127.0.0.1:8554/cam"
+    RTSP_URL = "rtsp://127.0.0.1:8554/mystream"
     print(f"[SYSTEM] sync_camera_config: Redirected RTSP_URL to local proxy: '{RTSP_URL}'")
 QUALITY_PRESETS = {
     "480p": {"size": (640, 480), "jpeg": 80, "label": "Standard (480p)"},

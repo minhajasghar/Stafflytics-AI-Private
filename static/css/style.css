@@ -1,23 +1,48 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
 
 :root {
-    --primary: #1e1b4b; /* Deep Indigo */
+    --primary: #1e1b4b;
     --primary-light: #312e81;
-    --accent: #d97706; /* Amber/Gold */
+    --accent: #d97706;
     --bg: #f8fafc;
     --surface: #ffffff;
     --text: #0f172a;
     --text-muted: #64748b;
+    --border: var(--border);
     --red: #ef4444;
     --green: #10b981;
     --shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-    --alert: #ef4444; /* Added for security and error states */
+    --alert: #ef4444;
     --morning: #fdf2f8; 
     --evening: #f0fdf4; 
     --section-gap: 2rem;
     --card-padding: 1.5rem;
     --radius: 24px;
+    --nav-hover: #f1f5f9;
+    --card-bg: #ffffff;
+    --input-bg: #ffffff;
+    --overlay-bg: rgba(0,0,0,0.5);
+}
+
+[data-theme="dark"] {
+    --primary: #818cf8;
+    --primary-light: #6366f1;
+    --accent: #fbbf24;
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --text: #f1f5f9;
+    --text-muted: #94a3b8;
+    --border: #334155;
+    --shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.4);
+    --alert: #f87171;
+    --morning: #1e1b4b;
+    --evening: #0f3a1e;
+    --nav-hover: #1e293b;
+    --card-bg: #1e293b;
+    --input-bg: #0f172a;
+    --overlay-bg: rgba(0,0,0,0.7);
 }
 
 body {
@@ -40,7 +65,7 @@ body {
 /* Slim Sidebar */
 .sidebar {
     background: var(--surface);
-    border-right: 1px solid #e2e8f0;
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -263,7 +288,7 @@ body {
     padding: 3rem;
     text-align: center;
     background: rgba(248, 250, 252, 0.5);
-    border: 2px dashed #e2e8f0;
+    border: 2px dashed var(--border);
     border-radius: var(--radius);
     color: var(--text-muted);
     gap: 1rem;
@@ -294,7 +319,7 @@ body {
 /* Right Monitor */
 .right-monitor {
     background: var(--surface);
-    border-left: 1px solid #e2e8f0;
+    border-left: 1px solid var(--border);
     padding: var(--section-gap);
     display: flex;
     flex-direction: column;
@@ -415,7 +440,7 @@ body {
 
 /* Modal Styling */
 .modal-content {
-    background: white;
+    background: var(--card-bg);
     padding: 2.5rem;
     border-radius: 24px;
     box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25);
@@ -438,7 +463,7 @@ input, select {
     width: 100%;
     padding: 12px;
     border-radius: 12px;
-    border: 2px solid #e2e8f0;
+    border: 2px solid var(--border);
     font-family: inherit;
     font-weight: 600;
 }
@@ -526,9 +551,9 @@ input:focus {
 .status-completed { background: #f1f5f9; color: #475569; }
 
 .custom-input {
-    background: white;
+    background: var(--card-bg);
     padding: 8px 15px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--border);
     border-radius: 10px;
 }
 
@@ -562,7 +587,7 @@ input:focus {
 }
 
 .breach-card {
-    background: white;
+    background: var(--card-bg);
     padding: 3rem;
     border-radius: 32px;
     text-align: center;
@@ -614,7 +639,7 @@ input:focus {
     font-size: 0.75rem;
     font-weight: 800;
     cursor: pointer;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--border);
     transition: 0.2s;
 }
 
@@ -691,14 +716,14 @@ input:focus {
     font-family: inherit;
 }
 .scope-btn.active {
-    background: white;
+    background: var(--card-bg);
     color: var(--primary);
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
 }
 .scope-btn:hover:not(.active) { color: var(--text); }
 
 .stat-card-big {
-    background: white;
+    background: var(--card-bg);
     border-radius: 16px;
     padding: 1.5rem;
     box-shadow: var(--shadow);
@@ -729,7 +754,7 @@ input:focus {
     width: 32px;
     height: 32px;
     border-radius: 50%;
-    background: #e2e8f0;
+    background: var(--border);
     color: var(--text-muted);
     display: flex;
     align-items: center;
@@ -754,7 +779,7 @@ input:focus {
     height: 48px;
     border-radius: 8px;
     object-fit: cover;
-    border: 2px solid #e2e8f0;
+    border: 2px solid var(--border);
     transition: 0.2s;
 }
 .capture-thumb.done {
@@ -762,6 +787,6 @@ input:focus {
     opacity: 1;
 }
 .capture-thumb.pending {
-    border-color: #e2e8f0;
+    border-color: var(--border);
     opacity: 0.4;
 }

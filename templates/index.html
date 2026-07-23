@@ -30,18 +30,18 @@
             50% { transform: scale(1.3); opacity: 1; }
         }
 
-        /* Force WebRTC video and fallback image to fill the container exactly without cutting corners */
+        /* Scale video to fill container while preserving aspect ratio (no stretching) */
         #webrtc-video, img#video-feed {
             width: 100% !important;
             height: 100% !important;
-            object-fit: fill !important;
+            object-fit: contain !important;
         }
         
         .camera-canvas:fullscreen #webrtc-video,
         .camera-canvas:fullscreen img#video-feed {
             width: 100% !important;
             height: 100% !important;
-            object-fit: fill !important;
+            object-fit: contain !important;
         }
     </style>
 </head>
@@ -66,6 +66,7 @@
                 <div class="nav-item" title="Shift Optimizer" onclick="handleNavClick(this)"><i class="fas fa-calendar-check"></i></div>
                 <div class="nav-item" title="Settings" onclick="handleNavClick(this)"><i class="fas fa-cog"></i></div>
             </div>
+            <div class="nav-item" title="Toggle Theme" id="theme-toggle" onclick="toggleTheme()" style="color: var(--accent);"><i class="fas fa-moon"></i></div>
             <div class="nav-item" title="Logout" onclick="handleLogout()" style="color: #ef4444;"><i class="fas fa-sign-out-alt"></i></div>
         </nav>
 
@@ -87,9 +88,9 @@
                     </div>
                     <div class="video-wrapper">
                         <!-- WebRTC Video Feed (Hardware Accelerated & Stable) -->
-                        <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:cover; display:none;"></video>
+                        <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none;"></video>
                         <!-- Fallback MJPEG Image Feed -->
-                        <img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed" style="width:100%; height:100%; object-fit:cover; display:block;">
+                        <img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed" style="width:100%; height:100%; object-fit:contain; display:block;">
                         
                         <!-- WebRTC Status Overlay -->
                         <div id="webrtc-status-overlay" style="position:absolute; top:15px; left:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s;">
@@ -303,13 +304,17 @@
                 </header>
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap: var(--section-gap);">
                     <div class="standard-card" style="border: 1px solid var(--accent);">
-                        <h3 style="margin-bottom:1.5rem;">Staff Wellness Policy</h3>
+                        <h3 style="margin-bottom:1.5rem;">Staff Policies</h3>
                         <div class="form-group" style="margin-bottom:15px;">
                             <label style="font-size:0.75rem; font-weight:700;">Max Continuous Work (Hours)</label>
                             <input type="number" id="wellness-threshold" placeholder="4">
                         </div>
-                        <button onclick="saveWellnessSettings()" class="btn-primary" style="width:100%; justify-content:center; background:var(--accent);">Update Policy</button>
-                        <p style="font-size:0.7rem; color:var(--text-muted); margin-top:10px;">Staff working beyond this limit without a break will flag a wellness alert.</p>
+                        <div class="form-group" style="margin-bottom:15px;">
+                            <label style="font-size:0.75rem; font-weight:700;">Late Arrival Grace Period (Minutes)</label>
+                            <input type="number" id="late-grace-minutes" placeholder="10">
+                        </div>
+                        <button onclick="saveWellnessSettings()" class="btn-primary" style="width:100%; justify-content:center; background:var(--accent);">Update Policies</button>
+                        <p style="font-size:0.7rem; color:var(--text-muted); margin-top:10px;">Wellness: staff working beyond the hour limit without a break will flag an alert. Grace: staff arriving within this window after shift start are considered on-time.</p>
                     </div>
                     <div class="standard-card">
                         <h3 style="margin-bottom:1.5rem;"><i class="fas fa-fire-flame-curved" style="color:var(--red);"></i> High-Traffic Events</h3>
@@ -712,6 +717,7 @@
         }
 
         window.addEventListener('DOMContentLoaded', () => {
+            loadSavedTheme();
             setTimeout(() => {
                 initWebRTCStream();
                 resizeCanvas();

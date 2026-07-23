@@ -20,10 +20,10 @@ srt: no
 
 paths:
   cam:
-    source: rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=1
+    source: rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0
     # Force RTSP connection over TCP to prevent packet loss, frame dropping, and lag
     rtspTransport: tcp
 
   mystream:
-    runOnDemand: '"C:\Users\Sultan Mahmood\Desktop\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -an -f rtsp rtsp://localhost:8554/mystream'
+    runOnDemand: '"C:\Users\Sultan Mahmood\Desktop\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=1280:720" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
     runOnDemandRestart: yes

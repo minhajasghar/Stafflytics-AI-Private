@@ -157,6 +157,7 @@ class VisionEngine:
                 face_encodings = face_recognition.face_encodings(rgb_face)
                 
                 match_id = "Unknown"
+                match_source = None
                 if face_encodings:
                     with self.lock:
                         known_staff_enc = list(self.known_face_encodings)
@@ -164,17 +165,32 @@ class VisionEngine:
                         known_cust_enc = list(self.known_customer_encodings)
                         known_cust_meta = list(self.known_customer_metadata)
                     
+                    best_staff_dist = 999.0
                     if known_staff_enc:
-                        matches = face_recognition.compare_faces(known_staff_enc, face_encodings[0], tolerance=0.65)
-                        if True in matches:
-                            match_id = known_staff_meta[matches.index(True)]["id"]
+                        staff_distances = face_recognition.face_distance(known_staff_enc, face_encodings[0])
+                        best_staff_idx = int(np.argmin(staff_distances))
+                        best_staff_dist = float(staff_distances[best_staff_idx])
+                        if best_staff_dist < 0.65:
+                            match_id = known_staff_meta[best_staff_idx]["id"]
+                            match_source = "staff"
+                            print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — distance={best_staff_dist:.4f} (threshold=0.65)")
+                        else:
+                            print(f"[AI] Staff check — best distance={best_staff_dist:.4f} for {known_staff_meta[best_staff_idx]['name']} (above 0.65 threshold)")
                     
+                    best_cust_dist = 999.0
                     if match_id == "Unknown" and known_cust_enc:
-                        c_matches = face_recognition.compare_faces(known_cust_enc, face_encodings[0], tolerance=0.65)
-                        if True in c_matches:
-                            match_id = f"CUST:{known_cust_meta[c_matches.index(True)]['id']}"
-                            matched_cust_idx = c_matches.index(True)
+                        c_distances = face_recognition.face_distance(known_cust_enc, face_encodings[0])
+                        best_cust_idx = int(np.argmin(c_distances))
+                        best_cust_dist = float(c_distances[best_cust_idx])
+                        if best_cust_dist < 0.65:
+                            match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
+                            match_source = "customer"
+                            matched_cust_idx = best_cust_idx
                             database.update_customer_encoding(known_cust_meta[matched_cust_idx]['id'], pickle.dumps(face_encodings[0]))
+                            print(f"[AI] Customer match: {known_cust_meta[best_cust_idx]['name']} (ID {known_cust_meta[best_cust_idx]['id']}) — distance={best_cust_dist:.4f}")
+                    
+                    if match_id == "Unknown":
+                        print(f"[AI] No match found — best staff dist={best_staff_dist:.4f}, best cust dist={best_cust_dist:.4f}")
                 
                 # Update consensus and state under lock
                 with self.lock:
@@ -212,47 +228,56 @@ class VisionEngine:
                 
                 # Handle auto-registration outside lock
                 if match_id == "Unknown" and face_encodings:
+                    # CRITICAL: Check if this track already has a staff identity — if so, DO NOT overwrite
                     with self.lock:
-                        consensus_len = len(self.recognition_consensus.get(track_id, []))
-                        counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])} if track_id in self.recognition_consensus else {}
-                        winner = max(counts, key=counts.get) if counts else "Unknown"
-                    
-                    if consensus_len >= 5 and winner == "Unknown":
+                        existing_db_id = self.person_states.get(track_id, {}).get("db_id")
+                    if existing_db_id and not str(existing_db_id).startswith("C_"):
+                        print(f"[AI] Skipping auto-registration for track {track_id} — already identified as staff ({existing_db_id})")
+                    else:
                         with self.lock:
-                            known_cust_enc = list(self.known_customer_encodings)
-                            known_cust_meta = list(self.known_customer_metadata)
-                        fallback_match = False
-                        if known_cust_enc:
-                            c_matches = face_recognition.compare_faces(known_cust_enc, face_encodings[0], tolerance=0.7)
-                            if True in c_matches:
-                                match_id = f"CUST:{known_cust_meta[c_matches.index(True)]['id']}"
-                                database.update_customer_encoding(known_cust_meta[c_matches.index(True)]['id'], pickle.dumps(face_encodings[0]))
-                                fallback_match = True
+                            consensus_len = len(self.recognition_consensus.get(track_id, []))
+                            counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])} if track_id in self.recognition_consensus else {}
+                            winner = max(counts, key=counts.get) if counts else "Unknown"
+                        
+                        if consensus_len >= 5 and winner == "Unknown":
+                            with self.lock:
+                                known_cust_enc = list(self.known_customer_encodings)
+                                known_cust_meta = list(self.known_customer_metadata)
+                            fallback_match = False
+                            if known_cust_enc:
+                                c_distances = face_recognition.face_distance(known_cust_enc, face_encodings[0])
+                                best_cust_idx = int(np.argmin(c_distances))
+                                best_cust_dist = float(c_distances[best_cust_idx])
+                                if best_cust_dist < 0.7:
+                                    match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
+                                    database.update_customer_encoding(known_cust_meta[best_cust_idx]['id'], pickle.dumps(face_encodings[0]))
+                                    fallback_match = True
+                                    print(f"[AI] Auto-registered as RETURNING customer: {known_cust_meta[best_cust_idx]['name']} (dist={best_cust_dist:.4f})")
+                                    with self.lock:
+                                        if track_id in self.recognition_consensus:
+                                            self.recognition_consensus[track_id].append(match_id)
+                                        if track_id in self.person_states:
+                                            state = self.person_states[track_id]
+                                            c_id = int(known_cust_meta[best_cust_idx]['id'])
+                                            state["db_id"] = f"C_{c_id}"
+                                            state["id"] = f"GUEST #{c_id}"
+                                            state["name"] = known_cust_meta[best_cust_idx]["name"]
+                                            state["visits"] = known_cust_meta[best_cust_idx].get("visits", 1)
+                                            state["last_sync"] = current_time
+                            if not fallback_match:
+                                new_c_id = database.register_customer(pickle.dumps(face_encodings[0]))
+                                print(f"[AI] Auto-registered as NEW customer (ID {new_c_id})")
+                                self.load_known_faces()
                                 with self.lock:
-                                    if track_id in self.recognition_consensus:
-                                        self.recognition_consensus[track_id].append(match_id)
                                     if track_id in self.person_states:
                                         state = self.person_states[track_id]
-                                        c_id = int(known_cust_meta[c_matches.index(True)]['id'])
-                                        state["db_id"] = f"C_{c_id}"
-                                        state["id"] = f"GUEST #{c_id}"
-                                        state["name"] = known_cust_meta[c_matches.index(True)]["name"]
-                                        state["visits"] = known_cust_meta[c_matches.index(True)].get("visits", 1)
+                                        state["db_id"] = f"C_{new_c_id}"
+                                        state["id"] = f"GUEST #{new_c_id}"
+                                        state["name"] = "New Guest"
                                         state["last_sync"] = current_time
-                        if not fallback_match:
-                            new_c_id = database.register_customer(pickle.dumps(face_encodings[0]))
-                            self.load_known_faces()
-                            with self.lock:
-                                if track_id in self.person_states:
-                                    state = self.person_states[track_id]
-                                    state["db_id"] = f"C_{new_c_id}"
-                                    state["id"] = f"GUEST #{new_c_id}"
-                                    state["name"] = "New Guest"
-                                    state["last_sync"] = current_time
-                                    state["visits"] = 1
-                        else:
-                            # Returning customer — state already updated in fallback block above
-                            self.load_known_faces()
+                                        state["visits"] = 1
+                            else:
+                                self.load_known_faces()
                                 
                 self.recognition_queue.task_done()
                 with self.lock:
@@ -293,17 +318,25 @@ class VisionEngine:
                     threading.Thread(target=load, daemon=True).start()
                 return cv2.resize(frame, target_size), []
                 
-            # Run YOLO on a lightweight 640x480 frame for CPU efficiency
-            small_frame = cv2.resize(frame, (640, 480))
-            results = model.track(small_frame, persist=True, verbose=False)
             current_time = time.time()
             detections = []
             
-            # Prepare output frame at target resolution
-            output_frame = cv2.resize(frame, target_size)
-            h_out, w_out = output_frame.shape[:2]
-            scale_x = target_size[0] / 640.0
-            scale_y = target_size[1] / 480.0
+            # Use the actual camera resolution for output to preserve detail
+            h_orig, w_orig = frame.shape[:2]
+            h_out, w_out = target_size
+            if h_out != h_orig or w_out != w_orig:
+                output_frame = cv2.resize(frame, target_size)
+            else:
+                output_frame = frame
+            
+            # Run YOLO on a lightweight detection frame for CPU efficiency
+            DETECTION_WIDTH = 640
+            DETECTION_HEIGHT = 480
+            small_frame = cv2.resize(frame, (DETECTION_WIDTH, DETECTION_HEIGHT))
+            results = model.track(small_frame, persist=True, verbose=False)
+            
+            scale_x = w_out / DETECTION_WIDTH
+            scale_y = h_out / DETECTION_HEIGHT
             
             if results and results[0].boxes:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -584,14 +617,15 @@ class VisionEngine:
                         
                     if db_id:
                         if str(db_id).startswith("C_"):
-                            color_hex = "#ffd700" # Golden yellow
+                            color_hex = "#ffd700"
                             visits = state.get("visits", 1)
                             label = f"REGULAR {state_id} ({visits}x)"
                         else:
-                            color_hex = "#4f46e5" # Indigo for Staff
-                            label = f"STAFF: {state_name} [{status}]"
+                            color_hex = "#4f46e5"
+                            role_tag = f" [{state_role}]" if state_role and state_role != "None" else ""
+                            label = f"{state_name}{role_tag} [{status}]"
                     else:
-                        color_hex = "#d97706" # Accent orange
+                        color_hex = "#d97706"
                         label = "NEW FACE"
                     
                     # Compile detection metadata for canvas rendering
