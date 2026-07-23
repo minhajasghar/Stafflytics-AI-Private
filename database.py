@@ -258,11 +258,13 @@ def init_db():
         )
         ''')
         
-        # Migration: Add salary_type if not exists
+        # Migration: Add columns if not exists
         cursor.execute("PRAGMA table_info(staff)")
         cols = [c[1] for c in cursor.fetchall()]
         if 'salary_type' not in cols:
             cursor.execute("ALTER TABLE staff ADD COLUMN salary_type TEXT DEFAULT 'Monthly'")
+        if 'photo' not in cols:
+            cursor.execute("ALTER TABLE staff ADD COLUMN photo TEXT")
 
         # Attendance table
         cursor.execute('''
@@ -416,12 +418,12 @@ def init_db():
 
 # --- OWNER MANAGEMENT (CRUD) ---
 
-def add_staff(staff_id, name, role, encoding, shift_start='10:00', shift='Morning', hourly_rate=500, salary_type='Monthly'):
+def add_staff(staff_id, name, role, encoding, shift_start='10:00', shift='Morning', hourly_rate=500, salary_type='Monthly', photo=None):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO staff (id, name, role, shift_start, shift, hourly_rate, salary_type, face_encoding) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
-                       (staff_id, name, role, shift_start, shift, hourly_rate, salary_type, encoding))
+        cursor.execute("INSERT OR REPLACE INTO staff (id, name, role, shift_start, shift, hourly_rate, salary_type, face_encoding, photo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+                       (staff_id, name, role, shift_start, shift, hourly_rate, salary_type, encoding, photo))
         conn.commit()
         conn.close()
 
@@ -446,7 +448,7 @@ def get_all_staff():
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, role, shift_start, hourly_rate, face_encoding, shift, salary_type FROM staff")
+        cursor.execute("SELECT id, name, role, shift_start, hourly_rate, face_encoding, shift, salary_type, photo FROM staff")
         rows = cursor.fetchall()
         conn.close()
         return rows

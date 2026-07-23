@@ -262,12 +262,14 @@ async function loadStaffDirectory() {
             return;
         }
 
-        list.innerHTML = data.map(s => `
+        list.innerHTML = data.map(s => {
+            const avatar = s.photo
+                ? `<img src="${s.photo}" style="width:50px; height:50px; border-radius:12px; object-fit:cover; border:2px solid #e2e8f0;">`
+                : `<div style="width:50px; height:50px; background:var(--primary); color:white; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:1.2rem;"><i class="fas fa-user-tie"></i></div>`;
+            return `
             <div class="staff-card" style="display:flex; justify-content:space-between; align-items:center; padding:1.5rem; background:white; border-radius:16px; border:1px solid #e2e8f0; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);">
                 <div style="display:flex; align-items:center; gap:1.5rem;">
-                    <div style="width:50px; height:50px; background:var(--primary); color:white; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:1.2rem;">
-                        <i class="fas fa-user-tie"></i>
-                    </div>
+                    ${avatar}
                     <div>
                         <div style="font-weight:800; font-size:1.1rem; color:var(--primary);">${s.name}</div>
                         <div style="font-size:0.75rem; color:var(--text-muted); font-weight:700;">${s.role.toUpperCase()} • ${s.shift.toUpperCase()} SHIFT</div>
@@ -278,7 +280,7 @@ async function loadStaffDirectory() {
                     <button class="btn-primary" style="padding:10px 20px; font-size:0.75rem; border-radius:10px;" onclick="editStaff('${s.id}', '${s.name}', '${s.role}', '${s.shift_time}', '${s.shift}', ${s.rate}, '${s.salary_type}')">Manage</button>
                 </div>
             </div>
-        `).join('');
+        `}).join('');
     } catch (e) {
         list.innerHTML = `<div class="empty-state"><i class="fas fa-exclamation-triangle"></i><p>Failed to load staff directory. Please refresh.</p></div>`;
     }

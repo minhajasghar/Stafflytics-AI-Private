@@ -165,6 +165,8 @@ class CameraStream:
         self.latest_frame_time = 0
         self.indices = [0, 1, 2] # Try multiple camera indices
         self.backeneds = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+        self.actual_width = 640
+        self.actual_height = 480
         
     def start(self):
         # Start the background update thread immediately
@@ -242,6 +244,9 @@ class CameraStream:
                                 print(f"[SYSTEM] Camera successfully synchronized via RTSP: {display_url}")
                                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
                                 self.stream = cap
+                                self.actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                self.actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                print(f"[SYSTEM] Camera native resolution: {self.actual_width}x{self.actual_height}")
                                 self.online = True
                                 camera_online = True
                                 return True
@@ -265,6 +270,9 @@ class CameraStream:
                             cap.set(cv2.CAP_PROP_FRAME_WIDTH, preset_cfg["size"][0])
                             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, preset_cfg["size"][1])
                             cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
+                            self.actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            self.actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                            print(f"[SYSTEM] Camera native resolution: {self.actual_width}x{self.actual_height}")
                             self.stream = cap
                             self.online = True
                             camera_online = True
@@ -359,8 +367,10 @@ def vision_engine_loop():
                 
             last_processed_frame_id = frame_id
             
-            # Process frame for analytics (YOLOv8 + Face recognition + metrics)
-            raw_frame, detections = engine.process_frame(frame, target_size=(camera_width or 640, camera_height or 480))
+            # Cap target to actual camera resolution to avoid blurry upscaling
+            tw = min(camera_width or 640, camera_stream.actual_width)
+            th = min(camera_height or 480, camera_stream.actual_height)
+            raw_frame, detections = engine.process_frame(frame, target_size=(tw, th))
             
             with processed_frame_lock:
                 latest_processed_frame = raw_frame.copy() if raw_frame is not None else None
@@ -476,7 +486,10 @@ def generate_frames():
                     if fid == last_sent_frame_id:
                         time.sleep(0.01)
                         continue
-                    display_frame = cv2.resize(res, (camera_width or 640, camera_height or 480))
+                    # Cap to actual camera resolution to prevent blurry upscaling
+                    tw = min(camera_width or 640, camera_stream.actual_width)
+                    th = min(camera_height or 480, camera_stream.actual_height)
+                    display_frame = cv2.resize(res, (tw, th))
                     buf_frame_id = fid
                 else:
                     time.sleep(0.05)
@@ -896,7 +909,7 @@ def export_custom_report():
 @login_required
 def get_all_registered_staff():
     # id, name, role, shift_start, hourly_rate, face_encoding, shift, salary_type
-    return jsonify([{"id":r[0], "name":r[1], "role":r[2], "shift_time":r[3], "rate":r[4], "shift":r[6], "salary_type": r[7]} for r in database.get_all_staff()])
+    return jsonify([{"id":r[0], "name":r[1], "role":r[2], "shift_time":r[3], "rate":r[4], "shift":r[6], "salary_type": r[7], "photo": r[8]} for r in database.get_all_staff()])
 
 @app.route('/api/staff/update/<staff_id>', methods=['POST'])
 @login_required
@@ -940,14 +953,25 @@ def enroll_staff_with_faces():
             return jsonify({"status": "error", "message": "Need at least 2 face captures"}), 400
         
         encodings = []
-        for b64_img in images:
+        first_photo = None
+        for idx, b64_img in enumerate(images):
             try:
                 header, encoded = b64_img.split(",", 1)
-                img = Image.open(io.BytesIO(base64.b64decode(encoded)))
-                rgb = np.array(img.convert('RGB'))
-                encs = face_recognition.face_encodings(rgb)
+                pil_img = Image.open(io.BytesIO(base64.b64decode(encoded)))
+                rgb = np.array(pil_img.convert('RGB'))
+                
+                # Detect face location first, then crop to face for encoding
+                # This matches how the recognition worker processes faces (tight crop)
+                face_locs = face_recognition.face_locations(rgb)
+                if not face_locs:
+                    continue
+                t, r, b, l = face_locs[0]
+                face_crop = rgb[t:b, l:r]
+                encs = face_recognition.face_encodings(face_crop)
                 if encs:
                     encodings.append(encs[0])
+                    if idx == 0:
+                        first_photo = b64_img
             except Exception:
                 continue
         
@@ -964,7 +988,8 @@ def enroll_staff_with_faces():
             data.get('shift_time', '10:00'),
             data.get('shift', 'Morning'),
             data.get('rate', 500),
-            data.get('salary_type', 'Monthly')
+            data.get('salary_type', 'Monthly'),
+            first_photo
         )
         engine.load_known_faces()
         return jsonify({"status": "success", "message": f"Enrolled {len(encodings)}/{len(images)} captures"})

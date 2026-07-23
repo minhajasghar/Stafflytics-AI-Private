@@ -93,7 +93,8 @@ class VisionEngine:
             staff_data = database.get_all_staff()
             new_encodings = []
             new_metadata = []
-            for s_id, name, role, shift_time, rate, encoding_blob, shift_name in staff_data:
+            for row in staff_data:
+                s_id, name, role, shift_time, rate, encoding_blob, shift_name = row[:7]
                 if encoding_blob:
                     try: encoding = pickle.loads(encoding_blob)
                     except: encoding = np.frombuffer(encoding_blob, dtype=np.float64)
@@ -164,7 +165,7 @@ class VisionEngine:
                         known_cust_meta = list(self.known_customer_metadata)
                     
                     if known_staff_enc:
-                        matches = face_recognition.compare_faces(known_staff_enc, face_encodings[0], tolerance=0.60)
+                        matches = face_recognition.compare_faces(known_staff_enc, face_encodings[0], tolerance=0.65)
                         if True in matches:
                             match_id = known_staff_meta[matches.index(True)]["id"]
                     
