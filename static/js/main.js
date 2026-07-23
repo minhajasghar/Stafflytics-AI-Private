@@ -60,6 +60,7 @@ function handleNavClick(element) {
         if (targetId === 'section-staff') loadStaffDirectory();
         if (targetId === 'section-reporting') loadAttendanceReports();
         if (targetId === 'section-analytics') {
+            loadVisitorAnalytics('day');
             loadSynergyMetrics();
             loadEngagementAnalytics();
             loadWellbeingAnalytics();
@@ -159,6 +160,70 @@ async function loadLoyaltyAnalytics() {
             </div>
         `).join('');
     } catch (e) { console.error("Loyalty Load Error", e); }
+}
+
+let currentVisitorScope = 'day';
+
+async function loadVisitorAnalytics(scope) {
+    currentVisitorScope = scope || 'day';
+    try {
+        const res = await fetch(`/api/analytics/visitors?scope=${currentVisitorScope}`);
+        const data = await res.json();
+
+        document.getElementById('visitor-total').innerText = data.total_unique_visitors || 0;
+        document.getElementById('visitor-new').innerText = data.new_faces || 0;
+        document.getElementById('visitor-returning').innerText = data.returning_customers || 0;
+        document.getElementById('visitor-regular').innerText = data.regular_customers || 0;
+
+        // Frequency chart
+        renderFrequencyChart(data.frequency_distribution || {});
+
+        // Daily breakdown (month only)
+        const dailyCard = document.getElementById('visitor-daily-card');
+        const dailyBody = document.getElementById('visitor-daily-body');
+        if (currentVisitorScope === 'month' && data.daily_breakdown && data.daily_breakdown.length > 0) {
+            dailyCard.style.display = 'block';
+            dailyBody.innerHTML = data.daily_breakdown.map(d => `
+                <tr><td>${d.date}</td><td><b>${d.unique_visitors}</b></td><td>${d.new_faces}</td><td>${d.total_events}</td></tr>
+            `).join('');
+        } else {
+            dailyCard.style.display = 'none';
+        }
+    } catch (e) {
+        console.error("Visitor Analytics Load Error", e);
+    }
+}
+
+function setVisitorScope(scope) {
+    document.querySelectorAll('.scope-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('visitor-scope-' + scope).classList.add('active');
+    loadVisitorAnalytics(scope);
+}
+
+function renderFrequencyChart(freq) {
+    const chart = document.getElementById('visitor-frequency-chart');
+    const labels = document.getElementById('visitor-frequency-labels');
+    if (!chart) return;
+
+    const keys = Object.keys(freq).sort((a, b) => parseInt(a) - parseInt(b));
+    if (keys.length === 0) {
+        chart.innerHTML = '<div style="width:100%; text-align:center; color:var(--text-muted); font-size:0.75rem; padding:2rem 0;">No frequency data yet</div>';
+        if (labels) labels.innerHTML = '';
+        return;
+    }
+
+    const maxVal = Math.max(...keys.map(k => freq[k]));
+    chart.innerHTML = keys.map(k => {
+        const pct = (freq[k] / maxVal) * 80;
+        const color = parseInt(k) >= 2 ? 'var(--green)' : 'var(--accent)';
+        return `<div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%;">
+            <div style="width:80%; background:${color}; border-radius:6px 6px 0 0; height:${pct}%; min-height:4px; transition:0.3s;" title="${freq[k]} visitor(s)"></div>
+        </div>`;
+    }).join('');
+
+    if (labels) {
+        labels.innerHTML = keys.map(k => `<div style="flex:1; text-align:center;">${k}</div>`).join('');
+    }
 }
 
 // --- CHATBOT LOGIC ---
@@ -707,52 +772,239 @@ async function saveWellnessSettings() {
     alert("✅ Wellness policy updated!");
 }
 
-// Sales functionality removed as we don't value people through money.
+// --- FACE ENROLLMENT WIZARD ---
+let enrollmentCaptures = [];
+const CAPTURE_STEPS = [
+    { heading: "Capture 1: Look Straight", instruction: "Look directly at the camera with your face centered", key: "straight" },
+    { heading: "Capture 2: Turn Left", instruction: "Turn your head slightly to the left", key: "left" },
+    { heading: "Capture 3: Turn Right", instruction: "Turn your head slightly to the right", key: "right" },
+    { heading: "Capture 4: Tilt Up", instruction: "Slightly tilt your face upward", key: "up" },
+    { heading: "Capture 5: Neutral Smile", instruction: "Look straight with a natural smile", key: "smile" }
+];
+let currentCaptureStep = 0;
+let captureStream = null;
 
-function showRegisterModal() { document.getElementById('modal').style.display = 'block'; document.getElementById('overlay').style.display = 'block'; }
-function hideRegisterModal() { document.getElementById('modal').style.display = 'none'; document.getElementById('overlay').style.display = 'none'; }
-async function submitRegistration() {
+function showEnrollModal() {
+    enrollmentCaptures = [];
+    currentCaptureStep = 0;
+    document.getElementById('enroll-modal').style.display = 'block';
+    document.getElementById('overlay').style.display = 'block';
+    goToStep(1);
+}
+
+function hideEnrollModal() {
+    stopCaptureStream();
+    document.getElementById('enroll-modal').style.display = 'none';
+    document.getElementById('overlay').style.display = 'none';
+}
+
+function goToStep(step) {
+    // Update step dots
+    for (let i = 1; i <= 3; i++) {
+        const dot = document.getElementById('step-dot-' + i);
+        dot.classList.toggle('active', i === step);
+        dot.classList.toggle('done', i < step);
+    }
+    document.getElementById('enroll-step-1').style.display = step === 1 ? 'block' : 'none';
+    document.getElementById('enroll-step-2').style.display = step === 2 ? 'block' : 'none';
+    document.getElementById('enroll-step-3').style.display = step === 3 ? 'block' : 'none';
+
+    if (step === 2) {
+        startCaptureStream();
+        resetCaptureStep();
+    } else if (step === 3) {
+        stopCaptureStream();
+        showReview();
+    } else {
+        stopCaptureStream();
+    }
+}
+
+let captureAnimFrame = null;
+
+function startCaptureStream() {
+    const canvas = document.getElementById('capture-canvas');
+    const img = document.getElementById('video-feed');
+    if (!canvas || !img) return;
+    const ctx = canvas.getContext('2d');
+    if (captureAnimFrame) cancelAnimationFrame(captureAnimFrame);
+
+    // Match canvas internal resolution to the live feed's natural dimensions
+    function syncCanvasSize() {
+        if (img.complete && img.naturalWidth > 0) {
+            const bw = 640, bh = 480;
+            canvas.width = img.naturalWidth || bw;
+            canvas.height = img.naturalHeight || bh;
+        }
+    }
+
+    function frameLoop() {
+        if (img.complete && img.naturalWidth > 0) {
+            if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+            }
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        }
+        captureAnimFrame = requestAnimationFrame(frameLoop);
+    }
+    syncCanvasSize();
+    frameLoop();
+}
+
+function stopCaptureStream() {
+    if (captureAnimFrame) {
+        cancelAnimationFrame(captureAnimFrame);
+        captureAnimFrame = null;
+    }
+    const canvas = document.getElementById('capture-canvas');
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+}
+
+function resetCaptureStep() {
+    currentCaptureStep = 0;
+    enrollmentCaptures = [];
+    renderThumbnails();
+    updateCaptureUI();
+}
+
+function updateCaptureUI() {
+    if (currentCaptureStep >= CAPTURE_STEPS.length) {
+        document.getElementById('capture-heading').innerText = 'All Captures Done!';
+        document.getElementById('capture-instruction').innerText = 'Review your captures below or proceed.';
+        document.getElementById('btn-capture-face').style.display = 'none';
+        document.getElementById('btn-capture-done').style.display = 'block';
+        document.getElementById('capture-timer').innerText = '';
+        return;
+    }
+    const step = CAPTURE_STEPS[currentCaptureStep];
+    document.getElementById('capture-heading').innerText = step.heading;
+    document.getElementById('capture-instruction').innerText = step.instruction;
+    document.getElementById('btn-capture-face').style.display = 'block';
+    document.getElementById('btn-capture-done').style.display = 'none';
+    document.getElementById('capture-timer').innerText = `Step ${currentCaptureStep + 1} of ${CAPTURE_STEPS.length}`;
+}
+
+function captureFace() {
+    if (currentCaptureStep >= CAPTURE_STEPS.length) return;
+
+    const img = document.getElementById('video-feed');
+    if (!img || !img.complete || img.naturalWidth === 0) {
+        alert('Camera feed not ready. Please wait...');
+        return;
+    }
+
+    const canvas = document.createElement('canvas');
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    // Cap maximum capture resolution to avoid oversized payloads
+    const MAX_CAPTURE_DIM = 1920;
+    const scale = Math.min(1, MAX_CAPTURE_DIM / Math.max(w, h));
+    canvas.width = Math.round(w * scale);
+    canvas.height = Math.round(h * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+    // Brief flash feedback
+    const badge = document.getElementById('face-status-badge');
+    if (badge) {
+        badge.style.display = 'inline-block';
+        badge.style.color = '#22c55e';
+        badge.innerHTML = '<i class="fas fa-check-circle"></i> Captured!';
+        setTimeout(() => {
+            badge.style.display = 'none';
+        }, 800);
+    }
+
+    enrollmentCaptures.push(dataUrl);
+    renderThumbnails();
+    currentCaptureStep++;
+    updateCaptureUI();
+}
+
+function renderThumbnails() {
+    const container = document.getElementById('capture-thumbnails');
+    const total = CAPTURE_STEPS.length;
+    let html = '';
+    for (let i = 0; i < total; i++) {
+        if (i < enrollmentCaptures.length) {
+            html += `<img src="${enrollmentCaptures[i]}" class="capture-thumb done" title="Capture ${i+1}">`;
+        } else if (i === currentCaptureStep) {
+            html += `<div class="capture-thumb pending" style="display:flex; align-items:center; justify-content:center; background:#f1f5f9; font-size:1.2rem; font-weight:700; color:var(--text-muted);">${i+1}</div>`;
+        } else {
+            html += `<div class="capture-thumb pending" style="display:flex; align-items:center; justify-content:center; background:#f1f5f9; font-size:0.8rem; color:#cbd5e1;">${i+1}</div>`;
+        }
+    }
+    container.innerHTML = html;
+}
+
+function showReview() {
+    const container = document.getElementById('review-captures');
+    container.innerHTML = enrollmentCaptures.map((img, i) =>
+        `<img src="${img}" class="capture-thumb done" style="width:80px; height:60px;" title="Capture ${i+1}">`
+    ).join('');
+
+    document.getElementById('review-name').innerText = document.getElementById('reg-name').value || '—';
+    document.getElementById('review-id').innerText = document.getElementById('reg-id').value || '—';
+    document.getElementById('review-role').innerText = document.getElementById('reg-role').value;
+    document.getElementById('review-shift').innerText = document.getElementById('reg-shift').value;
+}
+
+async function submitEnrollment() {
     const btn = document.getElementById('btn-enroll-submit');
     const originalText = btn.innerText;
-    
+
+    const payload = {
+        id: document.getElementById('reg-id').value,
+        name: document.getElementById('reg-name').value,
+        role: document.getElementById('reg-role').value,
+        rate: document.getElementById('reg-rate').value,
+        salary_type: document.getElementById('reg-salary-type').value,
+        shift: document.getElementById('reg-shift').value,
+        shift_time: document.getElementById('reg-shift-time').value,
+        images: enrollmentCaptures
+    };
+
+    if (!payload.id || !payload.name) {
+        alert("ID and Name are mandatory.");
+        return;
+    }
+    if (enrollmentCaptures.length < 2) {
+        alert("Please capture at least 2 face images.");
+        return;
+    }
+
+    btn.innerText = "Processing...";
+    btn.disabled = true;
+
     try {
-        const payload = { 
-            id: document.getElementById('reg-id').value, 
-            name: document.getElementById('reg-name').value, 
-            role: document.getElementById('reg-role').value, 
-            rate: document.getElementById('reg-rate').value,
-            salary_type: document.getElementById('reg-salary-type').value,
-            shift: document.getElementById('reg-shift').value,
-            shift_time: document.getElementById('reg-shift-time').value
-        };
-        
-        if (!payload.id || !payload.name) {
-            alert("ID and Name are mandatory.");
-            return;
-        }
-
-        btn.innerText = "Processing... Wait";
-        btn.disabled = true;
-
-        const webrtcVideo = document.getElementById('webrtc-video');
-        const videoFeed = document.getElementById('video-feed');
-        const v = (webrtcVideo && webrtcVideo.style.display !== 'none') ? webrtcVideo : videoFeed;
-        const c = document.createElement('canvas'); 
-        c.width = 640; c.height = 480; 
-        if (v) c.getContext('2d').drawImage(v, 0, 0, 640, 480);
-        payload.image = c.toDataURL('image/jpeg');
-
-        const res = await fetch('/api/register', { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify(payload) 
+        const res = await fetch('/api/staff/enroll-with-faces', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
         });
-        
         const d = await res.json();
         if (d.status === 'success') {
             alert("Staff Enrolled Successfully!");
-            hideRegisterModal();
+            hideEnrollModal();
             loadStaffDirectory();
+        } else if (d.message && d.message.includes("No valid face")) {
+            const retry = confirm(
+                "Face could not be detected in the captures.\n\n" +
+                "Tips:\n" +
+                "• Ensure the person is standing in front of the camera\n" +
+                "• Make sure their face is well-lit and visible\n" +
+                "• Remove masks or heavy obstructions\n\n" +
+                "Would you like to retake the photos?"
+            );
+            if (retry) {
+                goToStep(2);
+            }
         } else {
             alert("Enrollment Failed: " + (d.message || "Unknown error"));
         }

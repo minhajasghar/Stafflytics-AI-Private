@@ -122,9 +122,10 @@ import atexit
 
 def get_rtsp_writer():
     global rtsp_writer
-    # Force 640x480 stream resolution for live display in dashboard
-    # This prevents WebRTC packet drops and high CPU contention on the host machine.
-    w, h = 640, 480
+    # Use configured camera resolution for streaming, capped at 720p to balance quality/CPU
+    preset_cfg = QUALITY_PRESETS.get(camera_preset, QUALITY_PRESETS['480p'])
+    w = min(preset_cfg["size"][0], 1280)
+    h = min(preset_cfg["size"][1], 720)
     if rtsp_writer is None or rtsp_writer.width != w or rtsp_writer.height != h:
         if rtsp_writer is not None:
             try: rtsp_writer.stop()
@@ -260,8 +261,9 @@ class CameraStream:
                         ret, f = cap.read()
                         if ret and f is not None:
                             print(f"[SYSTEM] Camera successfully synchronized at Index {idx}.")
-                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                            preset_cfg = QUALITY_PRESETS.get(camera_preset, QUALITY_PRESETS['480p'])
+                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, preset_cfg["size"][0])
+                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, preset_cfg["size"][1])
                             cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
                             self.stream = cap
                             self.online = True
@@ -585,6 +587,12 @@ def get_wellbeing_analytics():
 @login_required
 def get_loyalty_analytics():
     return jsonify(database.get_loyalty_analytics())
+
+@app.route('/api/analytics/visitors')
+@login_required
+def get_visitor_analytics():
+    scope = request.args.get('scope', 'day')
+    return jsonify(database.get_visitor_analytics(scope))
 
 @app.route('/api/analytics/performance')
 @login_required
@@ -919,6 +927,48 @@ def register_staff():
         engine.load_known_faces()
         return jsonify({"status": "success"})
     except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/staff/enroll-with-faces', methods=['POST'])
+@login_required
+def enroll_staff_with_faces():
+    data = request.json
+    try:
+        import face_recognition
+        images = data.get('images', [])
+        if len(images) < 2:
+            return jsonify({"status": "error", "message": "Need at least 2 face captures"}), 400
+        
+        encodings = []
+        for b64_img in images:
+            try:
+                header, encoded = b64_img.split(",", 1)
+                img = Image.open(io.BytesIO(base64.b64decode(encoded)))
+                rgb = np.array(img.convert('RGB'))
+                encs = face_recognition.face_encodings(rgb)
+                if encs:
+                    encodings.append(encs[0])
+            except Exception:
+                continue
+        
+        if not encodings:
+            return jsonify({"status": "error", "message": "No valid face detected in any capture"}), 400
+        
+        # Average multiple encodings for robustness
+        avg_encoding = np.mean(encodings, axis=0)
+        avg_encoding = avg_encoding / np.linalg.norm(avg_encoding)
+        
+        database.add_staff(
+            data['id'], data['name'], data['role'],
+            pickle.dumps(avg_encoding),
+            data.get('shift_time', '10:00'),
+            data.get('shift', 'Morning'),
+            data.get('rate', 500),
+            data.get('salary_type', 'Monthly')
+        )
+        engine.load_known_faces()
+        return jsonify({"status": "success", "message": f"Enrolled {len(encodings)}/{len(images)} captures"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/events/all')
 @login_required

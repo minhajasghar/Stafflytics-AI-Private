@@ -132,24 +132,51 @@
             
             <div id="section-analytics" class="view-section hidden">
                 <header class="top-bar">
-                    <div><h1>Business Intelligence & Synergy</h1><p style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">Actionable insights based on staff engagement and guest traffic.</p></div>
+                    <div><h1>Visitor Analytics</h1><p style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">Face-based visitor tracking: new vs returning, frequency trends.</p></div>
+                    <div style="display:flex; gap:8px; background:#f1f5f9; padding:4px; border-radius:12px;">
+                        <button id="visitor-scope-day" class="scope-btn active" onclick="setVisitorScope('day')">Today</button>
+                        <button id="visitor-scope-month" class="scope-btn" onclick="setVisitorScope('month')">This Month</button>
+                    </div>
                 </header>
-                
-                <!-- Performance Metrics Row -->
+
+                <!-- Visitor Metrics Cards -->
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: var(--section-gap);">
+                    <div class="stat-card-big"><span class="stat-label">Unique Visitors</span><div class="stat-value" id="visitor-total">—</div></div>
+                    <div class="stat-card-big"><span class="stat-label">New Faces</span><div class="stat-value accent" id="visitor-new">—</div></div>
+                    <div class="stat-card-big"><span class="stat-label">Returning</span><div class="stat-value green" id="visitor-returning">—</div></div>
+                    <div class="stat-card-big"><span class="stat-label">Regular (2+ days)</span><div class="stat-value gold" id="visitor-regular">—</div></div>
+                </div>
+
+                <!-- Frequency Bar Chart -->
+                <div class="standard-card" style="margin-bottom: var(--section-gap);">
+                    <h3 style="margin-bottom:1rem;">Visit Frequency Distribution</h3>
+                    <div id="visitor-frequency-chart" style="display:flex; align-items:flex-end; gap:6px; height:120px; padding-top:10px;"></div>
+                    <div id="visitor-frequency-labels" style="display:flex; gap:6px; margin-top:6px; font-size:0.65rem; font-weight:700; color:var(--text-muted);"></div>
+                </div>
+
+                <!-- Daily Breakdown Table (month view) -->
+                <div class="standard-card" id="visitor-daily-card" style="display:none; margin-bottom: var(--section-gap);">
+                    <h3 style="margin-bottom:1rem;">Daily Breakdown</h3>
+                    <div style="overflow-x:auto;">
+                        <table class="data-table" style="width:100%;">
+                            <thead><tr><th>Date</th><th>Unique Visitors</th><th>New Faces</th><th>Total Events</th></tr></thead>
+                            <tbody id="visitor-daily-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Existing Synergy / Engagement / Wellbeing / Loyalty -->
                 <div id="analytics-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: var(--section-gap);"></div>
 
-                <!-- Deep Intelligence 3-Column Grid -->
                 <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--section-gap); align-items: stretch;">
                     <div class="standard-card">
                         <h3 style="margin-bottom:1.5rem;"><i class="fas fa-handshake-angle" style="color:var(--accent);"></i> Service Engagement</h3>
                         <div id="engagement-list" style="display:flex; flex-direction:column; gap:12px;"></div>
                     </div>
-                    
                     <div class="standard-card">
                         <h3 style="margin-bottom:1.5rem;"><i class="fas fa-house-medical" style="color:var(--red);"></i> Staff Well-being</h3>
                         <div id="wellbeing-list" style="display:flex; flex-direction:column; gap:12px;"></div>
                     </div>
-
                     <div class="standard-card">
                         <h3 style="margin-bottom:1.5rem;"><i class="fas fa-star" style="color:#FFD700;"></i> Customer Loyalty</h3>
                         <div id="loyalty-list" style="display:flex; flex-direction:column; gap:12px;"></div>
@@ -161,7 +188,7 @@
             <div id="section-staff" class="view-section hidden">
                 <header class="top-bar">
                     <div><h1>Staff Directory</h1><p style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">Manage your team members and their assignments.</p></div>
-                    <button class="btn-primary" onclick="showRegisterModal()"><i class="fas fa-user-plus"></i> Enroll New Staff</button>
+                    <button class="btn-primary" onclick="showEnrollModal()"><i class="fas fa-user-plus"></i> Enroll New Staff</button>
                 </header>
                 <div id="staff-directory-list" style="display: grid; gap: 1rem;"></div>
             </div>
@@ -360,23 +387,75 @@
         <div class="chat-input"><input type="text" id="chat-input-text" placeholder="Ask about payroll, reliability..." onkeypress="if(event.key=='Enter') sendChatMessage()"><button onclick="sendChatMessage()" style="border:none; background:none; color:var(--primary); cursor:pointer;"><i class="fas fa-paper-plane"></i></button></div>
     </div>
 
-    <button class="fab" onclick="showRegisterModal()"><i class="fas fa-plus"></i></button>
-    <div class="overlay" id="overlay" onclick="hideRegisterModal()" style="display:none;"></div>
-    <div class="modal" id="modal" style="display:none;">
-        <div class="modal-content">
-            <h2>Enroll Staff</h2>
-            <div class="form-group"><label>Full Name</label><input type="text" id="reg-name" required></div>
-            <div class="form-group"><label>ID</label><input type="text" id="reg-id" required></div>
-            <div class="form-group"><label>Role</label><select id="reg-role"><option>Manager</option><option>Chef</option><option>Waitstaff</option></select></div>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                <div class="form-group"><label>Shift Type</label><select id="reg-shift"><option>Morning</option><option>Evening</option></select></div>
-                <div class="form-group"><label>Start Time</label><input type="time" id="reg-shift-time" value="10:00"></div>
+    <button class="fab" onclick="showEnrollModal()"><i class="fas fa-plus"></i></button>
+    <div class="overlay" id="overlay" onclick="hideEnrollModal()" style="display:none;"></div>
+
+    <!-- ENROLLMENT MODAL: Multi-Step Face Capture Wizard -->
+    <div class="modal" id="enroll-modal" style="display:none;">
+        <div class="modal-content" style="max-width:600px;">
+            <!-- Step Indicator -->
+            <div style="display:flex; gap:8px; margin-bottom:1.5rem; justify-content:center;">
+                <div class="step-dot active" id="step-dot-1">1</div>
+                <div class="step-dot" id="step-dot-2">2</div>
+                <div class="step-dot" id="step-dot-3">3</div>
             </div>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                <div class="form-group"><label>Rate/Salary (Rs.)</label><input type="number" id="reg-rate" value="25000"></div>
-                <div class="form-group"><label>Type</label><select id="reg-salary-type"><option>Monthly</option><option>Hourly</option></select></div>
+
+            <!-- STEP 1: Employee Details -->
+            <div id="enroll-step-1">
+                <h2>Employee Details</h2>
+                <div class="form-group"><label>Full Name</label><input type="text" id="reg-name" required></div>
+                <div class="form-group"><label>ID</label><input type="text" id="reg-id" required></div>
+                <div class="form-group"><label>Role</label><select id="reg-role"><option>Manager</option><option>Chef</option><option>Waitstaff</option><option>Cook</option><option>Server</option></select></div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                    <div class="form-group"><label>Shift</label><select id="reg-shift"><option>Morning</option><option>Evening</option></select></div>
+                    <div class="form-group"><label>Start Time</label><input type="time" id="reg-shift-time" value="10:00"></div>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                    <div class="form-group"><label>Rate/Salary (Rs.)</label><input type="number" id="reg-rate" value="25000"></div>
+                    <div class="form-group"><label>Type</label><select id="reg-salary-type"><option>Monthly</option><option>Hourly</option></select></div>
+                </div>
+                <button onclick="goToStep(2)" class="btn-primary" style="width:100%; margin-top:1rem;" id="btn-step1-next">Next: Capture Face</button>
             </div>
-            <button onclick="submitRegistration()" id="btn-enroll-submit" style="width:100%; margin-top:1rem;" class="btn-primary">Capture & Enroll</button>
+
+            <!-- STEP 2: Face Capture Wizard -->
+            <div id="enroll-step-2" style="display:none;">
+                <h2 id="capture-heading">Capture 1: Look Straight</h2>
+                <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.5rem;" id="capture-instruction">Position your face in the center and press Capture</p>
+                
+                <!-- Live preview -->
+                <div style="position:relative; width:100%; aspect-ratio:4/3; background:#000; border-radius:12px; overflow:hidden; margin-bottom:1rem;">
+                    <canvas id="capture-canvas" style="width:100%; height:100%; object-fit:contain; display:block; background:#000;"></canvas>
+                    <!-- Face guide overlay -->
+                    <div style="position:absolute; inset:0; border:3px dashed rgba(255,255,255,0.4); border-radius:50%; width:50%; height:50%; top:25%; left:25%; box-sizing:border-box;"></div>
+                    <div style="position:absolute; bottom:10px; left:0; right:0; text-align:center; display:flex; gap:8px; justify-content:center;">
+                        <span id="capture-timer" style="background:rgba(0,0,0,0.7); color:white; padding:4px 16px; border-radius:20px; font-size:0.8rem; font-weight:700;"></span>
+                        <span id="face-status-badge" style="display:none; background:rgba(0,0,0,0.7); color:#22c55e; padding:4px 16px; border-radius:20px; font-size:0.8rem; font-weight:700;"><i class="fas fa-face-smile"></i> Face OK</span>
+                    </div>
+                </div>
+
+                <!-- Thumbnail strip -->
+                <div id="capture-thumbnails" style="display:flex; gap:8px; margin-bottom:1rem; min-height:60px;"></div>
+
+                <div style="display:flex; gap:10px;">
+                    <button onclick="goToStep(1)" style="flex:1; background:#f1f5f9; color:var(--text); border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Back</button>
+                    <button onclick="captureFace()" id="btn-capture-face" class="btn-primary" style="flex:2;">Capture</button>
+                    <button onclick="goToStep(3)" id="btn-capture-done" style="display:none; flex:1; background:var(--green); color:white; border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Done</button>
+                </div>
+            </div>
+
+            <!-- STEP 3: Review & Submit -->
+            <div id="enroll-step-3" style="display:none;">
+                <h2>Review & Enroll</h2>
+                <div id="review-captures" style="display:flex; gap:10px; margin-bottom:1rem; flex-wrap:wrap;"></div>
+                <div style="background:#f8fafc; border-radius:12px; padding:1rem; margin-bottom:1rem;">
+                    <div style="font-weight:700; margin-bottom:5px;"><span id="review-name"></span> (<span id="review-id"></span>)</div>
+                    <div style="font-size:0.8rem; color:var(--text-muted);"><span id="review-role"></span> • <span id="review-shift"></span></div>
+                </div>
+                <div style="display:flex; gap:10px;">
+                    <button onclick="goToStep(2)" style="flex:1; background:#f1f5f9; color:var(--text); border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Retake</button>
+                    <button onclick="submitEnrollment()" id="btn-enroll-submit" class="btn-primary" style="flex:2;">Enroll Staff</button>
+                </div>
+            </div>
         </div>
     </div>
 

@@ -381,6 +381,18 @@ def init_db():
         )
         ''')
 
+        # Visitor Analytics Log (every face detection event)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS visitor_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            customer_id INTEGER,
+            is_new_face BOOLEAN DEFAULT 1,
+            staff_id TEXT,
+            zone TEXT
+        )
+        ''')
+
         # System Settings
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS system_settings (
@@ -831,6 +843,100 @@ def get_today_customer_stats():
         r = cursor.fetchone()
         conn.close()
         return {"today_count": r[0] or 0, "today_minutes": round(r[1] or 0, 1)}
+
+def log_visitor_detection(customer_id, is_new_face, staff_id=None, zone=None):
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO visitor_log (customer_id, is_new_face, staff_id, zone) VALUES (?, ?, ?, ?)",
+            (customer_id, 1 if is_new_face else 0, staff_id, zone or "Main Hall")
+        )
+        conn.commit()
+        conn.close()
+
+def get_visitor_analytics(scope="day"):
+    """Returns per-day or per-month visitor analytics.
+    
+    Scope: 'day' for today, 'month' for current month.
+    """
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if scope == "month":
+            date_filter = "strftime('%m', timestamp, 'localtime') = strftime('%m', 'now', 'localtime') AND strftime('%Y', timestamp, 'localtime') = strftime('%Y', 'now', 'localtime')"
+        else:
+            date_filter = "date(timestamp, 'localtime') = date('now', 'localtime')"
+        
+        # Total unique visitors (by customer_id for known, by raw id for anonymous)
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT CASE 
+                WHEN customer_id IS NOT NULL THEN 'c:' || customer_id 
+                ELSE 'a:' || id 
+            END)
+            FROM visitor_log WHERE {date_filter}
+        """)
+        total_unique = cursor.fetchone()[0] or 0
+        
+        # New faces count (is_new_face = 1)
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT id) 
+            FROM visitor_log WHERE is_new_face = 1 AND {date_filter}
+        """)
+        new_faces = cursor.fetchone()[0] or 0
+        
+        # Regular customers — customer_id with visit on 2+ different days
+        cursor.execute(f"""
+            SELECT customer_id, COUNT(DISTINCT date(timestamp, 'localtime')) as visit_days
+            FROM visitor_log 
+            WHERE customer_id IS NOT NULL AND {date_filter}
+            GROUP BY customer_id
+        """)
+        regular_rows = cursor.fetchall()
+        regular_customers = sum(1 for r in regular_rows if r[1] >= 2)
+        returning_customers = sum(1 for r in regular_rows if r[1] < 2)
+        
+        # Visit frequency distribution (how many customers by visit-day count)
+        frequency = {}
+        for r in regular_rows:
+            days = r[1]
+            bucket = str(int(days)) + "d"
+            frequency[bucket] = frequency.get(bucket, 0) + 1
+        
+        # Daily breakdown for the month view
+        daily_breakdown = []
+        if scope == "month":
+            cursor.execute(f"""
+                SELECT date(timestamp, 'localtime') as day,
+                       COUNT(DISTINCT CASE WHEN customer_id IS NOT NULL THEN 'c:' || customer_id ELSE 'a:' || id END) as uniques,
+                       SUM(CASE WHEN is_new_face = 1 THEN 1 ELSE 0 END) as new_count,
+                       COUNT(*) as total_events
+                FROM visitor_log 
+                WHERE {date_filter}
+                GROUP BY day
+                ORDER BY day ASC
+            """)
+            for row in cursor.fetchall():
+                daily_breakdown.append({
+                    "date": row[0],
+                    "unique_visitors": row[1] or 0,
+                    "new_faces": row[2] or 0,
+                    "total_events": row[3] or 0
+                })
+        
+        conn.close()
+        
+        return {
+            "scope": scope,
+            "total_unique_visitors": total_unique,
+            "new_faces": new_faces,
+            "returning_customers": returning_customers,
+            "regular_customers": regular_customers,
+            "total_known": returning_customers + regular_customers,
+            "frequency_distribution": frequency,
+            "daily_breakdown": daily_breakdown
+        }
 
 def record_customer_session(table_id, duration, customer_id=None):
     with db_lock:

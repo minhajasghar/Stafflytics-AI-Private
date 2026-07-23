@@ -65,6 +65,7 @@ class VisionEngine:
         self.last_positions = {} # track_id -> (x, y)
         self.activity_buffer = {} # track_id -> seconds_active
         self.last_activity_sync = time.time()
+        self.visitor_logged = set() # track_ids that have been logged to visitor_log
         
         self.frame_count = 0
         self.rec_throttle_frames = 5
@@ -605,6 +606,21 @@ class VisionEngine:
                         if duration > 15:
                             database.record_customer_session("Auto-Table", duration, self.customer_timers[tid]["c_id"])
                         del self.customer_timers[tid]
+                    
+                    # Log visitor detection for analytics (once per track lifetime)
+                    if tid not in self.visitor_logged:
+                        self.visitor_logged.add(tid)
+                        state = self.person_states[tid]
+                        db_id = state.get("db_id")
+                        zone = state.get("zone", "Main Hall")
+                        if db_id and not str(db_id).startswith("C_"):
+                            database.log_visitor_detection(None, False, staff_id=db_id, zone=zone)
+                        elif db_id and str(db_id).startswith("C_"):
+                            c_id = int(str(db_id).split("_")[1])
+                            database.log_visitor_detection(c_id, False, zone=zone)
+                        else:
+                            database.log_visitor_detection(None, True, zone=zone)
+                    
                     del self.person_states[tid]
                     if tid in self.recognition_consensus: del self.recognition_consensus[tid]
 
