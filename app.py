@@ -81,9 +81,9 @@ def sync_camera_config():
     RTSP_URL = "rtsp://127.0.0.1:8554/cam"
     print(f"[SYSTEM] sync_camera_config: Redirected RTSP_URL to local proxy: '{RTSP_URL}'")
 QUALITY_PRESETS = {
-    "480p": {"size": (640, 480), "jpeg": 65, "label": "Standard (480p)"},
-    "720p": {"size": (1280, 720), "jpeg": 75, "label": "Enhanced (720p)"},
-    "1080p": {"size": (1920, 1080), "jpeg": 85, "label": "HD (1080p)"}
+    "480p": {"size": (640, 480), "jpeg": 80, "label": "Standard (480p)"},
+    "720p": {"size": (1280, 720), "jpeg": 85, "label": "Enhanced (720p)"},
+    "1080p": {"size": (1920, 1080), "jpeg": 90, "label": "HD (1080p)"}
 }
 
 def sync_camera_preset():
@@ -109,7 +109,7 @@ def sync_mailer_config():
 # sync_mailer_config() # Moved to background
 camera_online = False # Global status for dashboard
 camera_preset = "480p"
-camera_quality = 65
+camera_quality = 80
 camera_width = 640
 camera_height = 480
 
@@ -261,8 +261,9 @@ class CameraStream:
                         ret, f = cap.read()
                         if ret and f is not None:
                             print(f"[SYSTEM] Camera successfully synchronized at Index {idx}.")
-                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                            preset_cfg = QUALITY_PRESETS.get(camera_preset, QUALITY_PRESETS['480p'])
+                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, preset_cfg["size"][0])
+                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, preset_cfg["size"][1])
                             cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
                             self.stream = cap
                             self.online = True

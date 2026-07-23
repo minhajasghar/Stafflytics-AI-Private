@@ -115,6 +115,9 @@ class VisionEngine:
                 self.known_face_metadata = new_metadata
                 self.known_customer_encodings = c_encodings
                 self.known_customer_metadata = c_metadata
+                # Flush recognition consensus so existing tracks get re-evaluated
+                self.recognition_consensus.clear()
+                self.last_rec_attempt.clear()
             
             print(f"[AI] System Ready: {len(new_encodings)} Staff, {len(c_encodings)} Customers loaded.")
         except Exception as e: print(f"[AI Initialization Error] {e}")
@@ -161,7 +164,7 @@ class VisionEngine:
                         known_cust_meta = list(self.known_customer_metadata)
                     
                     if known_staff_enc:
-                        matches = face_recognition.compare_faces(known_staff_enc, face_encodings[0], tolerance=0.55)
+                        matches = face_recognition.compare_faces(known_staff_enc, face_encodings[0], tolerance=0.60)
                         if True in matches:
                             match_id = known_staff_meta[matches.index(True)]["id"]
                     
