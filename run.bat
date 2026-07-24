@@ -1,1 +1,1 @@
-@"C:\Users\Sultan Mahmood\AppData\Local\Programs\Python\Python312\python.exe" app.py
+@py -3.12 app.py

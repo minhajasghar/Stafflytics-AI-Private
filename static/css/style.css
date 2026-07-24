@@ -1,5 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
 
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
 :root {
     --primary: #1e1b4b;
     --primary-light: #312e81;
@@ -8,7 +12,7 @@
     --surface: #ffffff;
     --text: #0f172a;
     --text-muted: #64748b;
-    --border: var(--border);
+    --border: #e2e8f0;
     --red: #ef4444;
     --green: #10b981;
     --shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
@@ -122,7 +126,7 @@ body {
 }
 
 .nav-item:hover, .nav-item.active {
-    background: #f1f5f9;
+    background: var(--nav-hover);
     color: var(--primary);
 }
 
@@ -352,7 +356,8 @@ body {
 .event-card {
     padding: 12px;
     border-radius: 12px;
-    background: #f8fafc;
+    background: var(--bg);
+    color: var(--text);
     border-left: 4px solid var(--primary);
     font-size: 0.85rem;
 }
@@ -466,6 +471,8 @@ input, select {
     border: 2px solid var(--border);
     font-family: inherit;
     font-weight: 600;
+    background: var(--input-bg);
+    color: var(--text);
 }
 
 input:focus {

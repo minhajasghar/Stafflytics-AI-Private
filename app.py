@@ -67,7 +67,7 @@ engine = None        # Initialized asynchronously
 camera_stream = None # Initialized asynchronously
 
 # RTSP Camera Configuration
-PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
+PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.1.3:554/cam/realmonitor?channel=1&subtype=0"
 RTSP_URL = "rtsp://127.0.0.1:8554/mystream"
 
 def sync_camera_config():
@@ -177,6 +177,10 @@ class CameraStream:
     def _attempt_connection(self):
         global camera_online
         print(f"[SYSTEM] Starting Camera Synchronization Loop... (RTSP_URL='{RTSP_URL}')")
+        if self.stream is not None:
+            try: self.stream.release()
+            except: pass
+            self.stream = None
 
         # Try RTSP URL with multiple common stream paths
         if RTSP_URL:
@@ -287,6 +291,10 @@ class CameraStream:
         retry_count = 0
         while not self.stopped:
             if not self.online:
+                if self.stream is not None:
+                    try: self.stream.release()
+                    except: pass
+                    self.stream = None
                 if self._attempt_connection():
                     print("[SYSTEM] Camera Signal Established.")
                     retry_count = 0
@@ -1030,8 +1038,41 @@ def email_settings():
         sync_mailer_config()
         sync_camera_config()
         sync_camera_preset()
+        global camera_stream
+        if camera_stream:
+            print("[SYSTEM] Reconnecting camera to apply new settings...")
+            camera_stream.online = False
         return jsonify({"status": "success"})
     return jsonify(database.get_system_settings())
+
+@app.route('/api/analytics/customers/history')
+@login_required
+def get_customer_history():
+    with database.db_lock:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT cp.name, cp.id, vl.timestamp, vl.zone
+            FROM visitor_log vl
+            JOIN customer_profiles cp ON vl.customer_id = cp.id
+            ORDER BY vl.timestamp DESC LIMIT 100
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        history = []
+        for r in rows:
+            name = r[0]
+            c_id = r[1]
+            timestamp = r[2]
+            zone = r[3]
+            history.append({
+                "name": f"Regular Guest" if name == "New Guest" else name,
+                "id": c_id,
+                "time": str(timestamp),
+                "zone": zone
+            })
+        return jsonify(history)
 
 @app.route('/api/camera/test', methods=['POST'])
 @login_required

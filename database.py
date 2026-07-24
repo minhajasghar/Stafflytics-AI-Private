@@ -958,8 +958,32 @@ def record_customer_session(table_id, duration, customer_id=None):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO customers (table_id, duration_minutes, exit_time, customer_id) VALUES (?, ?, CURRENT_TIMESTAMP, ?)", 
-                       (table_id, round(duration / 60.0, 2), customer_id))
+        
+        # Deduplication: check if there was a session in the last few minutes in the same area
+        # 5 minutes for recognized customers, 3 minutes for anonymous ones
+        limit_minutes = 5 if customer_id else 3
+        limit_time = (datetime.now() - timedelta(minutes=limit_minutes)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        if customer_id:
+            cursor.execute("""
+                SELECT id, duration_minutes FROM customers 
+                WHERE customer_id = ? AND exit_time >= ? 
+                ORDER BY exit_time DESC LIMIT 1
+            """, (customer_id, limit_time))
+        else:
+            cursor.execute("""
+                SELECT id, duration_minutes FROM customers 
+                WHERE customer_id IS NULL AND table_id = ? AND exit_time >= ? 
+                ORDER BY exit_time DESC LIMIT 1
+            """, (table_id, limit_time))
+            
+        existing = cursor.fetchone()
+        if existing:
+            new_duration = existing[1] + round(duration / 60.0, 2)
+            cursor.execute("UPDATE customers SET duration_minutes = ?, exit_time = CURRENT_TIMESTAMP WHERE id = ?", (new_duration, existing[0]))
+        else:
+            cursor.execute("INSERT INTO customers (table_id, duration_minutes, exit_time, customer_id) VALUES (?, ?, CURRENT_TIMESTAMP, ?)", 
+                           (table_id, round(duration / 60.0, 2), customer_id))
         
         if customer_id:
             # Deduplication: only increment visit_count if last visit was on a different day

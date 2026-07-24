@@ -82,6 +82,7 @@ function handleNavClick(element) {
             loadEngagementAnalytics();
             loadWellbeingAnalytics();
             loadLoyaltyAnalytics();
+            loadCustomerVisitHistory();
         }
         if (targetId === 'section-performance') loadPerformanceRankings();
         if (targetId === 'section-roi') loadSalaryAdmin();
@@ -1154,3 +1155,30 @@ document.addEventListener('DOMContentLoaded', () => {
         Notification.requestPermission();
     }
 });
+
+async function loadCustomerVisitHistory() {
+    const tbody = document.getElementById('customer-history-body');
+    if (!tbody) return;
+    try {
+        const res = await fetch('/api/analytics/customers/history');
+        if (!res.ok) {
+            tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:2rem; color:var(--text-muted);">Failed to load history</td></tr>';
+            return;
+        }
+        const data = await res.json();
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:2rem; color:var(--text-muted);">No visit logs recorded yet</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.map(row => {
+            return `<tr>
+                <td><b>${row.name}</b> <span style="font-size:0.7rem; opacity:0.6;">(ID ${row.id})</span></td>
+                <td>${row.time}</td>
+                <td><span class="status-badge" style="background:var(--nav-hover); color:var(--text);">${row.zone}</span></td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error("Error loading customer history:", e);
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:2rem; color:var(--red);">Error connecting to API</td></tr>';
+    }
+}

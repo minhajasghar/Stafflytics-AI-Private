@@ -9,14 +9,14 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         .chat-bubble { position: fixed; bottom: 30px; right: 30px; width: 60px; height: 60px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; cursor: pointer; box-shadow: 0 10px 25px rgba(217,119,6,0.4); z-index: 2000; transition: 0.3s; }
-        .chat-container { position: fixed; bottom: 100px; right: 30px; width: 350px; height: 450px; background: white; border-radius: 24px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); z-index: 2000; display: none; flex-direction: column; border: 1px solid #e2e8f0; overflow: hidden; }
+        .chat-container { position: fixed; bottom: 100px; right: 30px; width: 350px; height: 450px; background: var(--surface); color: var(--text); border-radius: 24px; box-shadow: var(--shadow-lg); z-index: 2000; display: none; flex-direction: column; border: 1px solid var(--border); overflow: hidden; }
         .chat-header { background: var(--primary); padding: 1.5rem; color: white; display: flex; justify-content: space-between; align-items: center; }
         .chat-messages { flex: 1; padding: 1rem; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; }
         .msg { padding: 8px 12px; border-radius: 12px; max-width: 80%; }
-        .msg.ai { background: #f1f5f9; align-self: flex-start; }
+        .msg.ai { background: var(--bg); color: var(--text); align-self: flex-start; }
         .msg.user { background: var(--primary); color: white; align-self: flex-end; }
-        .chat-input { display: flex; padding: 10px; border-top: 1px solid #e2e8f0; }
-        .chat-input input { flex: 1; border: none; padding: 10px; font-family: inherit; }
+        .chat-input { display: flex; padding: 10px; border-top: 1px solid var(--border); background: var(--surface); }
+        .chat-input input { flex: 1; border: none; padding: 10px; font-family: inherit; background: transparent; color: var(--text); }
         .chat-input input:focus { outline: none; }
         .btn-delete { background: #fee2e2; color: #b91c1c; border: none; padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 0.7rem; font-weight: 800; }
         
@@ -74,7 +74,7 @@
             <div id="section-monitor" class="view-section">
                 <header class="top-bar">
                     <div><h1>Stafflytics Monitor</h1><p id="clock" style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">Loading...</p></div>
-                    <div style="background: white; padding: 5px 15px; border-radius: 50px; border: 1px solid #e2e8f0; font-size: 0.8rem; font-weight: 700;">
+                    <div style="background: var(--surface); padding: 5px 15px; border-radius: 50px; border: 1px solid var(--border); font-size: 0.8rem; font-weight: 700; color: var(--text);">
                         <span class="status-dot" id="system-status-dot"></span> <span id="system-status-text">System Live</span>
                     </div>
                 </header>
@@ -134,7 +134,7 @@
             <div id="section-analytics" class="view-section hidden">
                 <header class="top-bar">
                     <div><h1>Visitor Analytics</h1><p style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">Face-based visitor tracking: new vs returning, frequency trends.</p></div>
-                    <div style="display:flex; gap:8px; background:#f1f5f9; padding:4px; border-radius:12px;">
+                    <div style="display:flex; gap:8px; background:var(--border); padding:4px; border-radius:12px;">
                         <button id="visitor-scope-day" class="scope-btn active" onclick="setVisitorScope('day')">Today</button>
                         <button id="visitor-scope-month" class="scope-btn" onclick="setVisitorScope('month')">This Month</button>
                     </div>
@@ -153,6 +153,25 @@
                     <h3 style="margin-bottom:1rem;">Visit Frequency Distribution</h3>
                     <div id="visitor-frequency-chart" style="display:flex; align-items:flex-end; gap:6px; height:120px; padding-top:10px;"></div>
                     <div id="visitor-frequency-labels" style="display:flex; gap:6px; margin-top:6px; font-size:0.65rem; font-weight:700; color:var(--text-muted);"></div>
+                </div>
+
+                <!-- Customer Visit History Log -->
+                <div class="standard-card" style="margin-bottom: var(--section-gap);">
+                    <h3 style="margin-bottom:1rem;"><i class="fas fa-history" style="color:var(--accent);"></i> Customer Visit History Log (All-Time Record)</h3>
+                    <div style="overflow-x:auto; max-height: 250px;">
+                        <table class="data-table" style="width:100%;">
+                            <thead>
+                                <tr>
+                                    <th>Customer ID/Name</th>
+                                    <th>Date & Time</th>
+                                    <th>Area / Zone</th>
+                                </tr>
+                            </thead>
+                            <tbody id="customer-history-body">
+                                <tr><td colspan="3" style="text-align:center; padding:2rem; color:var(--text-muted);">Loading visit logs...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
                 <!-- Daily Breakdown Table (month view) -->
@@ -204,15 +223,15 @@
                 
                 <!-- Daily Insight Summary -->
                 <div id="daily-report-summary" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-bottom: 2rem;">
-                    <div style="background: white; padding: 1.5rem; border-radius: 16px; box-shadow: var(--shadow);">
+                    <div style="background: var(--surface); padding: 1.5rem; border-radius: 16px; box-shadow: var(--shadow); color: var(--text);">
                         <span style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted);">TOTAL STAFF HOURS</span>
                         <div id="report-total-hours" style="font-size: 1.5rem; font-weight: 800;">0.0h</div>
                     </div>
-                    <div style="background: white; padding: 1.5rem; border-radius: 16px; box-shadow: var(--shadow);">
+                    <div style="background: var(--surface); padding: 1.5rem; border-radius: 16px; box-shadow: var(--shadow); color: var(--text);">
                         <span style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted);">LATE ARRIVALS</span>
                         <div id="report-total-lates" style="font-size: 1.5rem; font-weight: 800; color: var(--red);">0</div>
                     </div>
-                    <div style="background: white; padding: 1.5rem; border-radius: 16px; box-shadow: var(--shadow); border: 2px solid var(--accent);">
+                    <div style="background: var(--surface); padding: 1.5rem; border-radius: 16px; box-shadow: var(--shadow); border: 2px solid var(--accent); color: var(--text);">
                         <span style="font-size: 0.75rem; font-weight: 700; color: var(--accent);">TEAM EFFICIENCY AVG</span>
                         <div id="report-total-efficiency" style="font-size: 1.5rem; font-weight: 800;">0%</div>
                     </div>
@@ -220,7 +239,7 @@
 
                 <div class="report-container"><table class="data-table"><thead><tr><th>Date</th><th>Staff Name</th><th>Role</th><th>In</th><th>Out</th><th>Work Hrs</th><th>Efficiency</th><th>Status</th></tr></thead><tbody id="attendance-report-body"></tbody></table></div>
 
-                <div style="margin-top:2rem; background:white; padding:2rem; border-radius:24px; box-shadow:var(--shadow);">
+                <div style="margin-top:2rem; background:var(--surface); padding:2rem; border-radius:24px; box-shadow:var(--shadow); color: var(--text);">
                     <h2 style="margin-bottom:1.5rem;">Executive Report Center</h2>
                     <p style="color:var(--text-muted); margin-bottom:1.5rem;">Professional business intelligence reports including performance metrics, synergy analytics, and security summaries.</p>
                     <div style="display:flex; gap:15px;">
@@ -359,7 +378,7 @@
                             <label style="font-size:0.75rem; font-weight:700; color:var(--text-muted); display:flex; justify-content:space-between;">
                                 <span>Video Quality</span>
                             </label>
-                            <select id="cam-quality" style="width:100%; margin-top:5px; padding:8px; border-radius:6px; border:1px solid #e2e8f0; background:white; font-size:0.8rem;">
+                            <select id="cam-quality" style="width:100%; margin-top:5px; padding:8px; border-radius:6px; border:1px solid var(--border); background:var(--input-bg); color:var(--text); font-size:0.8rem;">
                                 <option value="480p">Standard (480p)</option>
                                 <option value="720p">Enhanced (720p)</option>
                                 <option value="1080p">HD (1080p)</option>
@@ -452,7 +471,7 @@
             <div id="enroll-step-3" style="display:none;">
                 <h2>Review & Enroll</h2>
                 <div id="review-captures" style="display:flex; gap:10px; margin-bottom:1rem; flex-wrap:wrap;"></div>
-                <div style="background:#f8fafc; border-radius:12px; padding:1rem; margin-bottom:1rem;">
+                <div style="background:var(--bg); border-radius:12px; padding:1rem; margin-bottom:1rem; color:var(--text);">
                     <div style="font-weight:700; margin-bottom:5px;"><span id="review-name"></span> (<span id="review-id"></span>)</div>
                     <div style="font-size:0.8rem; color:var(--text-muted);"><span id="review-role"></span> • <span id="review-shift"></span></div>
                 </div>

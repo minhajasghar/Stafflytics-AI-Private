@@ -333,7 +333,7 @@ class VisionEngine:
             DETECTION_WIDTH = 640
             DETECTION_HEIGHT = 480
             small_frame = cv2.resize(frame, (DETECTION_WIDTH, DETECTION_HEIGHT))
-            results = model.track(small_frame, persist=True, verbose=False)
+            results = model.track(small_frame, persist=True, verbose=False, conf=0.25, iou=0.45)
             
             scale_x = w_out / DETECTION_WIDTH
             scale_y = h_out / DETECTION_HEIGHT
@@ -619,7 +619,10 @@ class VisionEngine:
                         if str(db_id).startswith("C_"):
                             color_hex = "#ffd700"
                             visits = state.get("visits", 1)
-                            label = f"REGULAR {state_id} ({visits}x)"
+                            if visits > 1:
+                                label = f"REGULAR {state_id} ({visits}x)"
+                            else:
+                                label = f"FIRST-TIME {state_id}"
                         else:
                             color_hex = "#4f46e5"
                             role_tag = f" [{state_role}]" if state_role and state_role != "None" else ""
