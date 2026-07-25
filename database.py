@@ -41,7 +41,9 @@ class MySQLRow:
             if idx is not None:
                 return self.tuple_data[idx]
             raise KeyError(f"Column '{key}' not found in row")
-        raise TypeError("Index must be int or str")
+        elif isinstance(key, slice):
+            return self.tuple_data[key]
+        raise TypeError("Index must be int, str or slice")
         
     def keys(self):
         return list(self.column_names.keys())
