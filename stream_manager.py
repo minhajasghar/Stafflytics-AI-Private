@@ -11,6 +11,58 @@ BIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "bin"))
 MEDIAMTX_EXE = os.path.join(BIN_DIR, "mediamtx.exe")
 FFMPEG_EXE = os.path.join(BIN_DIR, "ffmpeg.exe")
 
+current_physical_rtsp_url = None
+
+def write_mediamtx_config():
+    global current_physical_rtsp_url
+    if not current_physical_rtsp_url:
+        return
+    
+    config_path = os.path.join(BIN_DIR, "mediamtx.yml")
+    ffmpeg_path = os.path.join(BIN_DIR, "ffmpeg.exe")
+    
+    config_content = f"""# MediaMTX configuration for Stafflytics (auto-generated)
+rtspAddress: :8554
+rtpAddress: :8556
+rtcpAddress: :8557
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigin: '*'
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcHandshakeTimeout: 30s
+
+readTimeout: 30s
+
+rtmp: no
+hls: no
+srt: no
+
+paths:
+  cam:
+    source: {current_physical_rtsp_url}
+    rtspTransport: tcp
+
+  mystream:
+    runOnDemand: '\"{ffmpeg_path}\" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf \"scale=1280:720\" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
+    runOnDemandRestart: yes
+"""
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(config_content)
+        print(f"[STREAM MANAGER] Dynamically wrote mediamtx.yml with physical source: {current_physical_rtsp_url}")
+    except Exception as e:
+        print(f"[STREAM MANAGER ERROR] Failed to write custom mediamtx.yml: {e}")
+
+def setup_mediamtx(physical_rtsp_url):
+    global current_physical_rtsp_url
+    current_physical_rtsp_url = physical_rtsp_url
+    write_mediamtx_config()
+    stop_mediamtx()
+    start_mediamtx()
+
+
 MEDIAMTX_URL = "https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_windows_amd64.zip"
 # GyanD essentials zip containing ffmpeg.exe
 FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/7.0.1/ffmpeg-7.0.1-essentials_build.zip"
@@ -59,6 +111,10 @@ def _downloader_worker():
             
             # Also extract the yml config if present
             extract_file_from_zip(zip_path, "mediamtx.yml", os.path.join(BIN_DIR, "mediamtx.yml"))
+            
+            # Apply dynamic config if available
+            if current_physical_rtsp_url:
+                write_mediamtx_config()
             
             # Cleanup zip
             try: os.remove(zip_path)
@@ -118,6 +174,8 @@ def ensure_binaries_async():
         download_status = "Complete"
         download_complete = True
         print("[STREAM MANAGER] Binaries already exist in bin/ folder.")
+        if current_physical_rtsp_url:
+            write_mediamtx_config()
         start_mediamtx()
         return
         

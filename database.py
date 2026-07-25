@@ -353,6 +353,15 @@ def init_db():
         )
         ''')
 
+        # Migration: Ensure customer_profiles has a photo column
+        try:
+            cursor.execute("ALTER TABLE customer_profiles ADD COLUMN photo LONGTEXT NULL")
+            conn.commit()
+            print("[DB MIGRATION] Added photo column to customer_profiles table.")
+        except Exception:
+            pass # Column already exists
+
+
         # Special Events & Peak Traffic
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS special_events (
@@ -1005,26 +1014,29 @@ def get_known_customers():
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, face_encoding, visit_count FROM customer_profiles")
+        cursor.execute("SELECT id, name, face_encoding, visit_count, photo FROM customer_profiles")
         rows = cursor.fetchall()
         conn.close()
         return rows
 
-def register_customer(encoding):
+def register_customer(encoding, photo=None):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO customer_profiles (face_encoding) VALUES (?)", (encoding,))
+        cursor.execute("INSERT INTO customer_profiles (face_encoding, photo) VALUES (?, ?)", (encoding, photo))
         new_id = cursor.lastrowid
         conn.commit()
         conn.close()
         return new_id
 
-def update_customer_encoding(customer_id, encoding_blob):
+def update_customer_encoding(customer_id, encoding_blob, photo=None):
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE customer_profiles SET face_encoding = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?", (encoding_blob, customer_id))
+        if photo:
+            cursor.execute("UPDATE customer_profiles SET face_encoding = ?, last_seen = CURRENT_TIMESTAMP, photo = ? WHERE id = ?", (encoding_blob, photo, customer_id))
+        else:
+            cursor.execute("UPDATE customer_profiles SET face_encoding = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?", (encoding_blob, customer_id))
         conn.commit()
         conn.close()
 
@@ -1033,13 +1045,13 @@ def get_loyalty_analytics():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT name, visit_count, last_seen 
+            SELECT name, visit_count, last_seen, photo, id 
             FROM customer_profiles 
             ORDER BY visit_count DESC LIMIT 10
         """)
         rows = cursor.fetchall()
         conn.close()
-        return [{"name": f"{r[0]} #{i+1}" if r[0] == 'New Guest' else r[0], "visits": r[1], "last_visit": r[2][:10]} for i, r in enumerate(rows)]
+        return [{"name": f"{r[0]} #{i+1}" if r[0] == 'New Guest' else r[0], "visits": r[1], "last_visit": r[2][:10] if r[2] else "N/A", "photo": r[3], "id": r[4]} for i, r in enumerate(rows)]
 
 def record_sale(staff_id, amount):
     with db_lock:

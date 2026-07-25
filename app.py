@@ -8,7 +8,7 @@ import database
 # import face_recognition
 import threading
 import os
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|max_delay;2000000|fflags;+genpts+igndts"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport=tcp|max_delay=2000000|loglevel=fatal"
 import time
 import pickle
 import numpy as np
@@ -67,8 +67,8 @@ engine = None        # Initialized asynchronously
 camera_stream = None # Initialized asynchronously
 
 # RTSP Camera Configuration
-PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.1.3:554/cam/realmonitor?channel=1&subtype=0"
-RTSP_URL = "rtsp://127.0.0.1:8554/mystream"
+PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
+RTSP_URL = "rtsp://127.0.0.1:8554/cam"
 
 def sync_camera_config():
     global RTSP_URL, PHYSICAL_RTSP_URL
@@ -77,8 +77,13 @@ def sync_camera_config():
     if saved and saved.strip():
         PHYSICAL_RTSP_URL = saved.strip()
         print(f"[SYSTEM] PHYSICAL_RTSP_URL updated to: '{PHYSICAL_RTSP_URL}'")
+    
+    # Configure and restart local MediaMTX proxy with the physical camera URL
+    import stream_manager
+    stream_manager.setup_mediamtx(PHYSICAL_RTSP_URL)
+
     # Route through local MediaMTX proxy to multiplex camera connections and save CPU/bandwidth
-    RTSP_URL = "rtsp://127.0.0.1:8554/mystream"
+    RTSP_URL = "rtsp://127.0.0.1:8554/cam"
     print(f"[SYSTEM] sync_camera_config: Redirected RTSP_URL to local proxy: '{RTSP_URL}'")
 QUALITY_PRESETS = {
     "480p": {"size": (640, 480), "jpeg": 80, "label": "Standard (480p)"},
@@ -934,15 +939,17 @@ def delete_staff(staff_id):
     engine.load_known_faces()
     return jsonify({"status": "success"})
 
-@app.route('/api/register', methods=['POST'])
+@app.route('/api/staff/enroll', methods=['POST'])
 @login_required
-def register_staff():
+def enroll_staff():
     data = request.json
     try:
         import face_recognition # Local import
+        from vision_engine import face_rec_lock
         header, encoded = data['image'].split(",", 1)
         img = Image.open(io.BytesIO(base64.b64decode(encoded)))
-        enc = face_recognition.face_encodings(np.array(img.convert('RGB')))
+        with face_rec_lock:
+            enc = face_recognition.face_encodings(np.array(img.convert('RGB')))
         if not enc: return jsonify({"status": "error", "message": "No face detected"}), 400
         database.add_staff(data['id'], data['name'], data['role'], pickle.dumps(enc[0]), 
                           data.get('shift_time', '10:00'), data.get('shift', 'Morning'), data.get('rate', 500), data.get('salary_type', 'Monthly'))
@@ -956,6 +963,7 @@ def enroll_staff_with_faces():
     data = request.json
     try:
         import face_recognition
+        from vision_engine import face_rec_lock
         images = data.get('images', [])
         if len(images) < 2:
             return jsonify({"status": "error", "message": "Need at least 2 face captures"}), 400
@@ -969,13 +977,15 @@ def enroll_staff_with_faces():
                 rgb = np.array(pil_img.convert('RGB'))
                 
                 # Detect face location first, then crop to face for encoding
-                # This matches how the recognition worker processes faces (tight crop)
-                face_locs = face_recognition.face_locations(rgb)
+                with face_rec_lock:
+                    face_locs = face_recognition.face_locations(rgb)
                 if not face_locs:
                     continue
                 t, r, b, l = face_locs[0]
-                face_crop = rgb[t:b, l:r]
-                encs = face_recognition.face_encodings(face_crop)
+                
+                with face_rec_lock:
+                    # Pass the known location directly to get robust and fast face encoding
+                    encs = face_recognition.face_encodings(rgb, known_face_locations=[(t, r, b, l)])
                 if encs:
                     encodings.append(encs[0])
                     if idx == 0:
@@ -1052,10 +1062,10 @@ def get_customer_history():
         conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT cp.name, cp.id, vl.timestamp, vl.zone
-            FROM visitor_log vl
-            JOIN customer_profiles cp ON vl.customer_id = cp.id
-            ORDER BY vl.timestamp DESC LIMIT 100
+            SELECT cp.name, cp.id, c.entry_time, c.duration_minutes, c.table_id, cp.photo
+            FROM customers c
+            JOIN customer_profiles cp ON c.customer_id = cp.id
+            ORDER BY c.entry_time DESC LIMIT 100
         """)
         rows = cursor.fetchall()
         conn.close()
@@ -1064,13 +1074,17 @@ def get_customer_history():
         for r in rows:
             name = r[0]
             c_id = r[1]
-            timestamp = r[2]
-            zone = r[3]
+            entry_time = r[2]
+            duration = r[3]
+            table_id = r[4]
+            photo = r[5]
             history.append({
-                "name": f"Regular Guest" if name == "New Guest" else name,
+                "name": "Regular Guest" if name == "New Guest" else name,
                 "id": c_id,
-                "time": str(timestamp),
-                "zone": zone
+                "time": str(entry_time),
+                "duration": f"{round(duration, 1)} min" if duration else "N/A",
+                "zone": table_id,
+                "photo": photo
             })
         return jsonify(history)
 

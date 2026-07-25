@@ -162,21 +162,26 @@ async function loadLoyaltyAnalytics() {
             return;
         }
 
-        list.innerHTML = data.map(item => `
-            <div style="padding:1rem; background:rgba(255, 215, 0, 0.05); border-radius:16px; border:1px solid #fef3c7; border-left:4px solid var(--accent); display:flex; justify-content:space-between; align-items:center;">
-                <div style="display:flex; align-items:center; gap:12px;">
-                    <div style="width:35px; height:35px; background:var(--accent); border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-size:0.8rem;"><i class="fas fa-crown"></i></div>
-                    <div>
-                        <div style="font-weight:800; font-size:0.95rem;">${item.name}</div>
-                        <div style="font-size:0.65rem; color:var(--text-muted); font-weight:700;">Last Seen: ${item.last_visit}</div>
+        list.innerHTML = data.map(item => {
+            const avatar = item.photo
+                ? `<img src="${item.photo}" style="width:35px; height:35px; border-radius:50%; object-fit:cover; border:1px solid #fef3c7;">`
+                : `<div style="width:35px; height:35px; background:var(--accent); border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-size:0.8rem;"><i class="fas fa-crown"></i></div>`;
+            return `
+                <div style="padding:1rem; background:rgba(255, 215, 0, 0.05); border-radius:16px; border:1px solid #fef3c7; border-left:4px solid var(--accent); display:flex; justify-content:space-between; align-items:center;">
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        ${avatar}
+                        <div>
+                            <div style="font-weight:800; font-size:0.95rem;">${item.name} <span style="font-size:0.7rem; opacity:0.6; font-weight:normal;">(ID ${item.id})</span></div>
+                            <div style="font-size:0.65rem; color:var(--text-muted); font-weight:700;">Last Seen: ${item.last_visit}</div>
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-weight:800; color:var(--accent); font-size:1.2rem; letter-spacing:-0.5px;">${item.visits}</div>
+                        <div style="font-size:0.6rem; font-weight:800; text-transform:uppercase; letter-spacing:0.5px;">Visits</div>
                     </div>
                 </div>
-                <div style="text-align:right;">
-                    <div style="font-weight:800; color:var(--accent); font-size:1.2rem; letter-spacing:-0.5px;">${item.visits}</div>
-                    <div style="font-size:0.6rem; font-weight:800; text-transform:uppercase; letter-spacing:0.5px;">Visits</div>
-                </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
     } catch (e) { console.error("Loyalty Load Error", e); }
 }
 
@@ -1162,23 +1167,31 @@ async function loadCustomerVisitHistory() {
     try {
         const res = await fetch('/api/analytics/customers/history');
         if (!res.ok) {
-            tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:2rem; color:var(--text-muted);">Failed to load history</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:2rem; color:var(--text-muted);">Failed to load history</td></tr>';
             return;
         }
         const data = await res.json();
         if (data.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:2rem; color:var(--text-muted);">No visit logs recorded yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:2rem; color:var(--text-muted);">No visit logs recorded yet</td></tr>';
             return;
         }
         tbody.innerHTML = data.map(row => {
+            const avatar = row.photo 
+                ? `<img src="${row.photo}" style="width:30px; height:30px; border-radius:50%; object-fit:cover; border:1px solid var(--border);">`
+                : `<div style="width:30px; height:30px; background:var(--primary); color:white; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:0.6rem;"><i class="fas fa-user"></i></div>`;
             return `<tr>
-                <td><b>${row.name}</b> <span style="font-size:0.7rem; opacity:0.6;">(ID ${row.id})</span></td>
+                <td style="display:flex; align-items:center; gap:8px;">
+                    ${avatar}
+                    <div>
+                        <b>${row.name}</b> <span style="font-size:0.7rem; opacity:0.6;">(ID ${row.id})</span>
+                    </div>
+                </td>
                 <td>${row.time}</td>
+                <td>${row.duration || 'N/A'}</td>
                 <td><span class="status-badge" style="background:var(--nav-hover); color:var(--text);">${row.zone}</span></td>
             </tr>`;
         }).join('');
     } catch (e) {
-        console.error("Error loading customer history:", e);
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:2rem; color:var(--red);">Error connecting to API</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:2rem; color:var(--red);">Error loading history</td></tr>';
     }
 }

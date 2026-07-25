@@ -10,6 +10,8 @@ import threading
 # YOLO and face_recognition moved inside for lazy loading
 model = None
 model_loading_active = False
+face_rec_lock = threading.Lock()
+
 
 class Zone:
     def __init__(self, name, points, unauthorized_roles=[]):
@@ -105,11 +107,12 @@ class VisionEngine:
             cust_data = database.get_known_customers()
             c_encodings = []
             c_metadata = []
-            for c_id, name, encoding_blob, visit_count in cust_data:
+            for row in cust_data:
+                c_id, name, encoding_blob, visit_count, photo = row[:5]
                 try: encoding = pickle.loads(encoding_blob)
                 except: encoding = np.frombuffer(encoding_blob, dtype=np.float64)
                 c_encodings.append(encoding)
-                c_metadata.append({"id": c_id, "name": name, "visits": visit_count})
+                c_metadata.append({"id": c_id, "name": name, "visits": visit_count, "photo": photo})
             
             with self.lock:
                 self.known_face_encodings = new_encodings
@@ -154,7 +157,8 @@ class VisionEngine:
                 rgb_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
                 rgb_face = np.ascontiguousarray(rgb_face, dtype=np.uint8)
                 
-                face_encodings = face_recognition.face_encodings(rgb_face)
+                with face_rec_lock:
+                    face_encodings = face_recognition.face_encodings(rgb_face)
                 
                 match_id = "Unknown"
                 match_source = None
@@ -215,6 +219,7 @@ class VisionEngine:
                                     state["db_id"] = f"C_{c_id}"
                                     state["name"] = meta["name"]
                                     state["visits"] = meta.get("visits", 1)
+                                    state["photo"] = meta.get("photo")
                                     state["last_sync"] = current_time
                             elif winner != "Unknown":
                                 meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
@@ -250,7 +255,13 @@ class VisionEngine:
                                 best_cust_dist = float(c_distances[best_cust_idx])
                                 if best_cust_dist < 0.7:
                                     match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
-                                    database.update_customer_encoding(known_cust_meta[best_cust_idx]['id'], pickle.dumps(face_encodings[0]))
+                                    
+                                    # Convert face_crop to base64 photo
+                                    import base64
+                                    _, buffer = cv2.imencode('.jpg', face_crop)
+                                    b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+                                    
+                                    database.update_customer_encoding(known_cust_meta[best_cust_idx]['id'], pickle.dumps(face_encodings[0]), photo=b64_photo)
                                     fallback_match = True
                                     print(f"[AI] Auto-registered as RETURNING customer: {known_cust_meta[best_cust_idx]['name']} (dist={best_cust_dist:.4f})")
                                     with self.lock:
@@ -263,9 +274,15 @@ class VisionEngine:
                                             state["id"] = f"GUEST #{c_id}"
                                             state["name"] = known_cust_meta[best_cust_idx]["name"]
                                             state["visits"] = known_cust_meta[best_cust_idx].get("visits", 1)
+                                            state["photo"] = b64_photo
                                             state["last_sync"] = current_time
                             if not fallback_match:
-                                new_c_id = database.register_customer(pickle.dumps(face_encodings[0]))
+                                # Convert face_crop to base64 photo
+                                import base64
+                                _, buffer = cv2.imencode('.jpg', face_crop)
+                                b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+                                
+                                new_c_id = database.register_customer(pickle.dumps(face_encodings[0]), photo=b64_photo)
                                 print(f"[AI] Auto-registered as NEW customer (ID {new_c_id})")
                                 self.load_known_faces()
                                 with self.lock:
@@ -276,6 +293,7 @@ class VisionEngine:
                                         state["name"] = "New Guest"
                                         state["last_sync"] = current_time
                                         state["visits"] = 1
+                                        state["photo"] = b64_photo
                             else:
                                 self.load_known_faces()
                                 
@@ -615,21 +633,17 @@ class VisionEngine:
                         state_role = state.get("role", "None")
                         status = state.get("pose_label", "NEUTRAL")
                         
-                    if db_id:
-                        if str(db_id).startswith("C_"):
-                            color_hex = "#ffd700"
-                            visits = state.get("visits", 1)
-                            if visits > 1:
-                                label = f"REGULAR {state_id} ({visits}x)"
-                            else:
-                                label = f"FIRST-TIME {state_id}"
-                        else:
-                            color_hex = "#4f46e5"
-                            role_tag = f" [{state_role}]" if state_role and state_role != "None" else ""
-                            label = f"{state_name}{role_tag} [{status}]"
-                    else:
-                        color_hex = "#d97706"
+                    if not db_id or (str(db_id).startswith("C_") and state.get("visits", 1) <= 1):
+                        color_hex = "#10b981"  # Emerald Green for New Face
                         label = "NEW FACE"
+                    elif str(db_id).startswith("C_"):
+                        color_hex = "#f59e0b"  # Amber for Regular Customer
+                        visits = state.get("visits", 1)
+                        label = f"REGULAR CUSTOMER ({visits}x)"
+                    else:
+                        color_hex = "#4f46e5"  # Indigo for Staff
+                        role_tag = f" ({state_role})" if state_role and state_role != "None" else ""
+                        label = f"STAFF: {state_name}{role_tag}"
                     
                     # Compile detection metadata for canvas rendering
                     detections.append({
