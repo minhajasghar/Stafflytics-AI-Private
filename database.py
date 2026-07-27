@@ -68,8 +68,12 @@ def translate_sqlite_to_mysql(query):
     query = query.replace('key TEXT PRIMARY KEY', '`key` VARCHAR(255) PRIMARY KEY')
     query = query.replace('value TEXT', '`value` VARCHAR(1000)')
     query = query.replace('key, value FROM system_settings', '`key`, `value` FROM system_settings')
+    query = query.replace('SELECT value FROM system_settings', 'SELECT `value` FROM system_settings')
     query = query.replace('key = %s', '`key` = %s')
     query = query.replace('value = %s', '`value` = %s')
+    # Escape literal WHERE key = '...' patterns (reserved word `key` in MariaDB)
+    query = re.sub(r'(?i)\bWHERE\s+key\s*=', 'WHERE `key` =', query)
+    query = re.sub(r'(?i)\bAND\s+key\s*=', 'AND `key` =', query)
     
     # Date/Time functions
     query = query.replace("date('now', 'localtime')", "CURDATE()")
@@ -87,6 +91,9 @@ def translate_sqlite_to_mysql(query):
     query = query.replace("date(entry_time)", "DATE(entry_time)")
     query = query.replace("date(a.entry_time)", "DATE(a.entry_time)")
     query = query.replace("date(exit_time)", "DATE(exit_time)")
+    # Handle parameterized date(%s, 'localtime') — after ? has been replaced with %s above
+    query = re.sub(r"date\(%s,\s*'localtime'\)", "DATE(%s)", query)
+    query = re.sub(r"time\(%s,\s*'localtime'\)", "TIME(%s)", query)
     
     # Local timestamps
     query = query.replace("strftime('%s', exit_time, 'localtime')", "UNIX_TIMESTAMP(exit_time)")
@@ -605,13 +612,20 @@ def record_attendance(staff_id):
                 shift_start = res[0] if res else "10:00"
                 
                 # Apply configurable grace period (default 10 minutes)
-                cursor.execute("SELECT value FROM system_settings WHERE key = 'late_grace_minutes'")
+                cursor.execute("SELECT `value` FROM system_settings WHERE `key` = 'late_grace_minutes'")
                 grace_row = cursor.fetchone()
                 grace_minutes = int(grace_row[0]) if grace_row and grace_row[0] else 10
                 
-                # Compare with grace: time('now') > time(shift_start + grace_minutes)
-                cursor.execute("SELECT time('now', 'localtime') > time(?, '+' || ? || ' minutes')", (shift_start, grace_minutes))
-                is_late = cursor.fetchone()[0]
+                # Compute is_late in Python — avoids SQLite-specific time() syntax in MariaDB
+                from datetime import datetime as _dt, timedelta as _td
+                _now = _dt.now()
+                try:
+                    _shift_dt = _dt.strptime(shift_start, "%H:%M").replace(
+                        year=_now.year, month=_now.month, day=_now.day)
+                except Exception:
+                    _shift_dt = _now.replace(hour=10, minute=0, second=0, microsecond=0)
+                _grace_dt = _shift_dt + _td(minutes=int(grace_minutes))
+                is_late = 1 if _now > _grace_dt else 0
 
                 # Entry and Exit both initialized to now
                 cursor.execute("INSERT INTO attendance (staff_id, entry_time, exit_time, is_late) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)", (staff_id, is_late))
@@ -1235,7 +1249,7 @@ def get_wellbeing_data():
         conn = get_db_connection()
         cursor = conn.cursor()
         # Get configurable threshold from system settings
-        cursor.execute("SELECT value FROM system_settings WHERE key = 'wellness_threshold'")
+        cursor.execute("SELECT `value` FROM system_settings WHERE `key` = 'wellness_threshold'")
         thr_row = cursor.fetchone()
         break_threshold = int(thr_row[0]) if thr_row and thr_row[0] else 4
         cursor.execute("""

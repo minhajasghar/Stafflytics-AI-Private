@@ -719,11 +719,12 @@ class VisionEngine:
                                     self.processing_tracks.add(track_id)
                                 self.recognition_queue.put((track_id, face_img.copy(), current_zone, current_time))
                     else:
-                        # Sync presence heartbeat
+                        # Sync presence heartbeat (only for confirmed staff, not customers)
                         with self.lock:
                             last_sync = state["last_sync"]
                         if current_time - last_sync > self.heartbeat_interval:
-                            database.record_attendance(db_id)
+                            if db_id and not str(db_id).startswith("C_"):
+                                database.record_attendance(db_id)
                             with self.lock:
                                 state["last_sync"] = current_time
                         
@@ -906,9 +907,19 @@ class VisionEngine:
             return cv2.resize(frame, target_size), []
 
     def get_active_staff(self):
+        """Returns only confirmed staff members currently visible (excludes customers)."""
         active_dict = {}
         with self.lock:
             for tid, state in self.person_states.items():
-                if time.time() - state["last_active"] < 2 and state["db_id"] is not None:
-                    active_dict[state["db_id"]] = {"id": state["id"], "name": state.get("name", "Unknown"), "role": state.get("role", "None"), "zone": state["zone"]}
+                db_id = state.get("db_id")
+                # Only include enrolled staff — skip None (unknown) and C_xxx (customers)
+                if (time.time() - state["last_active"] < 2
+                        and db_id is not None
+                        and not str(db_id).startswith("C_")):
+                    active_dict[db_id] = {
+                        "id": state["id"],
+                        "name": state.get("name", "Unknown"),
+                        "role": state.get("role", "None"),
+                        "zone": state["zone"]
+                    }
         return list(active_dict.values())
