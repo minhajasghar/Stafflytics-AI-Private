@@ -183,7 +183,7 @@ body {
     position: relative;
     box-shadow: var(--shadow-lg);
     overflow: hidden;
-    border: 4px solid white;
+    border: 4px solid var(--border);
     flex: 1;
     min-height: 0;
     display: flex;
@@ -279,9 +279,9 @@ body {
     font-size: 1rem;
 }
 
-.stat-blue { background: #e0e7ff; color: var(--primary); }
-.stat-green { background: #dcfce7; color: var(--accent); }
-.stat-red { background: #fee2e2; color: var(--alert); }
+.stat-blue { background: color-mix(in srgb, var(--primary) 20%, transparent); color: var(--primary); }
+.stat-green { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.stat-red { background: color-mix(in srgb, var(--alert) 20%, transparent); color: var(--alert); }
 
 .stat-info span { font-size: 0.75rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 .stat-info div { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.5px; }

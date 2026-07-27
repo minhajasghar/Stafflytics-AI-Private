@@ -286,11 +286,11 @@ async function loadStaffDirectory() {
         }
 
         list.innerHTML = data.map(s => {
-            const avatar = s.photo
-                ? `<img src="${s.photo}" style="width:50px; height:50px; border-radius:12px; object-fit:cover; border:2px solid #e2e8f0;">`
-                : `<div style="width:50px; height:50px; background:var(--primary); color:white; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:1.2rem;"><i class="fas fa-user-tie"></i></div>`;
+const avatar = s.photo
+    ? `<img src="${s.photo}" style="width:60px; height:70px; border-radius:12px; object-fit:contain; border:2px solid var(--border); background:var(--surface); cursor:pointer;" onclick="window.open('${s.photo}', '_blank')" title="Click to enlarge">`
+    : `<div style="width:60px; height:70px; background:var(--primary); color:white; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:1.5rem;"><i class="fas fa-user-tie"></i></div>`;
             return `
-            <div class="staff-card" style="display:flex; justify-content:space-between; align-items:center; padding:1.5rem; background:white; border-radius:16px; border:1px solid #e2e8f0; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);">
+            <div class="staff-card" style="display:flex; justify-content:space-between; align-items:center; padding:1.5rem; background:var(--card-bg); border-radius:16px; border:1px solid var(--border); box-shadow:var(--shadow);">
                 <div style="display:flex; align-items:center; gap:1.5rem;">
                     ${avatar}
                     <div>
@@ -350,7 +350,7 @@ async function loadCameraSettings() {
         const res = await fetch('/api/settings/emails');
         const data = await res.json();
         const urlEl = document.getElementById('cam-rtsp-url');
-        if (urlEl) urlEl.value = data.rtsp_url || 'rtsp://admin:L2DD2594@192.168.50.137:554/cam/realmonitor?channel=1&subtype=0';
+        if (urlEl) urlEl.value = data.rtsp_url || 'rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=1';
         const qualityEl = document.getElementById('cam-quality');
         if (qualityEl) {
             qualityEl.value = data.camera_preset || '480p';
@@ -623,13 +623,20 @@ function skipInitialization() {
 
 async function loadAttendanceReports() {
     const filter = document.getElementById('report-filter');
-    let month = '', year = '';
-    if (filter && filter.value) [year, month] = filter.value.split('-');
-    const tbody = document.getElementById('attendance-report-body');
+    const dateFilter = document.getElementById('report-date-filter');
+    let url = '/api/reports/attendance';
+    let tbody = document.getElementById('attendance-report-body');
     if (!tbody) return;
+
+    if (dateFilter && dateFilter.value) {
+        url = `/api/reports/attendance?date=${dateFilter.value}`;
+    } else if (filter && filter.value) {
+        const [year, month] = filter.value.split('-');
+        url = `/api/reports/attendance?month=${month}&year=${year}`;
+    }
     
     try {
-        const res = await fetch(`/api/reports/attendance?month=${month}&year=${year}`);
+        const res = await fetch(url);
         const data = await res.json();
         
         if (data.length === 0) {

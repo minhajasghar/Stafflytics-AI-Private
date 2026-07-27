@@ -67,7 +67,7 @@ engine = None        # Initialized asynchronously
 camera_stream = None # Initialized asynchronously
 
 # RTSP Camera Configuration
-PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
+PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=1"
 RTSP_URL = "rtsp://127.0.0.1:8554/cam"
 
 def sync_camera_config():
@@ -86,17 +86,17 @@ def sync_camera_config():
     RTSP_URL = "rtsp://127.0.0.1:8554/cam"
     print(f"[SYSTEM] sync_camera_config: Redirected RTSP_URL to local proxy: '{RTSP_URL}'")
 QUALITY_PRESETS = {
-    "480p": {"size": (640, 480), "jpeg": 80, "label": "Standard (480p)"},
-    "720p": {"size": (1280, 720), "jpeg": 85, "label": "Enhanced (720p)"},
-    "1080p": {"size": (1920, 1080), "jpeg": 90, "label": "HD (1080p)"}
+    "480p": {"size": (640, 480), "jpeg": 85, "label": "Standard (480p)"},
+    "720p": {"size": (1280, 720), "jpeg": 90, "label": "Enhanced (720p)"},
+    "1080p": {"size": (1920, 1080), "jpeg": 95, "label": "HD (1080p)"}
 }
 
 def sync_camera_preset():
     global camera_preset, camera_quality, camera_width, camera_height
     conf = database.get_system_settings()
-    preset = conf.get('camera_preset', '480p')
+    preset = conf.get('camera_preset', '720p')
     if preset not in QUALITY_PRESETS:
-        preset = '480p'
+        preset = '720p'
     camera_preset = preset
     cfg = QUALITY_PRESETS[preset]
     camera_width, camera_height = cfg["size"]
@@ -113,10 +113,10 @@ def sync_mailer_config():
     mailer.OWNER_EMAIL = conf.get('owner_email', 'admin@stafflytics.ai')
 # sync_mailer_config() # Moved to background
 camera_online = False # Global status for dashboard
-camera_preset = "480p"
-camera_quality = 80
-camera_width = 640
-camera_height = 480
+camera_preset = "720p"
+camera_quality = 90
+camera_width = 1280
+camera_height = 720
 
 latest_processed_frame = None
 processed_frame_lock = threading.Lock()
@@ -207,12 +207,10 @@ class CameraStream:
                 base = m.group(1) if m else RTSP_URL
 
                 paths = [
-                    '/cam/realmonitor?channel=1&subtype=0',
                     '/cam/realmonitor?channel=1&subtype=1',
-                    '/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif',
                     '/cam/realmonitor?channel=1&subtype=1&unicast=true&proto=Onvif',
-                    '/cam/realmonitor?channel=1&subtype=00',
-                    '/cam/realmonitor?channel=1&subtype=00&authbasic=YWRtaW46',
+                    '/cam/realmonitor?channel=1&subtype=0',
+                    '/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif',
                     '/stream1',
                     '/Streaming/Channels/101',
                     '/h264/ch1/main/av_stream',
@@ -874,7 +872,11 @@ def export_attendance(format):
 @app.route('/api/reports/attendance')
 @login_required
 def get_attendance_report():
-    data = database.get_monthly_attendance(request.args.get('month'), request.args.get('year'))
+    date_param = request.args.get('date')
+    if date_param:
+        data = database.get_daily_attendance(date_param)
+    else:
+        data = database.get_monthly_attendance(request.args.get('month'), request.args.get('year'))
     report = []
     for row in data:
         entry, exit_t, name, role, hours, sal_type, is_late, active_sec = row
@@ -984,12 +986,21 @@ def enroll_staff_with_faces():
                 t, r, b, l = face_locs[0]
                 
                 with face_rec_lock:
-                    # Pass the known location directly to get robust and fast face encoding
                     encs = face_recognition.face_encodings(rgb, known_face_locations=[(t, r, b, l)])
                 if encs:
                     encodings.append(encs[0])
                     if idx == 0:
-                        first_photo = b64_img
+                        margin = 30
+                        h_rgb, w_rgb = rgb.shape[:2]
+                        y1 = max(0, t - margin)
+                        y2 = min(h_rgb, b + margin)
+                        x1 = max(0, l - margin)
+                        x2 = min(w_rgb, r + margin)
+                        face_pil = Image.fromarray(rgb[y1:y2, x1:x2])
+                        buf = io.BytesIO()
+                        face_pil.save(buf, format='JPEG', quality=90)
+                        b64_face = base64.b64encode(buf.getvalue()).decode('utf-8')
+                        first_photo = f"data:image/jpeg;base64,{b64_face}"
             except Exception:
                 continue
         
@@ -1139,11 +1150,10 @@ def test_camera():
     m = re.match(r'(rtsp://[^@]+@[^/]+|rtsp://[^/]+)', url)
     base = m.group(1) if m else url
     paths = [
-        '/cam/realmonitor?channel=1&subtype=0',
         '/cam/realmonitor?channel=1&subtype=1',
-        '/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif',
         '/cam/realmonitor?channel=1&subtype=1&unicast=true&proto=Onvif',
-        '/cam/realmonitor?channel=1&subtype=00',
+        '/cam/realmonitor?channel=1&subtype=0',
+        '/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif',
         '/stream1', '/Streaming/Channels/101',
         '/h264/ch1/main/av_stream', '/h264_stream',
         '/onvif1', '/onvif/stream2',

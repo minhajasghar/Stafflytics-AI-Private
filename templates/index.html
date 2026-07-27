@@ -217,8 +217,10 @@
             <div id="section-reporting" class="view-section hidden">
                 <div style="display:flex; justify-content:space-between; margin-bottom: 2rem;">
                     <h1>Attendance Reports</h1>
-                    <div class="filter-group">
-                        <input type="month" id="report-filter" onchange="loadAttendanceReports()" class="custom-input">
+                    <div class="filter-group" style="display:flex; gap:10px; align-items:center;">
+                        <input type="month" id="report-filter" onchange="loadAttendanceReports()" class="custom-input" style="max-width:180px;">
+                        <span style="color:var(--text-muted); font-weight:700; font-size:0.75rem;">OR</span>
+                        <input type="date" id="report-date-filter" onchange="loadAttendanceReports()" class="custom-input" style="max-width:180px;">
                     </div>
                 </div>
                 
@@ -555,12 +557,23 @@
 
         window.addEventListener('resize', resizeCanvas);
 
+        let detectionDwellBuffer = []; // { detections, timestamp }
         function drawDetections(detections) {
             const canvas = document.getElementById('detection-canvas');
             if (!canvas) return;
             const ctx = canvas.getContext('2d');
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+            const now = Date.now();
+            if (!detections || detections.length === 0) {
+                detectionDwellBuffer = detectionDwellBuffer.filter(d => now - d.ts < 400);
+                if (detectionDwellBuffer.length > 0) {
+                    detections = detectionDwellBuffer[detectionDwellBuffer.length - 1].dets;
+                }
+            } else {
+                detectionDwellBuffer.push({ dets: detections, ts: now });
+                if (detectionDwellBuffer.length > 10) detectionDwellBuffer.shift();
+            }
             if (!detections || detections.length === 0) return;
 
             // Coordinates from backend YOLOv8-pose are scaled to 640x480

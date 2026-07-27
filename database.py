@@ -825,6 +825,25 @@ def get_monthly_attendance(month=None, year=None):
         conn.close()
         return rows
 
+def get_daily_attendance(date_str):
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        query = """
+            SELECT a.entry_time, a.exit_time, s.name, s.role,
+                   (CASE WHEN a.exit_time IS NOT NULL 
+                         THEN (strftime('%s', a.exit_time, 'localtime') - strftime('%s', a.entry_time, 'localtime')) 
+                         ELSE (strftime('%s', 'now', 'localtime') - strftime('%s', a.entry_time, 'localtime')) END) / 3600.0,
+                   s.salary_type, a.is_late, a.active_seconds
+            FROM attendance a JOIN staff s ON a.staff_id = s.id
+            WHERE date(a.entry_time, 'localtime') = date(?, 'localtime')
+            ORDER BY a.entry_time DESC
+        """
+        cursor.execute(query, (date_str,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
 def get_staff_latest_locations():
     with db_lock:
         conn = get_db_connection()
@@ -997,17 +1016,7 @@ def record_customer_session(table_id, duration, customer_id=None):
                            (table_id, round(duration / 60.0, 2), customer_id))
         
         if customer_id:
-            # Deduplication: only increment visit_count if last visit was on a different day
-            cursor.execute("SELECT date(last_seen, 'localtime') FROM customer_profiles WHERE id = ?", (customer_id,))
-            row = cursor.fetchone()
-            if row:
-                last_visit_date = row[0]
-                cursor.execute("SELECT date('now', 'localtime')")
-                today_str = cursor.fetchone()[0]
-                if last_visit_date != today_str:
-                    cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP, visit_count = visit_count + 1 WHERE id = ?", (customer_id,))
-                else:
-                    cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", (customer_id,))
+            cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP, visit_count = visit_count + 1 WHERE id = ?", (customer_id,))
             
         conn.commit()
         conn.close()

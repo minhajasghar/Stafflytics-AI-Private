@@ -68,6 +68,7 @@ class VisionEngine:
         self.activity_buffer = {} # track_id -> seconds_active
         self.last_activity_sync = time.time()
         self.visitor_logged = set() # track_ids that have been logged to visitor_log
+        self.dwell_buffer = [] # (detection, timestamp) for persistence when YOLO briefly misses
         
         self.frame_count = 0
         self.rec_throttle_frames = 5
@@ -157,8 +158,35 @@ class VisionEngine:
                 rgb_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
                 rgb_face = np.ascontiguousarray(rgb_face, dtype=np.uint8)
                 
+                h_f, w_f = rgb_face.shape[:2]
+
+                # First try direct encoding
                 with face_rec_lock:
                     face_encodings = face_recognition.face_encodings(rgb_face)
+
+                # Try upscaling for small crops
+                if not face_encodings and (h_f < 120 or w_f < 120):
+                    scale = min(4.0, max(160.0 / max(h_f, 1), 160.0 / max(w_f, 1), 1.0))
+                    enlarged = cv2.resize(rgb_face, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                    with face_rec_lock:
+                        face_encodings = face_recognition.face_encodings(enlarged)
+
+                # If still no encoding, try locating face first
+                if not face_encodings:
+                    with face_rec_lock:
+                        face_locs = face_recognition.face_locations(rgb_face, model='hog')
+                    if not face_locs and h_f >= 80 and w_f >= 80:
+                        scale = min(3.0, 160.0 / max(h_f, 1), 160.0 / max(w_f, 1))
+                        if scale > 1.0:
+                            enlarged = cv2.resize(rgb_face, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                            with face_rec_lock:
+                                face_locs = face_recognition.face_locations(enlarged, model='hog')
+                            if face_locs:
+                                with face_rec_lock:
+                                    face_encodings = face_recognition.face_encodings(enlarged, known_face_locations=face_locs)
+                    elif face_locs:
+                        with face_rec_lock:
+                            face_encodings = face_recognition.face_encodings(rgb_face, known_face_locations=face_locs)
                 
                 match_id = "Unknown"
                 match_source = None
@@ -197,6 +225,7 @@ class VisionEngine:
                         print(f"[AI] No match found — best staff dist={best_staff_dist:.4f}, best cust dist={best_cust_dist:.4f}")
                 
                 # Update consensus and state under lock
+                refresh_faces = False
                 with self.lock:
                     if track_id not in self.recognition_consensus:
                         self.recognition_consensus[track_id] = []
@@ -221,6 +250,7 @@ class VisionEngine:
                                     state["visits"] = meta.get("visits", 1)
                                     state["photo"] = meta.get("photo")
                                     state["last_sync"] = current_time
+                                    refresh_faces = True
                             elif winner != "Unknown":
                                 meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
                                 if meta:
@@ -230,6 +260,8 @@ class VisionEngine:
                                     state["db_id"] = meta["id"]
                                     state["last_sync"] = current_time
                                     database.record_attendance(meta["id"])
+                if refresh_faces:
+                    self.load_known_faces()
                 
                 # Handle auto-registration outside lock
                 if match_id == "Unknown" and face_encodings:
@@ -456,7 +488,8 @@ class VisionEngine:
                                 }
                 
                 # Process active tracks
-                for box, track_id in zip(boxes, track_ids):
+                all_kps = results[0].keypoints.xy.cpu().numpy() if results[0].keypoints is not None else None
+                for i, (box, track_id) in enumerate(zip(boxes, track_ids)):
                     x1, y1, x2, y2 = map(int, box)
                     center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
                     
@@ -529,13 +562,31 @@ class VisionEngine:
                         last_attempt = self.last_rec_attempt.get(track_id, 0)
                         if not is_processing and (current_time - last_attempt > 2.0):
                             self.last_rec_attempt[track_id] = current_time
-                            
-                            # Optimize face crop: crop only upper 35% of the body box
-                            y1_face = max(0, y1_out)
-                            y2_face = min(h_out, y1_out + int((y2_out - y1_out) * 0.35))
-                            face_img = output_frame[y1_face:y2_face, max(0, x1_out):min(w_out, x2_out)]
-                            
-                            if face_img.size > 0 and face_img.shape[0] >= 32 and face_img.shape[1] >= 32:
+
+                            face_img = None
+
+                            # Try precise face crop using YOLO keypoints (nose)
+                            if all_kps is not None and i < len(all_kps):
+                                kp = all_kps[i]
+                                nose = kp[0]
+                                if nose[0] > 0 and nose[1] > 0:
+                                    nose_x = int(nose[0] * scale_x)
+                                    nose_y = int(nose[1] * scale_y)
+                                    face_size = max(int((y2_out - y1_out) * 0.20), 60)
+                                    x1f = max(0, nose_x - face_size)
+                                    y1f = max(0, nose_y - face_size)
+                                    x2f = min(w_out, nose_x + face_size)
+                                    y2f = min(h_out, nose_y + face_size)
+                                    if x2f > x1f and y2f > y1f:
+                                        face_img = output_frame[y1f:y2f, x1f:x2f]
+
+                            if face_img is None:
+                                y1_face = max(0, y1_out)
+                                y2_face = min(h_out, y1_out + int((y2_out - y1_out) * 0.20))
+                                x_margin = int((x2_out - x1_out) * 0.05)
+                                face_img = output_frame[y1_face:y2_face, max(0, x1_out - x_margin):min(w_out, x2_out + x_margin)]
+
+                            if face_img is not None and face_img.shape[0] >= 64 and face_img.shape[1] >= 64:
                                 with self.lock:
                                     self.processing_tracks.add(track_id)
                                 self.recognition_queue.put((track_id, face_img.copy(), current_zone, current_time))
@@ -688,6 +739,14 @@ class VisionEngine:
                         database.update_active_time(staff_id, seconds)
                 self.activity_buffer = {}
                 self.last_activity_sync = current_time
+
+            # Detection dwell: keep showing last known positions for 0.5s if YOLO briefly misses
+            now = time.time()
+            if not detections and self.dwell_buffer:
+                self.dwell_buffer = [(d, t) for d, t in self.dwell_buffer if now - t < 0.5]
+                detections = [d for d, _ in self.dwell_buffer]
+            elif detections:
+                self.dwell_buffer = [(d, now) for d in detections]
 
             return output_frame, detections
         except Exception as e:
