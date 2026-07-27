@@ -1,3 +1,9 @@
+import threading
+import os
+# Suppress FFmpeg/HEVC decoder noise before any OpenCV/FFmpeg init
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport=tcp|max_delay=2000000"
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+os.environ["FFREPORT"] = "level=quiet"
 from flask import Flask, render_template, Response, jsonify, request, session, redirect, url_for
 from flask_sock import Sock
 import json
@@ -6,9 +12,6 @@ import database
 # Heavy imports moved to background thread
 # from vision_engine import VisionEngine
 # import face_recognition
-import threading
-import os
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport=tcp|max_delay=2000000|loglevel=fatal"
 import time
 import pickle
 import numpy as np
@@ -121,35 +124,10 @@ camera_height = 720
 latest_processed_frame = None
 processed_frame_lock = threading.Lock()
 
-# RTSP/WebRTC streaming writer
-rtsp_writer = None
 import atexit
-
-def get_rtsp_writer():
-    global rtsp_writer
-    # Use configured camera resolution for streaming, capped at 720p to balance quality/CPU
-    preset_cfg = QUALITY_PRESETS.get(camera_preset, QUALITY_PRESETS['480p'])
-    w = min(preset_cfg["size"][0], 1280)
-    h = min(preset_cfg["size"][1], 720)
-    if rtsp_writer is None or rtsp_writer.width != w or rtsp_writer.height != h:
-        if rtsp_writer is not None:
-            try: rtsp_writer.stop()
-            except: pass
-        import stream_manager
-        rtsp_writer = stream_manager.RTSPStreamWriter(
-            rtsp_url="rtsp://127.0.0.1:8554/mystream",
-            width=w,
-            height=h,
-            fps=10
-        )
-    return rtsp_writer
 
 def cleanup_streams():
     print("[SYSTEM] Cleaning up streaming subprocesses...")
-    global rtsp_writer
-    if rtsp_writer is not None:
-        try: rtsp_writer.stop()
-        except: pass
     try:
         import stream_manager
         stream_manager.stop_mediamtx()
@@ -246,7 +224,17 @@ class CameraStream:
                             cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
                             cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)
                         if cap and cap.isOpened():
-                            ret, f = cap.read()
+                            old_stderr = os.dup(2) if hasattr(os, 'dup') else None
+                            if old_stderr is not None:
+                                null_fd = os.open(os.devnull, os.O_WRONLY)
+                                os.dup2(null_fd, 2)
+                                os.close(null_fd)
+                            try:
+                                ret, f = cap.read()
+                            finally:
+                                if old_stderr is not None:
+                                    os.dup2(old_stderr, 2)
+                                    os.close(old_stderr)
                             if ret and f is not None:
                                 print(f"[SYSTEM] Camera successfully synchronized via RTSP: {display_url}")
                                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
@@ -309,7 +297,18 @@ class CameraStream:
                     continue
 
             try:
-                grabbed, frame = self.stream.read()
+                # Suppress noisy FFmpeg HEVC decoder warnings during frame read
+                old_stderr = os.dup(2) if hasattr(os, 'dup') else None
+                if old_stderr is not None:
+                    null_fd = os.open(os.devnull, os.O_WRONLY)
+                    os.dup2(null_fd, 2)
+                    os.close(null_fd)
+                try:
+                    grabbed, frame = self.stream.read()
+                finally:
+                    if old_stderr is not None:
+                        os.dup2(old_stderr, 2)
+                        os.close(old_stderr)
                 if not grabbed or frame is None:
                     print("[SYSTEM] Camera Signal Lost. Attempting Reconnection...")
                     self.online = False
@@ -378,10 +377,10 @@ def vision_engine_loop():
                 
             last_processed_frame_id = frame_id
             
-            # Cap target to actual camera resolution to avoid blurry upscaling
-            tw = min(camera_width or 640, camera_stream.actual_width)
-            th = min(camera_height or 480, camera_stream.actual_height)
-            raw_frame, detections = engine.process_frame(frame, target_size=(tw, th))
+            # Use user-selected resolution — honor the setting rather than capping to camera native
+            tw = camera_width or 640
+            th = camera_height or 480
+            raw_frame, detections = engine.process_frame(frame, target_size=(tw, th), original_frame=frame)
             
             with processed_frame_lock:
                 latest_processed_frame = raw_frame.copy() if raw_frame is not None else None
@@ -497,9 +496,9 @@ def generate_frames():
                     if fid == last_sent_frame_id:
                         time.sleep(0.01)
                         continue
-                    # Cap to actual camera resolution to prevent blurry upscaling
-                    tw = min(camera_width or 640, camera_stream.actual_width)
-                    th = min(camera_height or 480, camera_stream.actual_height)
+                    # Use user-selected resolution (may upscale if camera native is lower)
+                    tw = camera_width or 640
+                    th = camera_height or 480
                     display_frame = cv2.resize(res, (tw, th))
                     buf_frame_id = fid
                 else:
@@ -953,7 +952,7 @@ def enroll_staff():
         with face_rec_lock:
             enc = face_recognition.face_encodings(np.array(img.convert('RGB')))
         if not enc: return jsonify({"status": "error", "message": "No face detected"}), 400
-        database.add_staff(data['id'], data['name'], data['role'], pickle.dumps(enc[0]), 
+        database.add_staff(data['id'], data['name'], data['role'], pickle.dumps([enc[0]]), 
                           data.get('shift_time', '10:00'), data.get('shift', 'Morning'), data.get('rate', 500), data.get('salary_type', 'Monthly'))
         engine.load_known_faces()
         return jsonify({"status": "success"})
@@ -989,8 +988,8 @@ def enroll_staff_with_faces():
                     encs = face_recognition.face_encodings(rgb, known_face_locations=[(t, r, b, l)])
                 if encs:
                     encodings.append(encs[0])
-                    if idx == 0:
-                        margin = 30
+                    if idx == 0 or first_photo is None:
+                        margin = 80
                         h_rgb, w_rgb = rgb.shape[:2]
                         y1 = max(0, t - margin)
                         y2 = min(h_rgb, b + margin)
@@ -1007,13 +1006,11 @@ def enroll_staff_with_faces():
         if not encodings:
             return jsonify({"status": "error", "message": "No valid face detected in any capture"}), 400
         
-        # Average multiple encodings for robustness
-        avg_encoding = np.mean(encodings, axis=0)
-        avg_encoding = avg_encoding / np.linalg.norm(avg_encoding)
-        
+        # Store ALL individual encodings from different angles for robust multi-angle matching
+        # Each encoding remains separate so face_distance can pick the best angle match
         database.add_staff(
             data['id'], data['name'], data['role'],
-            pickle.dumps(avg_encoding),
+            pickle.dumps(encodings),
             data.get('shift_time', '10:00'),
             data.get('shift', 'Morning'),
             data.get('rate', 500),
@@ -1069,35 +1066,8 @@ def email_settings():
 @app.route('/api/analytics/customers/history')
 @login_required
 def get_customer_history():
-    with database.db_lock:
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT cp.name, cp.id, c.entry_time, c.duration_minutes, c.table_id, cp.photo
-            FROM customers c
-            JOIN customer_profiles cp ON c.customer_id = cp.id
-            ORDER BY c.entry_time DESC LIMIT 100
-        """)
-        rows = cursor.fetchall()
-        conn.close()
-        
-        history = []
-        for r in rows:
-            name = r[0]
-            c_id = r[1]
-            entry_time = r[2]
-            duration = r[3]
-            table_id = r[4]
-            photo = r[5]
-            history.append({
-                "name": "Regular Guest" if name == "New Guest" else name,
-                "id": c_id,
-                "time": str(entry_time),
-                "duration": f"{round(duration, 1)} min" if duration else "N/A",
-                "zone": table_id,
-                "photo": photo
-            })
-        return jsonify(history)
+    return jsonify(database.get_customer_history())
+
 
 @app.route('/api/camera/test', methods=['POST'])
 @login_required

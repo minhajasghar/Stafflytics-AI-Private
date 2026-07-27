@@ -13,6 +13,27 @@ FFMPEG_EXE = os.path.join(BIN_DIR, "ffmpeg.exe")
 
 current_physical_rtsp_url = None
 
+# Resolution presets matching app.py QUALITY_PRESETS
+RESOLUTION_PRESETS = {
+    "480p": (640, 480),
+    "720p": (1280, 720),
+    "1080p": (1920, 1080)
+}
+
+def get_stream_resolution():
+    """Read the configured camera_preset from DB and return (width, height) for streaming."""
+    try:
+        import database
+        settings = database.get_system_settings()
+        preset = settings.get('camera_preset', '720p')
+        if preset not in RESOLUTION_PRESETS:
+            preset = '720p'
+        print(f"[STREAM MANAGER] Using camera_preset '{preset}' for FFmpeg stream scale")
+        return RESOLUTION_PRESETS[preset]
+    except Exception as e:
+        print(f"[STREAM MANAGER] Error reading camera_preset, defaulting to 720p: {e}")
+        return 1280, 720
+
 def write_mediamtx_config():
     global current_physical_rtsp_url
     if not current_physical_rtsp_url:
@@ -20,6 +41,7 @@ def write_mediamtx_config():
     
     config_path = os.path.join(BIN_DIR, "mediamtx.yml")
     ffmpeg_path = os.path.join(BIN_DIR, "ffmpeg.exe")
+    stream_w, stream_h = get_stream_resolution()
     
     config_content = f"""# MediaMTX configuration for Stafflytics (auto-generated)
 rtspAddress: :8554
@@ -45,7 +67,7 @@ paths:
     rtspTransport: tcp
 
   mystream:
-    runOnDemand: '\"{ffmpeg_path}\" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf \"scale=1280:720\" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
+    runOnDemand: '\"{ffmpeg_path}\" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf \"scale={stream_w}:{stream_h}\" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
     runOnDemandRestart: yes
 """
     try:

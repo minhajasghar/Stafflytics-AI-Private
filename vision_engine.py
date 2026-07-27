@@ -99,10 +99,16 @@ class VisionEngine:
             for row in staff_data:
                 s_id, name, role, shift_time, rate, encoding_blob, shift_name = row[:7]
                 if encoding_blob:
-                    try: encoding = pickle.loads(encoding_blob)
-                    except: encoding = np.frombuffer(encoding_blob, dtype=np.float64)
-                    new_encodings.append(encoding)
-                    new_metadata.append({"id": s_id, "name": name, "role": role})
+                    try: raw = pickle.loads(encoding_blob)
+                    except: raw = np.frombuffer(encoding_blob, dtype=np.float64)
+                    # Support both single encoding (legacy) and multi-encoding list
+                    if isinstance(raw, list):
+                        enc_list = raw
+                    else:
+                        enc_list = [raw]
+                    for enc in enc_list:
+                        new_encodings.append(enc)
+                        new_metadata.append({"id": s_id, "name": name, "role": role})
             
             # Load Customers
             cust_data = database.get_known_customers()
@@ -197,24 +203,43 @@ class VisionEngine:
                         known_cust_enc = list(self.known_customer_encodings)
                         known_cust_meta = list(self.known_customer_metadata)
                     
+                    # LOG: confirm which tables are being checked
+                    print(f"[AI] Matching track {track_id} against {len(known_staff_enc)} staff emb, {len(known_cust_enc)} customer emb")
+                    
                     best_staff_dist = 999.0
                     if known_staff_enc:
                         staff_distances = face_recognition.face_distance(known_staff_enc, face_encodings[0])
                         best_staff_idx = int(np.argmin(staff_distances))
                         best_staff_dist = float(staff_distances[best_staff_idx])
-                        if best_staff_dist < 0.65:
+                        if best_staff_dist < 0.60:
                             match_id = known_staff_meta[best_staff_idx]["id"]
                             match_source = "staff"
-                            print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — distance={best_staff_dist:.4f} (threshold=0.65)")
+                            print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — distance={best_staff_dist:.4f} (threshold=0.60)")
+                            # Immediately set db_id — don't wait for consensus
+                            with self.lock:
+                                if track_id in self.person_states:
+                                    s = self.person_states[track_id]
+                                    if s.get("db_id") is None:
+                                        s["db_id"] = match_id
+                                        s["id"] = f"ID: {match_id}"
+                                        s["name"] = known_staff_meta[best_staff_idx]["name"]
+                                        s["role"] = known_staff_meta[best_staff_idx]["role"]
+                                        s["last_sync"] = current_time
+                                        print(f"[AI] IMMEDIATE STAFF SET: track {track_id} -> {match_id}")
+                            # Record attendance outside lock to avoid deadlock
+                            try:
+                                database.record_attendance(match_id)
+                            except Exception as eat:
+                                print(f"[AI] Attendance record error: {eat}")
                         else:
-                            print(f"[AI] Staff check — best distance={best_staff_dist:.4f} for {known_staff_meta[best_staff_idx]['name']} (above 0.65 threshold)")
+                            print(f"[AI] Staff check — best distance={best_staff_dist:.4f} for {known_staff_meta[best_staff_idx]['name']} (above 0.60 threshold)")
                     
                     best_cust_dist = 999.0
                     if match_id == "Unknown" and known_cust_enc:
                         c_distances = face_recognition.face_distance(known_cust_enc, face_encodings[0])
                         best_cust_idx = int(np.argmin(c_distances))
                         best_cust_dist = float(c_distances[best_cust_idx])
-                        if best_cust_dist < 0.65:
+                        if best_cust_dist < 0.55:
                             match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
                             match_source = "customer"
                             matched_cust_idx = best_cust_idx
@@ -230,7 +255,8 @@ class VisionEngine:
                     if track_id not in self.recognition_consensus:
                         self.recognition_consensus[track_id] = []
                     self.recognition_consensus[track_id].append(match_id)
-                    if len(self.recognition_consensus[track_id]) > 5:
+                    # Keep a larger window of 10 samples for better accuracy
+                    if len(self.recognition_consensus[track_id]) > 10:
                         self.recognition_consensus[track_id].pop(0)
                         
                     counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])}
@@ -239,7 +265,8 @@ class VisionEngine:
                     # Update state if it still exists
                     if track_id in self.person_states:
                         state = self.person_states[track_id]
-                        if counts[winner] >= 3:
+                        # Require 4 confident votes in the window to confirm identity
+                        if counts[winner] >= 4:
                             if winner.startswith("CUST:"):
                                 c_id = int(winner.split(":")[1])
                                 meta = next((m for m in self.known_customer_metadata if m["id"] == c_id), None)
@@ -247,7 +274,13 @@ class VisionEngine:
                                     state["id"] = f"GUEST #{c_id}"
                                     state["db_id"] = f"C_{c_id}"
                                     state["name"] = meta["name"]
-                                    state["visits"] = meta.get("visits", 1)
+                                    # Fetch fresh visit count from DB to avoid stale data
+                                    try:
+                                        fresh_rows = database.get_known_customers()
+                                        fresh_meta = next((r for r in fresh_rows if r[0] == c_id), None)
+                                        state["visits"] = fresh_meta[3] if fresh_meta else meta.get("visits", 1)
+                                    except:
+                                        state["visits"] = meta.get("visits", 1)
                                     state["photo"] = meta.get("photo")
                                     state["last_sync"] = current_time
                                     refresh_faces = True
@@ -260,6 +293,10 @@ class VisionEngine:
                                     state["db_id"] = meta["id"]
                                     state["last_sync"] = current_time
                                     database.record_attendance(meta["id"])
+                                    # Remove any stale customer timer for this track (they're staff!)
+                                    if track_id in self.customer_timers:
+                                        del self.customer_timers[track_id]
+                                    print(f"[AI CONSENSUS] track {track_id} -> STAFF db_id={state['db_id']!r} name={state['name']!r}")
                 if refresh_faces:
                     self.load_known_faces()
                 
@@ -271,21 +308,89 @@ class VisionEngine:
                     if existing_db_id and not str(existing_db_id).startswith("C_"):
                         print(f"[AI] Skipping auto-registration for track {track_id} — already identified as staff ({existing_db_id})")
                     else:
+                        # ALWAYS do a quick staff check with relaxed threshold BEFORE waiting for 15 votes
+                        # This prevents 30-second delay when distance is between 0.60 and 0.65
                         with self.lock:
-                            consensus_len = len(self.recognition_consensus.get(track_id, []))
-                            counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])} if track_id in self.recognition_consensus else {}
-                            winner = max(counts, key=counts.get) if counts else "Unknown"
+                            known_staff_enc_q = list(self.known_face_encodings)
+                            known_staff_meta_q = list(self.known_face_metadata)
+                        if known_staff_enc_q:
+                            s_distances_q = face_recognition.face_distance(known_staff_enc_q, face_encodings[0])
+                            best_s_idx_q = int(np.argmin(s_distances_q))
+                            best_s_dist_q = float(s_distances_q[best_s_idx_q])
+                            if best_s_dist_q < 0.65:
+                                s_meta_q = known_staff_meta_q[best_s_idx_q]
+                                print(f"[AI] Quick staff check: {s_meta_q['name']} (dist={best_s_dist_q:.4f}) — identifying immediately")
+                                with self.lock:
+                                    if track_id in self.person_states:
+                                        state = self.person_states[track_id]
+                                        state["id"] = f"ID: {s_meta_q['id']}"
+                                        state["name"] = s_meta_q["name"]
+                                        state["role"] = s_meta_q["role"]
+                                        state["db_id"] = s_meta_q["id"]
+                                        state["last_sync"] = current_time
+                                        if track_id in self.customer_timers:
+                                            del self.customer_timers[track_id]
+                                    if track_id in self.recognition_consensus:
+                                        self.recognition_consensus[track_id].append(s_meta_q["id"])
+                                database.record_attendance(s_meta_q["id"])
+                                self.recognition_queue.task_done()
+                                with self.lock:
+                                    self.processing_tracks.discard(track_id)
+                                continue
                         
-                        if consensus_len >= 5 and winner == "Unknown":
+                        with self.lock:
+                            consensus_list = self.recognition_consensus.get(track_id, [])
+                            consensus_len = len(consensus_list)
+                            counts = {cid: consensus_list.count(cid) for cid in set(consensus_list)} if consensus_list else {}
+                            winner = max(counts, key=counts.get) if counts else "Unknown"
+                            known_staff_count = len(self.known_face_encodings)
+                        
+                        # CRITICAL FIX: Only auto-register as customer after 15 consecutive Unknown votes
+                        # This gives face recognition enough time to properly identify enrolled staff.
+                        # If staff encodings exist, be even more conservative (wait longer).
+                        min_unknown_votes = 15 if known_staff_count > 0 else 8
+                        
+                        if consensus_len >= min_unknown_votes and winner == "Unknown":
+                            # Double-check with relaxed threshold before creating new customer
                             with self.lock:
                                 known_cust_enc = list(self.known_customer_encodings)
                                 known_cust_meta = list(self.known_customer_metadata)
+                                known_staff_enc = list(self.known_face_encodings)
+                                known_staff_meta = list(self.known_face_metadata)
+                            
+                            # Last-chance staff check with relaxed threshold (0.65)
+                            if known_staff_enc:
+                                s_distances = face_recognition.face_distance(known_staff_enc, face_encodings[0])
+                                best_s_idx = int(np.argmin(s_distances))
+                                best_s_dist = float(s_distances[best_s_idx])
+                                if best_s_dist < 0.65:
+                                    # Found a plausible staff match — update and skip customer creation
+                                    s_meta = known_staff_meta[best_s_idx]
+                                    print(f"[AI] Last-chance staff match: {s_meta['name']} (dist={best_s_dist:.4f}) — NOT creating new customer")
+                                    with self.lock:
+                                        if track_id in self.person_states:
+                                            state = self.person_states[track_id]
+                                            state["id"] = f"ID: {s_meta['id']}"
+                                            state["name"] = s_meta["name"]
+                                            state["role"] = s_meta["role"]
+                                            state["db_id"] = s_meta["id"]
+                                            state["last_sync"] = current_time
+                                            if track_id in self.customer_timers:
+                                                del self.customer_timers[track_id]
+                                        if track_id in self.recognition_consensus:
+                                            self.recognition_consensus[track_id].append(s_meta["id"])
+                                    database.record_attendance(s_meta["id"])
+                                    self.recognition_queue.task_done()
+                                    with self.lock:
+                                        self.processing_tracks.discard(track_id)
+                                    continue
+                            
                             fallback_match = False
                             if known_cust_enc:
                                 c_distances = face_recognition.face_distance(known_cust_enc, face_encodings[0])
                                 best_cust_idx = int(np.argmin(c_distances))
                                 best_cust_dist = float(c_distances[best_cust_idx])
-                                if best_cust_dist < 0.7:
+                                if best_cust_dist < 0.65:
                                     match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
                                     
                                     # Convert face_crop to base64 photo
@@ -305,7 +410,13 @@ class VisionEngine:
                                             state["db_id"] = f"C_{c_id}"
                                             state["id"] = f"GUEST #{c_id}"
                                             state["name"] = known_cust_meta[best_cust_idx]["name"]
-                                            state["visits"] = known_cust_meta[best_cust_idx].get("visits", 1)
+                                            # Fetch fresh visit count
+                                            try:
+                                                fresh_rows = database.get_known_customers()
+                                                fresh_meta = next((r for r in fresh_rows if r[0] == c_id), None)
+                                                state["visits"] = fresh_meta[3] if fresh_meta else known_cust_meta[best_cust_idx].get("visits", 1)
+                                            except:
+                                                state["visits"] = known_cust_meta[best_cust_idx].get("visits", 1)
                                             state["photo"] = b64_photo
                                             state["last_sync"] = current_time
                             if not fallback_match:
@@ -342,7 +453,7 @@ class VisionEngine:
                     with self.lock:
                         self.processing_tracks.discard(track_id)
 
-    def process_frame(self, frame, target_size=(640, 480)):
+    def process_frame(self, frame, target_size=(640, 480), original_frame=None):
         try:
             global model, model_loading_active
             if model is None:
@@ -371,13 +482,18 @@ class VisionEngine:
             current_time = time.time()
             detections = []
             
-            # Use the actual camera resolution for output to preserve detail
+            # Use the original camera frame for face cropping (highest quality)
+            # output_frame goes to display at the user-selected resolution
             h_orig, w_orig = frame.shape[:2]
             h_out, w_out = target_size
             if h_out != h_orig or w_out != w_orig:
                 output_frame = cv2.resize(frame, target_size)
             else:
                 output_frame = frame
+            
+            # Face crop source: use original_frame when provided (native camera res), else output_frame
+            face_source = original_frame if original_frame is not None else output_frame
+            fh, fw = face_source.shape[:2]
             
             # Run YOLO on a lightweight detection frame for CPU efficiency
             DETECTION_WIDTH = 640
@@ -560,31 +676,43 @@ class VisionEngine:
                             is_processing = track_id in self.processing_tracks
                         
                         last_attempt = self.last_rec_attempt.get(track_id, 0)
+                        # Retry recognition every 2 seconds for unidentified faces
                         if not is_processing and (current_time - last_attempt > 2.0):
                             self.last_rec_attempt[track_id] = current_time
 
                             face_img = None
+
+                            # Compute scale from DETECTION (640x480) to face_source (native camera res)
+                            fs_scale_x = fw / DETECTION_WIDTH
+                            fs_scale_y = fh / DETECTION_HEIGHT
 
                             # Try precise face crop using YOLO keypoints (nose)
                             if all_kps is not None and i < len(all_kps):
                                 kp = all_kps[i]
                                 nose = kp[0]
                                 if nose[0] > 0 and nose[1] > 0:
-                                    nose_x = int(nose[0] * scale_x)
-                                    nose_y = int(nose[1] * scale_y)
-                                    face_size = max(int((y2_out - y1_out) * 0.20), 60)
+                                    nose_x = int(nose[0] * fs_scale_x)
+                                    nose_y = int(nose[1] * fs_scale_y)
+                                    det_box_h = y2 - y1
+                                    face_size = max(int(det_box_h * fs_scale_y * 0.35), 80)
+                                    # Shift crop upward so more area is above the nose
+                                    # to consistently capture eyes and forehead
+                                    shift_up = int(face_size * 0.15)
                                     x1f = max(0, nose_x - face_size)
-                                    y1f = max(0, nose_y - face_size)
-                                    x2f = min(w_out, nose_x + face_size)
-                                    y2f = min(h_out, nose_y + face_size)
+                                    y1f = max(0, nose_y - face_size - shift_up)
+                                    x2f = min(fw, nose_x + face_size)
+                                    y2f = min(fh, nose_y + face_size - shift_up)
                                     if x2f > x1f and y2f > y1f:
-                                        face_img = output_frame[y1f:y2f, x1f:x2f]
+                                        face_img = face_source[y1f:y2f, x1f:x2f]
 
                             if face_img is None:
-                                y1_face = max(0, y1_out)
-                                y2_face = min(h_out, y1_out + int((y2_out - y1_out) * 0.20))
-                                x_margin = int((x2_out - x1_out) * 0.05)
-                                face_img = output_frame[y1_face:y2_face, max(0, x1_out - x_margin):min(w_out, x2_out + x_margin)]
+                                y1f = int(y1 * fs_scale_y)
+                                y2f = int(y1f + (y2 - y1) * fs_scale_y * 0.30)
+                                x_margin = int((x2 - x1) * fs_scale_x * 0.10)
+                                x1f = max(0, int(x1 * fs_scale_x) - x_margin)
+                                x2f = min(fw, int(x2 * fs_scale_x) + x_margin)
+                                if x2f > x1f and y2f > y1f:
+                                    face_img = face_source[y1f:y2f, x1f:x2f]
 
                             if face_img is not None and face_img.shape[0] >= 64 and face_img.shape[1] >= 64:
                                 with self.lock:
@@ -669,11 +797,26 @@ class VisionEngine:
                     # CUSTOMER INTELLIGENCE (Track every non-staff person as a customer)
                     is_staff = db_id and not str(db_id).startswith("C_")
                     if not is_staff:
-                        if track_id not in self.customer_timers:
-                            c_id = int(str(db_id).split("_")[1]) if db_id and str(db_id).startswith("C_") else None
-                            self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": c_id}
+                        # Only start customer timer once we have a confirmed customer identity (C_xxx)
+                        # or after they've been unidentified for a while (avoid tracking enrolled staff
+                        # as customers during the recognition warm-up period)
+                        if db_id and str(db_id).startswith("C_"):
+                            # Confirmed customer identity — track them
+                            if track_id not in self.customer_timers:
+                                c_id = int(str(db_id).split("_")[1])
+                                self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": c_id}
+                            else:
+                                # Update c_id in case it was set before identity was confirmed
+                                self.customer_timers[track_id]["c_id"] = int(str(db_id).split("_")[1])
+                        elif db_id is None:
+                            # Unknown face — check consensus length; if still uncertain after a while, track as anonymous
+                            with self.lock:
+                                unknown_votes = len([v for v in self.recognition_consensus.get(track_id, []) if v == "Unknown"])
+                            if unknown_votes >= 10 and track_id not in self.customer_timers:
+                                # Has been consistently unidentified — track as anonymous visitor
+                                self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": None}
                     elif track_id in self.customer_timers:
-                        # Person identified as staff — remove any stale customer timer
+                        # Person confirmed as staff — remove any stale customer timer
                         del self.customer_timers[track_id]
 
                     # Visuals (Bounding Boxes for EVERYONE)
@@ -684,17 +827,26 @@ class VisionEngine:
                         state_role = state.get("role", "None")
                         status = state.get("pose_label", "NEUTRAL")
                         
-                    if not db_id or (str(db_id).startswith("C_") and state.get("visits", 1) <= 1):
-                        color_hex = "#10b981"  # Emerald Green for New Face
-                        label = "NEW FACE"
+                    if not db_id:
+                        color_hex = "#f97316"  # Orange for Unknown/Unidentified Face
+                        label = "Detecting..."
+                        print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> Detecting")
                     elif str(db_id).startswith("C_"):
-                        color_hex = "#f59e0b"  # Amber for Regular Customer
                         visits = state.get("visits", 1)
-                        label = f"REGULAR CUSTOMER ({visits}x)"
+                        if visits <= 1:
+                            color_hex = "#f97316"  # Orange for New Customer (first visit)
+                            label = "New Customer (1st visit)"
+                            print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> New Customer")
+                        else:
+                            color_hex = "#eab308"  # Yellow for Regular Guest (2+ visits on different days)
+                            suffix = "th" if visits >= 4 else ({1:"st",2:"nd",3:"rd"}.get(visits, "th"))
+                            label = f"Regular Customer ({visits}{suffix} visit)"
+                            print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> Regular Customer (visits={visits})")
                     else:
-                        color_hex = "#4f46e5"  # Indigo for Staff
+                        color_hex = "#3b82f6"  # Blue for Enrolled Staff (Type 3)
                         role_tag = f" ({state_role})" if state_role and state_role != "None" else ""
                         label = f"STAFF: {state_name}{role_tag}"
+                        print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> STAFF: {state_name}")
                     
                     # Compile detection metadata for canvas rendering
                     detections.append({

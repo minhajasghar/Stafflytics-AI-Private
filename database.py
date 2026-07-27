@@ -634,14 +634,23 @@ def update_active_time(staff_id, seconds):
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
+            # SQLite does not support ORDER BY/LIMIT in UPDATE — get the row id first
             cursor.execute("""
-                UPDATE attendance SET active_seconds = active_seconds + ? 
+                SELECT id FROM attendance 
                 WHERE staff_id = ? AND date(entry_time, 'localtime') = date('now', 'localtime')
                 ORDER BY entry_time DESC LIMIT 1
-            """, (seconds, staff_id))
-            conn.commit()
+            """, (staff_id,))
+            row = cursor.fetchone()
+            if row:
+                cursor.execute("""
+                    UPDATE attendance SET active_seconds = active_seconds + ? 
+                    WHERE id = ?
+                """, (seconds, row[0]))
+                conn.commit()
             conn.close()
-        except: pass
+        except Exception as e:
+            print(f"[DB ERROR] update_active_time: {e}")
+
 
 def get_staff_stats(staff_id):
     with db_lock:
@@ -932,16 +941,32 @@ def get_visitor_analytics(scope="day"):
         """)
         new_faces = cursor.fetchone()[0] or 0
         
-        # Regular customers — customer_id with visit on 2+ different days
+        # Regular customers — customer_id with ALL-TIME visits on 2+ different days
+        # (not just within current scope, so history carries over across months)
         cursor.execute(f"""
-            SELECT customer_id, COUNT(DISTINCT date(timestamp, 'localtime')) as visit_days
-            FROM visitor_log 
-            WHERE customer_id IS NOT NULL AND {date_filter}
-            GROUP BY customer_id
+            SELECT vl.customer_id, COUNT(DISTINCT date(vl.timestamp, 'localtime')) as visit_days
+            FROM visitor_log vl
+            WHERE vl.customer_id IS NOT NULL AND {date_filter}
+            GROUP BY vl.customer_id
         """)
-        regular_rows = cursor.fetchall()
-        regular_customers = sum(1 for r in regular_rows if r[1] >= 2)
-        returning_customers = sum(1 for r in regular_rows if r[1] < 2)
+        scope_rows = cursor.fetchall()
+        
+        # For each customer seen this period, get their ALL-TIME distinct day count
+        regular_customers = 0
+        returning_customers = 0
+        for r in scope_rows:
+            cust_id = r[0]
+            cursor.execute("""
+                SELECT COUNT(DISTINCT date(entry_time, 'localtime')) 
+                FROM customers WHERE customer_id = ?
+            """, (cust_id,))
+            alltime_days = cursor.fetchone()[0] or 1
+            if alltime_days >= 2:
+                regular_customers += 1
+            else:
+                returning_customers += 1
+        
+        regular_rows = scope_rows  # Keep for frequency distribution below
         
         # Visit frequency distribution (how many customers by visit-day count)
         frequency = {}
@@ -1011,12 +1036,49 @@ def record_customer_session(table_id, duration, customer_id=None):
         if existing:
             new_duration = existing[1] + round(duration / 60.0, 2)
             cursor.execute("UPDATE customers SET duration_minutes = ?, exit_time = CURRENT_TIMESTAMP WHERE id = ?", (new_duration, existing[0]))
+            print(f"[DB] Merged customer session for {'cust_'+str(customer_id) if customer_id else 'anonymous'}: +{round(duration/60,1)}min")
         else:
             cursor.execute("INSERT INTO customers (table_id, duration_minutes, exit_time, customer_id) VALUES (?, ?, CURRENT_TIMESTAMP, ?)", 
                            (table_id, round(duration / 60.0, 2), customer_id))
+            print(f"[DB] New customer session for {'cust_'+str(customer_id) if customer_id else 'anonymous'}: {round(duration/60,1)}min")
         
         if customer_id:
-            cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP, visit_count = visit_count + 1 WHERE id = ?", (customer_id,))
+            # Only increment visit_count if this is a NEW day visit (not the same day)
+            cursor.execute("""
+                SELECT COUNT(*) FROM customers 
+                WHERE customer_id = ? 
+                  AND date(entry_time, 'localtime') = date('now', 'localtime')
+                  AND (id != ? OR ? IS NULL)
+            """, (customer_id, existing[0] if existing else -1, existing[0] if existing else -1))
+            same_day_count = cursor.fetchone()[0] or 0
+            
+            if not existing:
+                # This is a new session record for today — check if they visited before today
+                cursor.execute("""
+                    SELECT COUNT(*) FROM customers
+                    WHERE customer_id = ?
+                      AND date(entry_time, 'localtime') < date('now', 'localtime')
+                """, (customer_id,))
+                prev_day_sessions = cursor.fetchone()[0] or 0
+                
+                # Also check if this is their very first record today (to increment once per day)
+                cursor.execute("""
+                    SELECT COUNT(*) FROM customers
+                    WHERE customer_id = ?
+                      AND date(entry_time, 'localtime') = date('now', 'localtime')
+                """, (customer_id,))
+                today_records = cursor.fetchone()[0] or 0
+                
+                # Increment visit_count only once per day (when today_records == 1, meaning just inserted)
+                if today_records <= 1:
+                    cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP, visit_count = visit_count + 1 WHERE id = ?", (customer_id,))
+                    print(f"[DB] visit_count incremented for customer {customer_id} (new day visit)")
+                else:
+                    # Already recorded today, just update last_seen
+                    cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", (customer_id,))
+            else:
+                # Existing session merged — just update last_seen without re-counting
+                cursor.execute("UPDATE customer_profiles SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", (customer_id,))
             
         conn.commit()
         conn.close()
@@ -1051,18 +1113,92 @@ def update_customer_encoding(customer_id, encoding_blob, photo=None):
         conn.commit()
         conn.close()
 
+def get_customer_history():
+    """Returns customer visit history - only customers who visited on more than 1 day
+    qualify as 'Regular Customer'. Shows all recorded sessions with proper labels."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get sessions for customers with a known profile (linked via customer_id)
+        cursor.execute("""
+            SELECT cp.name, cp.id, c.entry_time, c.duration_minutes, c.table_id, cp.photo,
+                   cp.visit_count,
+                   (SELECT COUNT(DISTINCT date(c2.entry_time, 'localtime'))
+                    FROM customers c2 WHERE c2.customer_id = cp.id) as distinct_days
+            FROM customers c
+            JOIN customer_profiles cp ON c.customer_id = cp.id
+            ORDER BY c.entry_time DESC LIMIT 200
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        history = []
+        for r in rows:
+            name = r[0]
+            c_id = r[1]
+            entry_time = r[2]
+            duration = r[3]
+            table_id = r[4]
+            photo = r[5]
+            visit_count = r[6] or 1
+            distinct_days = r[7] or 1
+            
+            # A customer is "Regular" if they visited on 2 or more distinct calendar days
+            if distinct_days >= 2:
+                display_name = name if name != 'New Guest' else f'Regular Customer #{c_id}'
+                visit_label = f"{distinct_days} day visits"
+            else:
+                display_name = name if name != 'New Guest' else f'New Customer #{c_id}'
+                visit_label = "1st visit"
+            
+            history.append({
+                "name": display_name,
+                "id": c_id,
+                "time": str(entry_time),
+                "duration": f"{round(duration, 1)} min" if duration else "N/A",
+                "zone": table_id,
+                "photo": photo,
+                "visits": visit_count,
+                "distinct_days": distinct_days,
+                "is_regular": distinct_days >= 2,
+                "visit_label": visit_label
+            })
+        return history
+
 def get_loyalty_analytics():
+    """Returns top customers by visit count for the loyalty analytics panel."""
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT name, visit_count, last_seen, photo, id 
-            FROM customer_profiles 
-            ORDER BY visit_count DESC LIMIT 10
+            SELECT cp.name, cp.visit_count, cp.last_seen, cp.photo, cp.id,
+                   (SELECT COUNT(DISTINCT date(c2.entry_time, 'localtime'))
+                    FROM customers c2 WHERE c2.customer_id = cp.id) as distinct_days
+            FROM customer_profiles cp
+            ORDER BY distinct_days DESC, cp.visit_count DESC LIMIT 10
         """)
         rows = cursor.fetchall()
         conn.close()
-        return [{"name": f"{r[0]} #{i+1}" if r[0] == 'New Guest' else r[0], "visits": r[1], "last_visit": r[2][:10] if r[2] else "N/A", "photo": r[3], "id": r[4]} for i, r in enumerate(rows)]
+        result = []
+        for i, r in enumerate(rows):
+            name = r[0]
+            visit_count = r[1]
+            last_seen = r[2]
+            photo = r[3]
+            c_id = r[4]
+            distinct_days = r[5] or 1
+            display_name = f"Regular Customer #{i+1}" if name == 'New Guest' and distinct_days >= 2 else (name if name != 'New Guest' else f"Customer #{i+1}")
+            result.append({
+                "name": display_name,
+                "visits": visit_count,
+                "distinct_days": distinct_days,
+                "last_visit": last_seen[:10] if last_seen else "N/A",
+                "photo": photo,
+                "id": c_id,
+                "is_regular": distinct_days >= 2
+            })
+        return result
 
 def record_sale(staff_id, amount):
     with db_lock:
