@@ -849,9 +849,13 @@ class VisionEngine:
                         label = f"STAFF: {state_name}{role_tag}"
                         print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> STAFF: {state_name}")
                     
+                    # Store last box in state for carry-forward during brief YOLO misses
+                    state["last_box"] = [float(x1), float(y1), float(x2), float(y2)]
+                    state["last_label"] = label
+                    state["last_color"] = color_hex
                     # Compile detection metadata for canvas rendering
                     detections.append({
-                        "box": [float(x1), float(y1), float(x2), float(y2)],
+                        "box": state["last_box"],
                         "label": label,
                         "color": color_hex
                     })
@@ -893,7 +897,35 @@ class VisionEngine:
                 self.activity_buffer = {}
                 self.last_activity_sync = current_time
 
-            # Detection dwell: keep showing last known positions for 0.5s if YOLO briefly misses
+            # Carry-forward: add synthetic detection entries for active tracks YOLO briefly missed
+            with self.lock:
+                tracked_ids = {d["box"][0] for d in detections}  # crude dedup set, refined below
+                # Build set of track_ids already covered in current detections
+                carried = set()
+                for tid, s in list(self.person_states.items()):
+                    if current_time - s["last_active"] < 3.0 and "last_box" in s:
+                        carried.add(tid)
+                # Remove any track that IS already in the current YOLO output
+                for d in detections:
+                    bx = d["box"]
+                    cx = (bx[0] + bx[2]) / 2
+                    cy = (bx[1] + bx[3]) / 2
+                    for tid in list(carried):
+                        lb = self.person_states[tid]["last_box"]
+                        lcx = (lb[0] + lb[2]) / 2
+                        lcy = (lb[1] + lb[3]) / 2
+                        if abs(cx - lcx) < 40 and abs(cy - lcy) < 40:
+                            carried.discard(tid)
+                            break
+                for tid in carried:
+                    s = self.person_states[tid]
+                    detections.append({
+                        "box": s["last_box"],
+                        "label": s.get("last_label", "Detecting..."),
+                        "color": s.get("last_color", "#f97316")
+                    })
+
+            # Detection dwell: keep showing last known positions if YOLO briefly misses
             now = time.time()
             if not detections and self.dwell_buffer:
                 self.dwell_buffer = [(d, t) for d, t in self.dwell_buffer if now - t < 2.5]

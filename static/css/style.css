@@ -367,7 +367,7 @@ body {
 
 .event-card.alert {
     border-left-color: var(--alert);
-    background: #fff1f2;
+    background: var(--nav-hover);
 }
 
 .staff-badges {
@@ -635,8 +635,8 @@ input:focus {
     align-items: center;
 }
 
-.shift-morning { background: var(--morning); border-left: 4px solid #db2777; }
-.shift-evening { background: var(--evening); border-left: 4px solid #16a34a; }
+.shift-morning { background: var(--morning); border-left: 4px solid var(--accent); }
+.shift-evening { background: var(--evening); border-left: 4px solid var(--green); }
 
 .export-group {
     display: flex;
@@ -653,8 +653,8 @@ input:focus {
     transition: 0.2s;
 }
 
-.btn-excel { background: #dcfce7; color: #166534; }
-.btn-pdf { background: #fee2e2; color: #991b1b; }
+.btn-excel { background: var(--green); color: white; }
+.btn-pdf { background: var(--red); color: white; }
 
 .performance-metric {
     font-size: 0.8rem;

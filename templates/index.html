@@ -134,7 +134,7 @@
             <div id="section-analytics" class="view-section hidden">
                 <header class="top-bar">
                     <div><h1>Visitor Analytics</h1><p style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">Face-based visitor tracking: new vs returning, frequency trends.</p></div>
-                    <div style="display:flex; gap:8px; background:var(--border); padding:4px; border-radius:12px;">
+                    <div style="display:flex; gap:8px; background:var(--nav-hover); padding:4px; border-radius:12px;">
                         <button id="visitor-scope-day" class="scope-btn active" onclick="setVisitorScope('day')">Today</button>
                         <button id="visitor-scope-month" class="scope-btn" onclick="setVisitorScope('month')">This Month</button>
                     </div>
@@ -201,7 +201,7 @@
                     <div class="standard-card">
                         <h3 style="margin-bottom:1.5rem;"><i class="fas fa-star" style="color:#FFD700;"></i> Customer Loyalty</h3>
                         <div id="loyalty-list" style="display:flex; flex-direction:column; gap:12px;"></div>
-                        <div style="margin-top:auto; padding-top:1.5rem; border-top:1px solid #f1f5f9; font-size:0.65rem; color:var(--text-muted); text-align:center;">Showing Top 10 Active Guests</div>
+                        <div style="margin-top:auto; padding-top:1.5rem; border-top:1px solid var(--border); font-size:0.65rem; color:var(--text-muted); text-align:center;">Showing Top 10 Active Guests</div>
                     </div>
                 </div>
             </div>
@@ -306,7 +306,7 @@
                     <div class="standard-card">
                         <h3 style="margin-bottom: 1.5rem;">Hourly Rhythm (Last 7 Days)</h3>
                         <div id="optimization-chart-container" style="min-height:220px; display:flex; flex-direction:column; justify-content:center;">
-                            <div id="optimization-chart" style="display: flex; align-items: flex-end; gap: 8px; height: 180px; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px;"></div>
+                            <div id="optimization-chart" style="display: flex; align-items: flex-end; gap: 8px; height: 180px; border-bottom: 2px solid var(--border); padding-bottom: 10px;"></div>
                             <div style="display: flex; justify-content: space-between; margin-top: 10px; font-size: 0.7rem; color: var(--text-muted); font-weight: 700;">
                                 <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
                             </div>
@@ -493,7 +493,7 @@
             <div class="form-group"><label>Assigned Staff</label><select id="sale-staff-id"></select></div>
             <div class="form-group"><label>Order Amount (Rs.)</label><input type="number" id="sale-amount" placeholder="1500"></div>
             <button onclick="submitSale()" id="btn-sale-submit" style="width:100%; margin-top:1rem;" class="btn-primary">Record Transaction</button>
-            <button onclick="hideSaleModal()" style="width:100%; margin-top:0.5rem; background:#f1f5f9; color:var(--text); border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Cancel</button>
+            <button onclick="hideSaleModal()" style="width:100%; margin-top:0.5rem; background:var(--border); color:var(--text); border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Cancel</button>
         </div>
     </div>
 

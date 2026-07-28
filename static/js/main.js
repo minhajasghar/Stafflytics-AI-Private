@@ -86,7 +86,7 @@ function handleNavClick(element) {
         }
         if (targetId === 'section-performance') loadPerformanceRankings();
         if (targetId === 'section-roi') loadSalaryAdmin();
-        if (targetId === 'section-optimization') loadShiftOptimization();
+        if (targetId === 'section-optimization') renderAnalyzeButton();
         if (targetId === 'section-settings') { 
             try {
                 loadEvents(); 
@@ -110,7 +110,7 @@ async function loadEngagementAnalytics() {
         }
 
         list.innerHTML = data.map(item => `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:#f8fafc; border-radius:12px; border-left:4px solid var(--accent);">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:var(--nav-hover); border-radius:12px; border-left:4px solid var(--accent);">
                 <div style="display:flex; align-items:center; gap:12px;">
                     <div>
                         <div style="font-weight:800; font-size:0.9rem;">${item.name}</div>
@@ -123,7 +123,7 @@ async function loadEngagementAnalytics() {
                 </div>
             </div>
         `).join('');
-    } catch (e) { console.error("Engagement Load Error", e); }
+    } catch (e) { console.error("Engagement Load Error", e); document.getElementById('engagement-list') && (document.getElementById('engagement-list').innerHTML = '<div class="empty-state"><i class="fas fa-exclamation-triangle" style="color:var(--red);"></i><p style="color:var(--text-muted);">Failed to load engagement data.</p></div>'); }
 }
 
 async function loadWellbeingAnalytics() {
@@ -139,7 +139,7 @@ async function loadWellbeingAnalytics() {
         }
 
         list.innerHTML = data.map(item => `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:#fff1f2; border-radius:12px; border-left:4px solid var(--red);">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:var(--nav-hover); border-radius:12px; border-left:4px solid var(--red);">
                 <div>
                     <div style="font-weight:800; font-size:0.9rem;">${item.name}</div>
                     <div style="font-size:0.65rem; color:var(--text-muted); font-weight:700;">${item.hours}h ON CONTINUOUS DUTY</div>
@@ -147,7 +147,7 @@ async function loadWellbeingAnalytics() {
                 ${item.needs_break ? '<span style="background:var(--red); color:white; font-size:0.6rem; font-weight:900; padding:4px 8px; border-radius:4px;">NEEDS BREAK</span>' : '<span style="color:var(--green); font-size:0.6rem; font-weight:900;">HEALTHY</span>'}
             </div>
         `).join('');
-    } catch (e) { console.error("Wellbeing Load Error", e); }
+    } catch (e) { console.error("Wellbeing Load Error", e); document.getElementById('wellbeing-list') && (document.getElementById('wellbeing-list').innerHTML = '<div class="empty-state"><i class="fas fa-exclamation-triangle" style="color:var(--red);"></i><p style="color:var(--text-muted);">Failed to load wellbeing data.</p></div>'); }
 }
 
 async function loadLoyaltyAnalytics() {
@@ -164,10 +164,10 @@ async function loadLoyaltyAnalytics() {
 
         list.innerHTML = data.map(item => {
             const avatar = item.photo
-                ? `<img src="${item.photo}" style="width:35px; height:35px; border-radius:50%; object-fit:cover; border:1px solid #fef3c7;">`
+                ? `<img src="${item.photo}" style="width:35px; height:35px; border-radius:50%; object-fit:cover; border:1px solid var(--border);">`
                 : `<div style="width:35px; height:35px; background:var(--accent); border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; font-size:0.8rem;"><i class="fas fa-crown"></i></div>`;
             return `
-                <div style="padding:1rem; background:rgba(255, 215, 0, 0.05); border-radius:16px; border:1px solid #fef3c7; border-left:4px solid var(--accent); display:flex; justify-content:space-between; align-items:center;">
+                <div style="padding:1rem; background:var(--nav-hover); border-radius:16px; border:1px solid var(--border); border-left:4px solid var(--accent); display:flex; justify-content:space-between; align-items:center;">
                     <div style="display:flex; align-items:center; gap:12px;">
                         ${avatar}
                         <div>
@@ -182,7 +182,7 @@ async function loadLoyaltyAnalytics() {
                 </div>
             `;
         }).join('');
-    } catch (e) { console.error("Loyalty Load Error", e); }
+    } catch (e) { console.error("Loyalty Load Error", e); document.getElementById('loyalty-list') && (document.getElementById('loyalty-list').innerHTML = '<div class="empty-state"><i class="fas fa-exclamation-triangle" style="color:var(--red);"></i><p style="color:var(--text-muted);">Failed to load loyalty data.</p></div>'); }
 }
 
 let currentVisitorScope = 'day';
@@ -214,6 +214,10 @@ async function loadVisitorAnalytics(scope) {
         }
     } catch (e) {
         console.error("Visitor Analytics Load Error", e);
+        document.getElementById('visitor-total').innerText = 'ERR';
+        document.getElementById('visitor-new').innerText = 'ERR';
+        document.getElementById('visitor-returning').innerText = 'ERR';
+        document.getElementById('visitor-regular').innerText = 'ERR';
     }
 }
 
@@ -755,10 +759,24 @@ async function loadSalaryAdmin() {
     }
 }
 
+function renderAnalyzeButton() {
+    const container = document.getElementById('optimization-suggestions');
+    if (!container) return;
+    container.innerHTML = `
+        <div onclick="loadShiftOptimization()" style="padding:20px; border:2px dashed var(--accent); border-radius:16px; text-align:center; cursor:pointer; transition:0.3s; background:var(--nav-hover);" onmouseover="this.style.background='var(--border)'" onmouseout="this.style.background='var(--nav-hover)'">
+            <i class="fas fa-magic" style="font-size:2rem; color:var(--accent); margin-bottom:10px;"></i>
+            <p style="font-weight:800; font-size:0.85rem; color:var(--accent); margin:0;">Analyze Now</p>
+            <p style="font-size:0.7rem; color:var(--text-muted); margin-top:5px;">Click to get AI-powered shift suggestions</p>
+        </div>
+    `;
+}
+
 async function loadShiftOptimization() {
     const chart = document.getElementById('optimization-chart');
     const suggest = document.getElementById('optimization-suggestions');
     if (!chart || !suggest) return;
+    
+    suggest.innerHTML = '<div style="text-align:center; padding:2rem; color:var(--text-muted);"><i class="fas fa-spinner fa-spin" style="font-size:1.5rem; margin-bottom:10px;"></i><br>AI is analyzing your staffing patterns...</div>';
     
     try {
         const res = await fetch('/api/analytics/optimization');
@@ -772,7 +790,7 @@ async function loadShiftOptimization() {
             chart.innerHTML = data.data.map(item => {
                 let color = 'var(--primary-light)'; 
                 if (item.activity > 75) color = 'var(--red)'; 
-                if (item.activity < 30) color = '#cbd5e1'; 
+                if (item.activity < 30) color = 'var(--text-muted)'; 
                 
                 return `<div onmouseenter="showTooltip(event, '${item.hour}:00 - ${item.activity}% activity')" onmouseleave="hideTooltip()" 
                              style="flex:1; height:${(item.activity/max)*100}%; background:${color}; border-radius:4px 4px 0 0; transition:0.3s; cursor:pointer;"></div>`;
@@ -781,10 +799,10 @@ async function loadShiftOptimization() {
         
         // Render Suggestions
         if (data.suggestions.length === 0) {
-            renderEmptyState('optimization-suggestions', 'Calculating staff rhythm...', 'fa-wand-magic-sparkles');
+            renderEmptyState('optimization-suggestions', 'AI analyzing shift patterns...', 'fa-magic');
         } else {
             suggest.innerHTML = data.suggestions.map(s => `
-                <div style="padding:15px; border-radius:16px; background:${s.type==='PEAK TRAFFIC'?'#fff1f2':'#f0fdf4'}; border:1px solid ${s.type==='PEAK TRAFFIC'?'#fecaca':'#bbf7d0'}; border-left:4px solid ${s.type==='PEAK TRAFFIC'?'var(--red)':'var(--green)'};">
+                <div style="padding:15px; border-radius:16px; background:var(--nav-hover); border:1px solid var(--border); border-left:4px solid ${s.type==='PEAK TRAFFIC'?'var(--red)':'var(--green)'};">
                     <div style="font-weight:800; font-size:0.7rem; color:var(--text-muted); margin-bottom:5px; text-transform:uppercase;">${s.time}</div>
                     <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
                         <span style="font-weight:800; color:${s.type==='PEAK TRAFFIC'?'var(--red)':'var(--green)'}; font-size:0.85rem;">${s.advice}</span>
@@ -963,7 +981,7 @@ function captureFace() {
     const badge = document.getElementById('face-status-badge');
     if (badge) {
         badge.style.display = 'inline-block';
-        badge.style.color = '#22c55e';
+        badge.style.color = 'var(--green)';
         badge.innerHTML = '<i class="fas fa-check-circle"></i> Captured!';
         setTimeout(() => {
             badge.style.display = 'none';
@@ -1132,7 +1150,7 @@ if (canvas) {
         const scaleX = 640 / r.width, scaleY = 480 / r.height;
         const mappedX = Math.round(x * scaleX), mappedY = Math.round(y * scaleY);
         zonePoints.push([mappedX, mappedY]);
-        ctx.fillStyle = "#4f46e5"; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim() || '#4f46e5'; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
         if (zonePoints.length === 4) {
             const name = prompt("Zone Name:");
             const unauthorized = prompt("Unauthorized Roles (comma separated, e.g. Waitstaff,Chef) or leave empty:");

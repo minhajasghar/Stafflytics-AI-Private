@@ -1,6 +1,8 @@
 import database
+import json
 import os
 import re
+import time
 from datetime import datetime
 
 try:
@@ -46,16 +48,74 @@ TOP PERFORMERS: {', '.join([f"{m['name']} ({m['role']}, {m['days']}d, {m['late']
 
     def _query_gemini(self, query):
         if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
-            return None
+            return "⚠️ Gemini API not configured. Set a valid GEMINI_API_KEY in the .env file.\n\n*Get a free key at https://aistudio.google.com/apikey*"
+        models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash']
+        for model_name in models_to_try:
+            for attempt in range(2):
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    context = self._get_db_context()
+                    prompt = f"{context}\n\nAnswer this business query concisely using ONLY the data above. If the query is a greeting like 'hi' or 'thanks', just greet back briefly — do not include raw data. Never repeat the database context in your response.\n\nUser: {query}"
+                    resp = model.generate_content(prompt, generation_config={'max_output_tokens': 500, 'temperature': 0.3})
+                    return resp.text.strip() if resp and resp.text else None
+                except Exception as e:
+                    err = str(e)
+                    print(f"[CHATBOT] Gemini API error ({model_name}): {err}")
+                    delay_match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', err)
+                    if delay_match and attempt == 0:
+                        delay = int(delay_match.group(1))
+                        time.sleep(delay + 1)
+                        continue
+                    break
+        return ("⚠️ Gemini API quota exceeded for all models. Try again later.\n\n"
+                "• Daily free limit resets after 24h\n"
+                "• Or create a new project at https://aistudio.google.com\n"
+                "• Or set up billing for higher quota")
+
+    def generate_shift_suggestions(self, hourly_data):
+        if not hourly_data:
+            return []
         try:
-            model = genai.GenerativeModel('gemini-2.0-flash')
             context = self._get_db_context()
-            prompt = f"{context}\n\nUser query: {query}\n\nRespond helpfully with real data only. Keep it brief (2-4 sentences)."
-            resp = model.generate_content(prompt, generation_config={'max_output_tokens': 300, 'temperature': 0.3})
-            return resp.text.strip() if resp and resp.text else None
+            data_str = "\n".join([
+                f"Hour {h['hour']}: avg {h['staff']} staff, {h['activity']}% activity"
+                for h in hourly_data
+            ])
+            prompt = f"""{context}
+
+HOURLY STAFF ACTIVITY (last 7 days):
+{data_str}
+
+Analyze this restaurant staffing data and return a JSON array of shift optimization suggestions. Each suggestion must have:
+- "time": hour range like "10:00 - 11:00"
+- "type": "PEAK TRAFFIC", "Busy", "Low Activity", or "Understaffed"
+- "advice": specific actionable recommendation (e.g. "Add 1 waiter", "Reduce to 1 chef", "Maintain current staff")
+- "reason": brief data-driven explanation
+
+Rules:
+- Low activity + more than 2 staff → suggest reducing staff
+- Activity > 75% → PEAK TRAFFIC, suggest adding staff
+- Activity 50-75% → Busy, suggest maintaining
+- If avg_staff is very low but activity is high → Understaffed, suggest urgent hiring
+- Consider Pakistani restaurant context (dinner rush 7-10 PM, lunch 12-3 PM)
+
+Return ONLY the JSON array, no markdown or extra text. Example:
+[{{"time":"12:00 - 13:00","type":"PEAK TRAFFIC","advice":"Add 1 more waiter for lunch rush","reason":"92% activity with only 2 staff"}}]"""
+            if GEMINI_AVAILABLE and GEMINI_API_KEY:
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                resp = model.generate_content(prompt, generation_config={'max_output_tokens': 800, 'temperature': 0.3})
+                if resp and resp.text:
+                    text = resp.text.strip()
+                    if text.startswith('```json'): text = text[7:]
+                    elif text.startswith('```'): text = text[3:]
+                    if text.endswith('```'): text = text[:-3]
+                    text = text.strip()
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        return parsed
         except Exception as e:
-            print(f"[CHATBOT] Gemini API error: {e}")
-            return None
+            print(f"[CHATBOT] Shift suggestion error: {e}")
+        return []
 
     def process_query(self, query):
         gemini_resp = self._query_gemini(query)

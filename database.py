@@ -117,11 +117,21 @@ def translate_sqlite_to_mysql(query):
     query = query.replace("strftime('%m', a.entry_time, 'localtime')", "DATE_FORMAT(a.entry_time, '%m')")
     query = query.replace("strftime('%m', 'now', 'localtime')", "DATE_FORMAT(NOW(), '%m')")
     query = query.replace("strftime('%m', last_seen, 'localtime')", "DATE_FORMAT(last_seen, '%m')")
+    query = re.sub(r"strftime\('%m',\s*(\w+\.timestamp),\s*'localtime'\)", r"DATE_FORMAT(\1, '%m')", query)
+    query = query.replace("strftime('%m', timestamp, 'localtime')", "DATE_FORMAT(timestamp, '%m')")
     query = query.replace("strftime('%Y', entry_time, 'localtime')", "DATE_FORMAT(entry_time, '%Y')")
     query = query.replace("strftime('%Y', a.entry_time, 'localtime')", "DATE_FORMAT(a.entry_time, '%Y')")
     query = query.replace("strftime('%Y', 'now', 'localtime')", "DATE_FORMAT(NOW(), '%Y')")
+    query = re.sub(r"strftime\('%Y',\s*(\w+\.timestamp),\s*'localtime'\)", r"DATE_FORMAT(\1, '%Y')", query)
+    query = query.replace("strftime('%Y', timestamp, 'localtime')", "DATE_FORMAT(timestamp, '%Y')")
     query = query.replace("strftime('%w', entry_time, 'localtime')", "(DAYOFWEEK(entry_time) - 1)")
     query = query.replace("strftime('%H', a.entry_time, 'localtime')", "HOUR(a.entry_time)")
+    
+    # String concatenation: SQLite uses ||, MySQL uses CONCAT()
+    query = re.sub(r"'([^']+)'\s*\|\|\s*(\w+)", r"CONCAT('\1', \2)", query)
+    
+    # Handle aliased date(col, 'localtime') patterns (e.g. vl.timestamp, c2.entry_time)
+    query = re.sub(r"date\((\w+\.\w+),\s*'localtime'\)", r"DATE(\1)", query)
     
     # Scalar MAX/MIN functions (MySQL uses GREATEST/LEAST for scalar operations)
     query = query.replace('MAX(1,', 'GREATEST(1,')
@@ -1143,13 +1153,15 @@ def update_customer_encoding(customer_id, encoding_blob, photo=None):
         conn.close()
 
 def get_customer_history():
-    """Returns customer visit history - only customers who visited on more than 1 day
-    qualify as 'Regular Customer'. Shows all recorded sessions with proper labels."""
+    """Returns customer visit history - only regular customers who visited on more than 1 day
+    and have a face photo on record. Any new face regular customer is someone who came in front
+    of camera more than a single day and is not a staff member."""
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
         
         # Get sessions for customers with a known profile (linked via customer_id)
+        # Only include regular customers (visited on 2+ distinct days) with a face photo
         cursor.execute("""
             SELECT cp.name, cp.id, c.entry_time, c.duration_minutes, c.table_id, cp.photo,
                    cp.visit_count,
@@ -1157,6 +1169,9 @@ def get_customer_history():
                     FROM customers c2 WHERE c2.customer_id = cp.id) as distinct_days
             FROM customers c
             JOIN customer_profiles cp ON c.customer_id = cp.id
+            WHERE cp.photo IS NOT NULL AND cp.photo != ''
+              AND (SELECT COUNT(DISTINCT date(c2.entry_time, 'localtime'))
+                   FROM customers c2 WHERE c2.customer_id = cp.id) >= 2
             ORDER BY c.entry_time DESC LIMIT 200
         """)
         rows = cursor.fetchall()
@@ -1173,13 +1188,8 @@ def get_customer_history():
             visit_count = r[6] or 1
             distinct_days = r[7] or 1
             
-            # A customer is "Regular" if they visited on 2 or more distinct calendar days
-            if distinct_days >= 2:
-                display_name = name if name != 'New Guest' else f'Regular Customer #{c_id}'
-                visit_label = f"{distinct_days} day visits"
-            else:
-                display_name = name if name != 'New Guest' else f'New Customer #{c_id}'
-                visit_label = "1st visit"
+            display_name = name if name != 'New Guest' else f'Regular Customer #{c_id}'
+            visit_label = f"{distinct_days} day visits"
             
             history.append({
                 "name": display_name,
@@ -1190,7 +1200,7 @@ def get_customer_history():
                 "photo": photo,
                 "visits": visit_count,
                 "distinct_days": distinct_days,
-                "is_regular": distinct_days >= 2,
+                "is_regular": True,
                 "visit_label": visit_label
             })
         return history
@@ -1380,18 +1390,7 @@ def get_shift_optimization_data(days=7):
         rows = cursor.fetchall()
         conn.close()
         
-        suggestions = []
-        for hour, staff, ratio in rows:
-            hour_int = int(hour)
-            time_str = f"{hour_int:02d}:00 - {(hour_int+1)%24:02d}:00"
-            if ratio < 30 and staff > 2:
-                suggestions.append({"time": time_str, "type": "Low Activity", "reason": f"{round(ratio,1)}% active", "advice": f"Reduce {int(staff-1)} staff"})
-            elif ratio > 75:
-                suggestions.append({"time": time_str, "type": "PEAK TRAFFIC", "reason": f"{round(ratio,1)}% occupancy", "advice": "Critical! Add 1-2 waiters"})
-            elif 50 <= ratio <= 75:
-                 suggestions.append({"time": time_str, "type": "Busy", "reason": "Steady traffic", "advice": "Maintain current staff"})
-        
-        return {"data": [{"hour": r[0], "staff": round(r[1] or 0, 1), "activity": round(r[2] or 0, 1)} for r in rows], "suggestions": suggestions}
+        return [{"hour": r[0], "staff": round(r[1] or 0, 1), "activity": round(r[2] or 0, 1)} for r in rows]
 
 def get_todays_shift_roster():
     """Returns today's shift distribution for Pakistani restaurant context"""

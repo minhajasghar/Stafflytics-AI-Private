@@ -649,7 +649,9 @@ def get_performance_analytics():
 @app.route('/api/analytics/optimization')
 @login_required
 def get_optimization_analytics():
-    return jsonify(database.get_shift_optimization_data())
+    data = database.get_shift_optimization_data()
+    suggestions = chatbot.generate_shift_suggestions(data)
+    return jsonify({"data": data, "suggestions": suggestions})
 
 @app.route('/api/analytics/synergy')
 @login_required
