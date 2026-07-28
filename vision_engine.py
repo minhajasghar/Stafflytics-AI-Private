@@ -265,8 +265,8 @@ class VisionEngine:
                     # Update state if it still exists
                     if track_id in self.person_states:
                         state = self.person_states[track_id]
-                        # Require 4 confident votes in the window to confirm identity
-                        if counts[winner] >= 4:
+                        # Require 3 confident votes in the window to confirm identity
+                        if counts[winner] >= 3:
                             if winner.startswith("CUST:"):
                                 c_id = int(winner.split(":")[1])
                                 meta = next((m for m in self.known_customer_metadata if m["id"] == c_id), None)
@@ -858,7 +858,7 @@ class VisionEngine:
 
             # Cleanup expired tracks under lock
             with self.lock:
-                expired = [tid for tid, s in self.person_states.items() if current_time - s["last_active"] > 5]
+                expired = [tid for tid, s in self.person_states.items() if current_time - s["last_active"] > 10]
                 for tid in expired:
                     if tid in self.customer_timers:
                         duration = current_time - self.customer_timers[tid]["start"]
@@ -896,7 +896,7 @@ class VisionEngine:
             # Detection dwell: keep showing last known positions for 0.5s if YOLO briefly misses
             now = time.time()
             if not detections and self.dwell_buffer:
-                self.dwell_buffer = [(d, t) for d, t in self.dwell_buffer if now - t < 0.5]
+                self.dwell_buffer = [(d, t) for d, t in self.dwell_buffer if now - t < 2.5]
                 detections = [d for d, _ in self.dwell_buffer]
             elif detections:
                 self.dwell_buffer = [(d, now) for d in detections]
@@ -913,7 +913,7 @@ class VisionEngine:
             for tid, state in self.person_states.items():
                 db_id = state.get("db_id")
                 # Only include enrolled staff — skip None (unknown) and C_xxx (customers)
-                if (time.time() - state["last_active"] < 2
+                if (time.time() - state["last_active"] < 8
                         and db_id is not None
                         and not str(db_id).startswith("C_")):
                     active_dict[db_id] = {

@@ -460,7 +460,7 @@ async function loadEvents() {
     const res = await fetch('/api/events/all');
     const data = await res.json();
     list.innerHTML = data.map(e => `
-        <div style="padding:10px; border-bottom:1px solid #f1f5f9; display:flex; justify-content:space-between; align-items:center;">
+        <div style="padding:10px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
             <div>
                 <span style="font-weight:800; color:var(--red);">🔥 ${e.intensity}</span> 
                 <span style="font-weight:600; margin-left:5px;">${e.date}</span>: ${e.type}
@@ -716,7 +716,7 @@ async function loadPerformanceRankings() {
                     <td>${r.role}</td>
                     <td>
                         <div style="display:flex; align-items:center; gap:10px;">
-                            <div style="flex:1; height:6px; background:#f1f5f9; border-radius:10px; overflow:hidden;">
+                            <div style="flex:1; height:6px; background:var(--nav-hover); border-radius:10px; overflow:hidden;">
                                 <div style="width:${r.score}%; height:100%; background:${color};"></div>
                             </div>
                             <span style="font-weight:800; font-size:0.8rem; width:45px;">${r.score}%</span>
@@ -745,7 +745,7 @@ async function loadSalaryAdmin() {
             <tr>
                 <td><b>${r.name}</b></td>
                 <td>${r.role}</td>
-                <td><span class="status-badge" style="background:#f1f5f9; color:var(--text); border:none;">${r.salary_type || 'Monthly'}</span></td>
+                <td><span class="status-badge" style="background:var(--nav-hover); color:var(--text); border:none;">${r.salary_type || 'Monthly'}</span></td>
                 <td style="font-weight:800; color:var(--accent);">Rs. ${r.rate.toLocaleString()}</td>
                 <td><span style="font-size:0.75rem; font-weight:700; color:var(--primary);">${r.shift}</span></td>
             </tr>
@@ -984,9 +984,9 @@ function renderThumbnails() {
         if (i < enrollmentCaptures.length) {
             html += `<img src="${enrollmentCaptures[i]}" class="capture-thumb done" title="Capture ${i+1}">`;
         } else if (i === currentCaptureStep) {
-            html += `<div class="capture-thumb pending" style="display:flex; align-items:center; justify-content:center; background:#f1f5f9; font-size:1.2rem; font-weight:700; color:var(--text-muted);">${i+1}</div>`;
+            html += `<div class="capture-thumb pending" style="display:flex; align-items:center; justify-content:center; background:var(--nav-hover); font-size:1.2rem; font-weight:700; color:var(--text-muted);">${i+1}</div>`;
         } else {
-            html += `<div class="capture-thumb pending" style="display:flex; align-items:center; justify-content:center; background:#f1f5f9; font-size:0.8rem; color:#cbd5e1;">${i+1}</div>`;
+            html += `<div class="capture-thumb pending" style="display:flex; align-items:center; justify-content:center; background:var(--nav-hover); font-size:0.8rem; color:var(--text-muted);">${i+1}</div>`;
         }
     }
     container.innerHTML = html;

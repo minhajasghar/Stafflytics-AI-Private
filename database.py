@@ -4,6 +4,7 @@ import os
 import json
 import re
 from datetime import datetime, timedelta
+from decimal import Decimal as _Decimal
 
 # Use RLock to prevent deadlocks when functions call each other
 db_lock = threading.RLock()
@@ -28,9 +29,18 @@ if os.path.exists("config.json"):
         print(f"[DB] Error reading config.json, using defaults: {e}")
 
 # MySQL compatibility layer to emulate sqlite3.Row
+def _coerce(value):
+    """Convert MySQL decimal.Decimal values to float so Python arithmetic works without
+    'TypeError: unsupported operand type(s) for /: float and Decimal'.
+    All other types pass through unchanged."""
+    if isinstance(value, _Decimal):
+        return float(value)
+    return value
+
 class MySQLRow:
     def __init__(self, tuple_data, column_names):
-        self.tuple_data = tuple_data
+        # Coerce Decimal values at construction time so arithmetic always works
+        self.tuple_data = tuple(_coerce(v) for v in tuple_data)
         self.column_names = {name.lower(): idx for idx, name in enumerate(column_names)}
         
     def __getitem__(self, key):
@@ -524,22 +534,26 @@ def get_staff_reliability_ranking():
 
 def get_comprehensive_summary(date_str=None):
     """Generates a full business report for a specific date"""
-    if not date_str: date_str = "date('now', 'localtime')"
-    else: date_str = f"'{date_str}'"
-    
     with db_lock:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
+        
+        if not date_str:
+            date_clause = "date(entry_time, 'localtime') = date('now', 'localtime')"
+            cust_date_clause = "date(entry_time, 'localtime') = date('now', 'localtime')"
+        else:
+            date_clause = f"date(entry_time, 'localtime') = '{date_str}'"
+            cust_date_clause = f"date(entry_time, 'localtime') = '{date_str}'"
         
         # 1. Staff Stats
         cursor.execute(f"""
             SELECT COUNT(DISTINCT staff_id), SUM(is_late) 
-            FROM attendance WHERE date(entry_time, 'localtime') = {date_str}
+            FROM attendance WHERE {date_clause}
         """)
         s_stats = cursor.fetchone()
         
         # 2. Customer Stats
-        cursor.execute(f"SELECT COUNT(*), AVG(duration_minutes) FROM customers WHERE date(entry_time, 'localtime') = {date_str}")
+        cursor.execute(f"SELECT COUNT(*), AVG(duration_minutes) FROM customers WHERE {cust_date_clause}")
         c_stats = cursor.fetchone()
         
         conn.close()
@@ -547,7 +561,8 @@ def get_comprehensive_summary(date_str=None):
             "staff_present": s_stats[0] or 0,
             "late_count": s_stats[1] or 0,
             "customers": c_stats[0] or 0,
-            "avg_stay": round(c_stats[1] or 0, 1)
+            "avg_stay": round(float(c_stats[1] or 0), 1)
+
         }
 
 # --- CORE LOGIC ---

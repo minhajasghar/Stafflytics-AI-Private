@@ -4,6 +4,8 @@ import os
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport=tcp|max_delay=2000000"
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["FFREPORT"] = "level=quiet"
+from dotenv import load_dotenv
+load_dotenv()
 from flask import Flask, render_template, Response, jsonify, request, session, redirect, url_for
 from flask_sock import Sock
 import json
@@ -33,6 +35,15 @@ app = Flask(__name__)
 app.secret_key = 'signature_secret_key_stafflytics_2026'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
 sock = Sock(app)
+
+# Redirect werkzeug request logger to stdout — avoids '--- Logging error ---' on Windows
+# when stderr is in a broken/inconsistent state after FFmpeg fd manipulation.
+import logging as _logging, sys as _sys
+_wz_logger = _logging.getLogger('werkzeug')
+_wz_logger.handlers.clear()
+_wz_logger.addHandler(_logging.StreamHandler(_sys.stdout))
+_wz_logger.setLevel(_logging.INFO)
+
 
 websocket_clients = set()
 websocket_lock = threading.Lock()
@@ -66,28 +77,41 @@ def detection_ws(ws):
 
 
 # Initialize database & Mailer
-engine = None        # Initialized asynchronously
-camera_stream = None # Initialized asynchronously
+engine = None         # Initialized asynchronously
+camera_stream = None  # AI stream: cam_ai (H.264 640x480) — used by YOLO/vision engine
+display_stream = None # Display stream: cam (full HD relay) — used by video_feed
 
 # RTSP Camera Configuration
-PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=1"
-RTSP_URL = "rtsp://127.0.0.1:8554/cam"
+PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
+RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"   # AI stream: H.264 640x480, stable, no HEVC errors
+DISPLAY_RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Display stream: full HD relay
 
 def sync_camera_config():
     global RTSP_URL, PHYSICAL_RTSP_URL
     conf = database.get_system_settings()
     saved = conf.get('rtsp_url', '')
     if saved and saved.strip():
-        PHYSICAL_RTSP_URL = saved.strip()
+        url = saved.strip()
+        # Ensure we always use subtype=0 (main stream, full HD) for display.
+        # The HEVC errors are fixed by the dual-stream architecture below:
+        # MediaMTX relays it over TCP, and cam_ai transcodes to H.264 for AI.
+        if 'subtype=1' in url and 'subtype=10' not in url:
+            url = url.replace('subtype=1', 'subtype=0')
+            database.update_system_settings({'rtsp_url': url})
+            print(f"[SYSTEM] Restored RTSP subtype=0 (full HD) — dual-stream handles HEVC stability.")
+        PHYSICAL_RTSP_URL = url
         print(f"[SYSTEM] PHYSICAL_RTSP_URL updated to: '{PHYSICAL_RTSP_URL}'")
     
-    # Configure and restart local MediaMTX proxy with the physical camera URL
+    # Configure and restart local MediaMTX proxy with the physical camera URL.
+    # MediaMTX creates two paths:
+    #   cam     — raw relay of the physical camera (full HD, for display)
+    #   cam_ai  — H.264 640x480 transcode (for OpenCV/YOLO, eliminates HEVC errors)
     import stream_manager
     stream_manager.setup_mediamtx(PHYSICAL_RTSP_URL)
 
-    # Route through local MediaMTX proxy to multiplex camera connections and save CPU/bandwidth
-    RTSP_URL = "rtsp://127.0.0.1:8554/cam"
-    print(f"[SYSTEM] sync_camera_config: Redirected RTSP_URL to local proxy: '{RTSP_URL}'")
+    # AI processing reads from the H.264 transcoded path — stable, no HEVC decode errors
+    RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"
+    print(f"[SYSTEM] RTSP_URL for AI set to: '{RTSP_URL}' (H.264 transcoded)")
 QUALITY_PRESETS = {
     "480p": {"size": (640, 480), "jpeg": 85, "label": "Standard (480p)"},
     "720p": {"size": (1280, 720), "jpeg": 90, "label": "Enhanced (720p)"},
@@ -137,7 +161,7 @@ def cleanup_streams():
 atexit.register(cleanup_streams)
 
 class CameraStream:
-    def __init__(self):
+    def __init__(self, rtsp_override=None):
         self.stream = None
         self.frame = None
         self.frame_id = 0
@@ -150,6 +174,7 @@ class CameraStream:
         self.backeneds = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
         self.actual_width = 640
         self.actual_height = 480
+        self.rtsp_override = rtsp_override  # If set, use this URL instead of global RTSP_URL
         
     def start(self):
         # Start the background update thread immediately
@@ -159,30 +184,32 @@ class CameraStream:
 
     def _attempt_connection(self):
         global camera_online
-        print(f"[SYSTEM] Starting Camera Synchronization Loop... (RTSP_URL='{RTSP_URL}')")
+        # Use override URL if specified (display_stream uses cam, camera_stream uses cam_ai)
+        active_url = self.rtsp_override if self.rtsp_override else RTSP_URL
+        print(f"[SYSTEM] Starting Camera Synchronization Loop... (URL='{active_url}')")
         if self.stream is not None:
             try: self.stream.release()
             except: pass
             self.stream = None
 
         # Try RTSP URL with multiple common stream paths
-        if RTSP_URL:
+        if active_url:
             rtsp_variants = []
 
             # 1) ALWAYS try the user's exact URL first (most important!)
-            rtsp_variants.append(RTSP_URL)
+            rtsp_variants.append(active_url)
 
             # Only try camera-specific fallbacks if connecting to a remote camera directly
-            if "localhost" not in RTSP_URL and "127.0.0.1" not in RTSP_URL:
+            if "localhost" not in active_url and "127.0.0.1" not in active_url:
                 # 2) Try with TCP transport on the exact URL
-                if '?' in RTSP_URL:
-                    rtsp_variants.append(RTSP_URL + "&tcp")
+                if '?' in active_url:
+                    rtsp_variants.append(active_url + "&tcp")
                 else:
-                    rtsp_variants.append(RTSP_URL + "?tcp")
+                    rtsp_variants.append(active_url + "?tcp")
 
                 # 3) Extract base and try Imou/Dahua-specific paths
-                m = re.match(r'(rtsp://[^@]+@[^/]+|rtsp://[^/]+)', RTSP_URL)
-                base = m.group(1) if m else RTSP_URL
+                m = re.match(r'(rtsp://[^@]+@[^/]+|rtsp://[^/]+)', active_url)
+                base = m.group(1) if m else active_url
 
                 paths = [
                     '/cam/realmonitor?channel=1&subtype=1',
@@ -224,17 +251,7 @@ class CameraStream:
                             cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
                             cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)
                         if cap and cap.isOpened():
-                            old_stderr = os.dup(2) if hasattr(os, 'dup') else None
-                            if old_stderr is not None:
-                                null_fd = os.open(os.devnull, os.O_WRONLY)
-                                os.dup2(null_fd, 2)
-                                os.close(null_fd)
-                            try:
-                                ret, f = cap.read()
-                            finally:
-                                if old_stderr is not None:
-                                    os.dup2(old_stderr, 2)
-                                    os.close(old_stderr)
+                            ret, f = cap.read()
                             if ret and f is not None:
                                 print(f"[SYSTEM] Camera successfully synchronized via RTSP: {display_url}")
                                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
@@ -297,18 +314,7 @@ class CameraStream:
                     continue
 
             try:
-                # Suppress noisy FFmpeg HEVC decoder warnings during frame read
-                old_stderr = os.dup(2) if hasattr(os, 'dup') else None
-                if old_stderr is not None:
-                    null_fd = os.open(os.devnull, os.O_WRONLY)
-                    os.dup2(null_fd, 2)
-                    os.close(null_fd)
-                try:
-                    grabbed, frame = self.stream.read()
-                finally:
-                    if old_stderr is not None:
-                        os.dup2(old_stderr, 2)
-                        os.close(old_stderr)
+                grabbed, frame = self.stream.read()
                 if not grabbed or frame is None:
                     print("[SYSTEM] Camera Signal Lost. Attempting Reconnection...")
                     self.online = False
@@ -428,15 +434,24 @@ def background_system_init():
     except Exception as e:
         print(f"[SYSTEM ERROR] Vision Engine failed: {e}")
         
-    # 3. Init Camera Stream
+    # 3. Init Camera Streams (dual-stream architecture)
     try:
-        init_status = "Connecting Camera..."
+        init_status = "Connecting AI Camera Stream..."
+        # cam_ai: H.264 640x480 transcoded by MediaMTX — used by YOLO, no HEVC errors
         camera_stream = CameraStream().start()
-        print("[SYSTEM] Camera Background Sync Done.")
+        print("[SYSTEM] AI camera stream (cam_ai) started.")
         # Start background vision analytics loop thread
         threading.Thread(target=vision_engine_loop, daemon=True, name="VisionEngineLoopThread").start()
     except Exception as e:
-        print(f"[SYSTEM ERROR] Camera initialization failed: {e}")
+        print(f"[SYSTEM ERROR] AI camera stream failed: {e}")
+
+    try:
+        init_status = "Connecting Display Camera Stream..."
+        # cam: full HD relay — used by /video_feed for crystal-clear display
+        display_stream = CameraStream(rtsp_override=DISPLAY_RTSP_URL).start()
+        print(f"[SYSTEM] Display camera stream (cam, full HD) started.")
+    except Exception as e:
+        print(f"[SYSTEM ERROR] Display camera stream failed (non-critical): {e}")
 
     # 4. Pre-connect ONVIF for PTZ (saves ~18s on first click)
     try:
@@ -453,7 +468,8 @@ def background_system_init():
 threading.Thread(target=background_system_init, daemon=True, name="SystemInitThread").start()
 
 def generate_frames():
-    global camera_stream, engine, system_initializing, camera_quality, camera_width, camera_height, latest_processed_frame
+    global camera_stream, display_stream, engine, system_initializing, camera_quality, camera_width, camera_height, latest_processed_frame
+
     refresh_counter = 0
     last_yield_time = 0
     min_frame_interval = 0.067
@@ -477,12 +493,15 @@ def generate_frames():
                 refresh_counter = 0
 
             # If camera stream is offline, return CAM OFFLINE
-            if not camera_stream.online:
+            # Check display_stream (HD feed) for the visual; fall back to camera_stream status
+            stream_for_display = display_stream if display_stream else camera_stream
+            if stream_for_display and not stream_for_display.online:
                 err = np.zeros((camera_height or 480, camera_width or 640, 3), np.uint8)
                 cv2.putText(err, "CAMERA OFFLINE", (140, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50, 50, 255), 3)
                 ret, buf = cv2.imencode('.jpg', err)
                 yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
                 time.sleep(1); continue
+
 
             # Fetch the pre-processed frame from background analytics thread
             with processed_frame_lock:
@@ -491,16 +510,21 @@ def generate_frames():
 
             # Fallback if no frame has been processed by analytics loop yet
             if display_frame is None:
-                res, fid = camera_stream.read_buffered()
-                if res is not None:
-                    if fid == last_sent_frame_id:
-                        time.sleep(0.01)
+                # Try display_stream first (full HD), fall back to camera_stream
+                src = display_stream if display_stream and display_stream.online else camera_stream
+                if src:
+                    res, fid = src.read_buffered()
+                    if res is not None:
+                        if fid == last_sent_frame_id:
+                            time.sleep(0.01)
+                            continue
+                        tw = camera_width or 640
+                        th = camera_height or 480
+                        display_frame = cv2.resize(res, (tw, th))
+                        buf_frame_id = fid
+                    else:
+                        time.sleep(0.05)
                         continue
-                    # Use user-selected resolution (may upscale if camera native is lower)
-                    tw = camera_width or 640
-                    th = camera_height or 480
-                    display_frame = cv2.resize(res, (tw, th))
-                    buf_frame_id = fid
                 else:
                     time.sleep(0.05)
                     continue
@@ -671,23 +695,29 @@ def get_status():
             "today_customer_minutes": today_cst.get("today_minutes", 0)
         })
 
-    stf = engine.get_active_staff() if engine else []
-    
-    # Process pending security emails and telegrams
+    # Process pending security emails — snapshot person_states under lock to avoid
+    # RuntimeError: dictionary changed size during iteration (vision loop writes concurrently)
     new_alert = False
     alert_name = ""
     alert_zone = ""
-    for tid, state in engine.person_states.items():
-        if "needs_security_email" in state:
-            zone_name = state.pop("needs_security_email")
+    if engine:
+        with engine.lock:
+            pending_alerts = {tid: state.pop("needs_security_email")
+                              for tid, state in engine.person_states.items()
+                              if "needs_security_email" in state}
+            alert_names = {tid: state.get("name", "Unknown")
+                           for tid, state in engine.person_states.items()
+                           if tid in pending_alerts}
+        for tid, zone_name in pending_alerts.items():
             new_alert = True
-            alert_name = state.get('name', 'Unknown')
+            alert_name = alert_names.get(tid, "Unknown")
             alert_zone = zone_name
-            
-            # 1. Email
             html = mailer.get_security_alert_template(alert_name, alert_zone)
             mailer.send_email_async(mailer.OWNER_EMAIL, f"SECURITY ALERT: Unauthorized Entry in {alert_zone}", html)
-            
+
+    # Get active staff AFTER processing alerts so the list is up-to-date
+    stf = engine.get_active_staff() if engine else []
+
     return jsonify({
         "initializing": False,
         "count": len(stf), "camera_online": camera_online,
@@ -702,6 +732,7 @@ def get_status():
         "today_customers": today_cst.get("today_count", 0),
         "today_customer_minutes": today_cst.get("today_minutes", 0)
     })
+
 
 @app.route('/api/camera/refresh')
 @login_required
@@ -1146,4 +1177,4 @@ def test_camera():
 
 import sqlite3
 if __name__ == '__main__':
-    app.run(debug=True, port=5000, threaded=True, use_reloader=False)
+    app.run(debug=False, port=5000, threaded=True, use_reloader=False)

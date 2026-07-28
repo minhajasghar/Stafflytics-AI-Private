@@ -377,7 +377,7 @@ body {
 }
 
 .staff-badge {
-    background: #f1f5f9;
+    background: var(--nav-hover);
     padding: 6px 12px;
     border-radius: 20px;
     font-size: 0.75rem;
@@ -658,7 +658,7 @@ input:focus {
 
 .performance-metric {
     font-size: 0.8rem;
-    background: #f1f5f9;
+    background: var(--nav-hover);
     padding: 10px;
     border-radius: 10px;
     margin-top: 5px;

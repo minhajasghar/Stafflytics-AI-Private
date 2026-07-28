@@ -63,11 +63,22 @@ srt: no
 
 paths:
   cam:
+    # Full-quality relay from physical camera — used for the display video feed.
+    # TCP transport prevents UDP packet loss that causes HEVC decode errors.
     source: {current_physical_rtsp_url}
     rtspTransport: tcp
 
+  cam_ai:
+    # H.264 transcoded stream for OpenCV / YOLO AI processing.
+    # FFmpeg pulls from the local cam relay (already over TCP), re-encodes to H.264
+    # at 640x480 for lightweight, error-free AI reads. ultrafast+zerolatency keeps
+    # latency under 200ms while eliminating all HEVC decode failures that caused
+    # frame drops and bounding box disappearances.
+    runOnInit: '"{ffmpeg_path}" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    runOnInitRestart: yes
+
   mystream:
-    runOnDemand: '\"{ffmpeg_path}\" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf \"scale={stream_w}:{stream_h}\" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
+    runOnDemand: '"{ffmpeg_path}" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf \"scale={stream_w}:{stream_h}\" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
     runOnDemandRestart: yes
 """
     try:
