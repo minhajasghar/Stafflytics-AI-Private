@@ -32,6 +32,20 @@ import requests
 CODE_OK = "0"
 CODE_LIVE_ALREADY_EXISTS = "LV1001"
 
+# PTZ operation codes for the Imou controlMovePTZ API.
+_IMOU_DIRECTION_MAP = {
+    "Up":        "UP",
+    "Down":      "DOWN",
+    "Left":      "LEFT",
+    "Right":     "RIGHT",
+    "UpLeft":    "UPPER_LEFT",
+    "UpRight":   "UPPER_RIGHT",
+    "DownLeft":  "LOWER_LEFT",
+    "DownRight": "LOWER_RIGHT",
+    "ZoomIn":    "ZOOM_IN",
+    "ZoomOut":   "ZOOM_OUT",
+}
+
 # Token is considered stale 60s before its reported expiry (reference behaviour).
 TOKEN_REFRESH_MARGIN = 60
 # Imou live URLs expire quickly; treat as stale after this many seconds.
@@ -231,6 +245,29 @@ class ImouClient:
         r = requests.get(seg_url, timeout=30, stream=True)
         r.raise_for_status()
         return r.raw
+
+    # ---- PTZ control ----------------------------------------------------
+
+    def control_ptz(self, operation, duration=500):
+        """Send a PTZ movement command via Imou Open Platform API.
+
+        operation: Imou operation string — use _IMOU_DIRECTION_MAP to convert
+                   from app direction names, or pass 'STOP' directly.
+        duration:  Movement duration in milliseconds (default 500 ms).
+        """
+        with self.lock:
+            token = self._ensure_token_locked()
+        call_api(
+            self.cfg["base_url"], self.cfg["app_id"], self.cfg["app_secret"],
+            "controlMovePTZ",
+            {
+                "token": token,
+                "deviceId": self.cfg["device_id"],
+                "channelId": str(self.cfg["channel_id"]),
+                "operation": operation,
+                "duration": duration,
+            },
+        )
 
 
 def _playlist_has_segments(text):

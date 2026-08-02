@@ -948,7 +948,26 @@ def _get_onvif_connection():
     return None, None
 
 def _ptz_send(direction, action):
-    """Send PTZ command via ONVIF with cached connection, fallback to CGI."""
+    """Send PTZ command via Imou API (Imou mode) or ONVIF/CGI fallback (RTSP mode)."""
+    import stream_manager
+    # --- Imou HLS mode: use Imou Open Platform controlMovePTZ API ---
+    if stream_manager.STREAM_MODE == "imou" and imou_client.imou_enabled():
+        try:
+            if action == "stop":
+                imou.control_ptz("STOP")
+                print("[PTZ-IMOU] Stopped")
+            else:
+                op = imou_client._IMOU_DIRECTION_MAP.get(direction)
+                if not op:
+                    return False, f"Unknown direction: {direction}"
+                imou.control_ptz(op, duration=500)
+                print(f"[PTZ-IMOU] Moved {direction} ({op})")
+            return True, ""
+        except Exception as e:
+            print(f"[PTZ-IMOU] Error: {e}")
+            return False, str(e)
+
+    # --- Legacy RTSP mode: ONVIF with CGI fallback ---
     ptz, profile = _get_onvif_connection()
     if ptz and profile:
         try:
