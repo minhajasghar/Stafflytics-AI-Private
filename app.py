@@ -29,12 +29,16 @@ import requests
 import re
 from export_engine import export_engine
 from flask import send_file
+import imou_client
 
 # Stafflytics AI Configuration
 app = Flask(__name__)
 app.secret_key = 'signature_secret_key_stafflytics_2026'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
 sock = Sock(app)
+
+# Imou Open Platform client — credentials always come from .env (never hardcoded).
+imou = imou_client.ImouClient()
 
 # Redirect werkzeug request logger to stdout — avoids '--- Logging error ---' on Windows
 # when stderr is in a broken/inconsistent state after FFmpeg fd manipulation.
@@ -88,6 +92,22 @@ DISPLAY_RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Display stream: full HD relay
 
 def sync_camera_config():
     global RTSP_URL, PHYSICAL_RTSP_URL
+    import stream_manager
+
+    # --- IMOU HLS MODE (primary). ---
+    # When Imou credentials are present in .env, the video source is the Imou
+    # Open Platform HLS stream. The browser plays HLS directly; the backend
+    # relays HLS -> MediaMTX "cam"/"cam_ai" so YOLO frame consumption is
+    # unchanged. The legacy local-RTSP + WebRTC path stays in the codebase but
+    # is deactivated (feature-flagged off).
+    if imou_client.imou_enabled():
+        stream_manager.setup_imou_stream()
+        RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"  # H.264 transcoded AI stream
+        print("[SYSTEM] IMOU HLS MODE active — AI stream via cam_ai, browser plays HLS directly.")
+        return
+
+    # --- LEGACY LOCAL-RTSP MODE (deactivated when Imou is configured). ---
+    stream_manager.set_stream_mode("rtsp")
     conf = database.get_system_settings()
     saved = conf.get('rtsp_url', '')
     if saved and saved.strip():
@@ -106,7 +126,6 @@ def sync_camera_config():
     # MediaMTX creates two paths:
     #   cam     — raw relay of the physical camera (full HD, for display)
     #   cam_ai  — H.264 640x480 transcode (for OpenCV/YOLO, eliminates HEVC errors)
-    import stream_manager
     stream_manager.setup_mediamtx(PHYSICAL_RTSP_URL)
 
     # AI processing reads from the H.264 transcoded path — stable, no HEVC decode errors
@@ -154,6 +173,7 @@ def cleanup_streams():
     print("[SYSTEM] Cleaning up streaming subprocesses...")
     try:
         import stream_manager
+        stream_manager.stop_imou_bridge()
         stream_manager.stop_mediamtx()
     except:
         pass
@@ -184,6 +204,7 @@ class CameraStream:
 
     def _attempt_connection(self):
         global camera_online
+        import stream_manager
         # Use override URL if specified (display_stream uses cam, camera_stream uses cam_ai)
         active_url = self.rtsp_override if self.rtsp_override else RTSP_URL
         print(f"[SYSTEM] Starting Camera Synchronization Loop... (URL='{active_url}')")
@@ -267,31 +288,34 @@ class CameraStream:
                         print(f"[RTSP PROBE ERROR] {e}")
                         continue
 
-        # Fallback to local camera indices
-        for idx in self.indices:
-            for be in self.backeneds:
-                if self.stopped: return False
-                try:
-                    print(f"[SYSTEM] Probing Index {idx} with Backend {be}...")
-                    cap = cv2.VideoCapture(idx, be)
-                    if cap and cap.isOpened():
-                        ret, f = cap.read()
-                        if ret and f is not None:
-                            print(f"[SYSTEM] Camera successfully synchronized at Index {idx}.")
-                            preset_cfg = QUALITY_PRESETS.get(camera_preset, QUALITY_PRESETS['480p'])
-                            cap.set(cv2.CAP_PROP_FRAME_WIDTH, preset_cfg["size"][0])
-                            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, preset_cfg["size"][1])
-                            cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
-                            self.actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            self.actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                            print(f"[SYSTEM] Camera native resolution: {self.actual_width}x{self.actual_height}")
-                            self.stream = cap
-                            self.online = True
-                            camera_online = True
-                            return True
-                    if cap: cap.release()
-                except Exception as e:
-                    print(f"[CAMERA PROBE ERROR] {e}")
+        # Fallback to local camera indices — legacy RTSP-mode behaviour only.
+        # In Imou mode the source is the Imou HLS -> cam_ai relay; we must NOT
+        # silently switch to a webcam, otherwise camera_online would be a lie.
+        if stream_manager.STREAM_MODE != "imou":
+            for idx in self.indices:
+                for be in self.backeneds:
+                    if self.stopped: return False
+                    try:
+                        print(f"[SYSTEM] Probing Index {idx} with Backend {be}...")
+                        cap = cv2.VideoCapture(idx, be)
+                        if cap and cap.isOpened():
+                            ret, f = cap.read()
+                            if ret and f is not None:
+                                print(f"[SYSTEM] Camera successfully synchronized at Index {idx}.")
+                                preset_cfg = QUALITY_PRESETS.get(camera_preset, QUALITY_PRESETS['480p'])
+                                cap.set(cv2.CAP_PROP_FRAME_WIDTH, preset_cfg["size"][0])
+                                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, preset_cfg["size"][1])
+                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
+                                self.actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                self.actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                print(f"[SYSTEM] Camera native resolution: {self.actual_width}x{self.actual_height}")
+                                self.stream = cap
+                                self.online = True
+                                camera_online = True
+                                return True
+                        if cap: cap.release()
+                    except Exception as e:
+                        print(f"[CAMERA PROBE ERROR] {e}")
         return False
 
     def update(self):
@@ -332,6 +356,13 @@ class CameraStream:
                     self.frame = frame
                     self.frame_id += 1
                     self.frame_buffer.append((frame.copy(), self.frame_id))
+                # Heartbeat for the Imou bridge watchdog (HLS stall detection).
+                try:
+                    import stream_manager
+                    if stream_manager.STREAM_MODE == "imou":
+                        stream_manager.mark_imou_frame_received()
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[CAMERA STREAM ERROR] {e}")
                 self.online = False
@@ -409,17 +440,34 @@ def background_system_init():
     try:
         init_status = "Synchronizing Database..."
         database.init_db()
-        sync_mailer_config()
-        sync_camera_config()
-        sync_camera_preset()
         print("[SYSTEM] Database Ready.")
-        
-        # Check and download streaming binaries in background
+    except Exception as e:
+        print(f"[SYSTEM ERROR] Database init failed: {e}")
+
+    # Each subsystem is independent — a failure in one must not prevent the
+    # camera/Imou stream from starting (e.g. DB unavailable).
+    try:
+        sync_mailer_config()
+    except Exception as e:
+        print(f"[SYSTEM ERROR] Mailer config sync failed: {e}")
+
+    try:
+        sync_camera_config()
+    except Exception as e:
+        print(f"[SYSTEM ERROR] Camera config sync failed: {e}")
+
+    try:
+        sync_camera_preset()
+    except Exception as e:
+        print(f"[SYSTEM ERROR] Camera preset sync failed: {e}")
+
+    # Check and download streaming binaries in background
+    try:
         init_status = "Checking streaming binaries..."
         import stream_manager
         stream_manager.ensure_binaries_async()
     except Exception as e:
-        print(f"[SYSTEM ERROR] Database init failed: {e}")
+        print(f"[SYSTEM ERROR] Streaming binary setup failed: {e}")
 
     # Release the UI early
     system_initializing = False
@@ -605,12 +653,102 @@ def chat():
 @app.route('/api/webrtc/status')
 @login_required
 def webrtc_status():
+    # Legacy WebRTC/MediaMTX path — kept but deactivated when Imou HLS is active.
     import stream_manager
     return jsonify({
         "complete": stream_manager.download_complete,
         "status": stream_manager.download_status,
         "error": stream_manager.download_error
     })
+
+# ---------------------------------------------------------------------------
+# Imou HLS streaming endpoints (proxy + auto-recovery)
+# ---------------------------------------------------------------------------
+
+def _stream_mode_json():
+    import stream_manager
+    return {
+        "mode": stream_manager.STREAM_MODE,
+        "enabled": imou_client.imou_enabled(),
+        "bridge_online": stream_manager.is_imou_bridge_alive() if imou_client.imou_enabled() else False,
+        "camera_online": camera_online,
+    }
+
+@app.route('/api/stream/status')
+@login_required
+def stream_status():
+    info = _stream_mode_json()
+    if info["enabled"]:
+        try:
+            info["source"] = imou.get_live_url()
+        except Exception as e:
+            info["source"] = None
+            info["error"] = str(e)
+    return jsonify(info)
+
+@app.route('/api/stream/playlist')
+def stream_playlist():
+    """Proxied Imou m3u8. Re-fetched from Imou on every request (never cached)
+    and every segment URI is rewritten to go through our /segment proxy. If the
+    cached live URL is stale, this auto-regenerates it before serving.
+    Unauthenticated on purpose: consumed by the browser via hls.js AND by the
+    backend ffmpeg bridge (which has no session cookie)."""
+    if not imou_client.imou_enabled():
+        return jsonify({"status": "error", "message": "Imou not enabled"}), 503
+    try:
+        base = request.host_url
+        playlist, used = imou.fetch_playlist(base)
+        body = imou_client.rewrite_playlist(playlist, used, base)
+        resp = Response(body, mimetype='application/vnd.apple.mpegurl')
+        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        print(f"[STREAM] playlist error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 502
+
+@app.route('/api/stream/segment')
+def stream_segment():
+    """Proxy a single Imou .ts segment (handles CORS + signed/expiring URLs)."""
+    seg_url = request.args.get('u', '')
+    if not seg_url:
+        return jsonify({"status": "error", "message": "missing u param"}), 400
+    try:
+        r = requests.get(seg_url, timeout=30, stream=True)
+        if r.status_code != 200:
+            return Response("segment unavailable", status=502)
+        def generate():
+            try:
+                for chunk in r.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+            finally:
+                r.close()
+        resp = Response(generate(), mimetype='video/mp2t')
+        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        print(f"[STREAM] segment error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 502
+
+@app.route('/api/stream/refresh', methods=['POST'])
+@login_required
+def stream_refresh():
+    """Force-regenerate the Imou live URL + restart the HLS->RTSP bridge.
+    Called by the frontend when it detects a frozen/stalled stream."""
+    import stream_manager
+    if not imou_client.imou_enabled():
+        return jsonify({"status": "error", "message": "Imou not enabled"}), 503
+    try:
+        url = imou.get_live_url(force=True)
+        stream_manager._restart_imou_bridge()
+        return jsonify({"status": "success", "source": url})
+    except Exception as e:
+        print(f"[STREAM] refresh error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 502
 
 @app.route('/video_feed')
 def video_feed():
