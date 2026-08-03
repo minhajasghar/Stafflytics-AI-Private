@@ -10,7 +10,126 @@ import threading
 # YOLO and face_recognition moved inside for lazy loading
 model = None
 model_loading_active = False
+
+
+def _start_model_load():
+    """Start loading the YOLO model in a background thread (idempotent).
+
+    Loads once; safe to call repeatedly before or after the model is ready.
+    Used by process_frame (lazy) and VisionEngine.warmup (eager at startup).
+    """
+    global model, model_loading_active
+    if model is not None or model_loading_active:
+        return
+    model_loading_active = True
+
+    def load():
+        global model, model_loading_active
+        try:
+            from ultralytics import YOLO
+            base_dir = os.path.abspath(os.path.dirname(__file__))
+            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose.pt')
+            print(f"[AI] Attempting to load YOLO model from: {model_path}")
+            if os.path.exists(model_path):
+                model = YOLO(model_path)
+                print("[AI] Background Model Load Complete.")
+            else:
+                print(f"[AI ERROR] YOLO model file does not exist at {model_path}!")
+        except Exception as e:
+            print(f"[AI ERROR] Lazy load failed: {e}")
+        finally:
+            model_loading_active = False
+
+    import threading
+    threading.Thread(target=load, daemon=True).start()
 face_rec_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# OpenCV face recognition backend (YuNet detection + SFace recognition).
+# Replaces the broken dlib/face_recognition install (rogue dlib 19.24.99).
+# Embeds are 128-d float vectors; normalized to unit length so matching is a
+# cosine similarity (dot product). Stored in DB via pickle like before.
+# ---------------------------------------------------------------------------
+_face_detector = None
+_face_recognizer = None
+_face_models_loaded = False
+
+# SFace cosine-similarity thresholds (same person is typically > 0.5).
+FACE_STAFF_STRONG = 0.45   # immediate staff match
+FACE_STAFF_RELAXED = 0.35  # quick / last-chance staff check
+FACE_CUSTOMER = 0.45       # known customer match
+
+
+def _load_face_models():
+    """Load YuNet detector + SFace recognizer ONNX models (idempotent)."""
+    global _face_detector, _face_recognizer, _face_models_loaded
+    if _face_models_loaded:
+        return True
+    base = os.path.abspath(os.path.dirname(__file__))
+    yunet = os.path.join(base, 'face_models', 'face_detection_yunet_2023mar.onnx')
+    sface = os.path.join(base, 'face_models', 'face_recognition_sface_2021oct.onnx')
+    if not (os.path.exists(yunet) and os.path.exists(sface)):
+        print(f"[AI ERROR] Face models missing: {yunet} / {sface}")
+        return False
+    try:
+        _face_detector = cv2.FaceDetectorYN.create(yunet, "", (320, 320), 0.6, 0.3, 50)
+        _face_recognizer = cv2.FaceRecognizerSF.create(sface, "")
+        _face_models_loaded = True
+        print("[AI] OpenCV face models loaded (YuNet + SFace).")
+        return True
+    except Exception as e:
+        print(f"[AI ERROR] Failed to load face models: {e}")
+        return False
+
+
+def _detect_face_box(bgr):
+    """Return the largest detected face box (x, y, w, h) in a BGR image, or None."""
+    if bgr is None or bgr.size == 0:
+        return None
+    if not _load_face_models():
+        return None
+    h, w = bgr.shape[:2]
+    det = _face_detector
+    try:
+        det.setInputSize((w, h))
+        faces, _ = det.detect(bgr)
+        if faces is None or getattr(faces, 'ndim', 0) != 2 or len(faces) == 0:
+            return None
+        best = max(faces, key=lambda f: f[2] * f[3])
+        return best[:4].copy()
+    except Exception as e:
+        print(f"[AI ERROR] YuNet detect failed: {e}")
+        return None
+
+
+def _encode_face(bgr):
+    """Detect the largest face in a BGR image and return a normalized 128-d
+    SFace embedding, or None when no face is found."""
+    face = _detect_face_box(bgr)
+    if face is None:
+        return None
+    try:
+        aligned = _face_recognizer.alignCrop(bgr, face)
+        feat = _face_recognizer.feature(aligned)
+        v = feat.flatten().astype(np.float64)
+        n = np.linalg.norm(v)
+        if n == 0:
+            return None
+        return v / n
+    except Exception as e:
+        print(f"[AI ERROR] SFace feature failed: {e}")
+        return None
+
+
+def _cos_sims(known_encodings, enc):
+    """Cosine similarity of `enc` against every known encoding (all normalized)."""
+    if not known_encodings:
+        return None
+    arr = np.asarray(known_encodings, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    return arr @ enc
 
 
 class Zone:
@@ -55,7 +174,6 @@ class VisionEngine:
         self.recognition_queue = queue.Queue()
         self.processing_tracks = set()
         self.last_rec_attempt = {}
-
         self.known_face_encodings = []
         self.known_face_metadata = [] 
         self.known_customer_encodings = []
@@ -89,9 +207,13 @@ class VisionEngine:
         # Start the background face recognition thread
         threading.Thread(target=self._recognition_worker, daemon=True, name="FaceRecWorkerThread").start()
 
+    def warmup(self):
+        """Start loading the YOLO model immediately (used at app startup so
+        detection is ready as soon as the camera comes online)."""
+        _start_model_load()
+
     def load_known_faces(self):
         try:
-            import face_recognition # Local import
             # Load Staff
             staff_data = database.get_all_staff()
             new_encodings = []
@@ -142,14 +264,13 @@ class VisionEngine:
                     with self.lock:
                         self.processing_tracks.discard(track_id)
                     continue
-                import face_recognition
-                
-                # Ensure the face crop is a valid 8-bit uint8 array
+
+                # Ensure the face crop is a valid 8-bit uint8 BGR array
                 if not isinstance(face_crop, np.ndarray):
                     raise ValueError("face_crop must be a numpy array")
                 if face_crop.dtype != np.uint8:
                     face_crop = face_crop.astype(np.uint8)
-                    
+
                 # Standardize channel layout (must be 3-channel BGR)
                 if len(face_crop.shape) == 2:
                     face_crop = cv2.cvtColor(face_crop, cv2.COLOR_GRAY2BGR)
@@ -159,41 +280,22 @@ class VisionEngine:
                     pass
                 else:
                     raise ValueError(f"Unexpected image shape for face recognition: {face_crop.shape}")
-                    
-                # Convert to RGB and enforce contiguous memory layout
-                rgb_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-                rgb_face = np.ascontiguousarray(rgb_face, dtype=np.uint8)
-                
-                h_f, w_f = rgb_face.shape[:2]
 
-                # First try direct encoding
+                h_f, w_f = face_crop.shape[:2]
+
+                # Encode the face (YuNet detect + SFace embed).
                 with face_rec_lock:
-                    face_encodings = face_recognition.face_encodings(rgb_face)
+                    enc = _encode_face(face_crop)
 
                 # Try upscaling for small crops
-                if not face_encodings and (h_f < 120 or w_f < 120):
+                if enc is None and (h_f < 160 or w_f < 160):
                     scale = min(4.0, max(160.0 / max(h_f, 1), 160.0 / max(w_f, 1), 1.0))
-                    enlarged = cv2.resize(rgb_face, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                    enlarged = cv2.resize(face_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
                     with face_rec_lock:
-                        face_encodings = face_recognition.face_encodings(enlarged)
+                        enc = _encode_face(enlarged)
 
-                # If still no encoding, try locating face first
-                if not face_encodings:
-                    with face_rec_lock:
-                        face_locs = face_recognition.face_locations(rgb_face, model='hog')
-                    if not face_locs and h_f >= 80 and w_f >= 80:
-                        scale = min(3.0, 160.0 / max(h_f, 1), 160.0 / max(w_f, 1))
-                        if scale > 1.0:
-                            enlarged = cv2.resize(rgb_face, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-                            with face_rec_lock:
-                                face_locs = face_recognition.face_locations(enlarged, model='hog')
-                            if face_locs:
-                                with face_rec_lock:
-                                    face_encodings = face_recognition.face_encodings(enlarged, known_face_locations=face_locs)
-                    elif face_locs:
-                        with face_rec_lock:
-                            face_encodings = face_recognition.face_encodings(rgb_face, known_face_locations=face_locs)
-                
+                face_encodings = [enc] if enc is not None else []
+
                 match_id = "Unknown"
                 match_source = None
                 if face_encodings:
@@ -206,18 +308,18 @@ class VisionEngine:
                     # LOG: confirm which tables are being checked
                     print(f"[AI] Matching track {track_id} against {len(known_staff_enc)} staff emb, {len(known_cust_enc)} customer emb")
                     
-                    best_staff_dist = 999.0
+                    best_staff_sim = -1.0
                     if known_staff_enc:
-                        staff_distances = face_recognition.face_distance(known_staff_enc, face_encodings[0])
-                        best_staff_idx = int(np.argmin(staff_distances))
-                        best_staff_dist = float(staff_distances[best_staff_idx])
-                        if best_staff_dist < 0.60:
+                        staff_sims = _cos_sims(known_staff_enc, face_encodings[0])
+                        best_staff_idx = int(np.argmax(staff_sims))
+                        best_staff_sim = float(staff_sims[best_staff_idx])
+                        if best_staff_sim >= FACE_STAFF_RELAXED:
                             match_id = known_staff_meta[best_staff_idx]["id"]
                             match_source = "staff"
-                            print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — distance={best_staff_dist:.4f} (threshold=0.60)")
-                            # Immediately set db_id — don't wait for consensus
+                            print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — sim={best_staff_sim:.4f} (threshold={FACE_STAFF_RELAXED})")
+                            # Immediately set db_id when the match is strong
                             with self.lock:
-                                if track_id in self.person_states:
+                                if best_staff_sim >= FACE_STAFF_STRONG and track_id in self.person_states:
                                     s = self.person_states[track_id]
                                     if s.get("db_id") is None:
                                         s["db_id"] = match_id
@@ -232,22 +334,22 @@ class VisionEngine:
                             except Exception as eat:
                                 print(f"[AI] Attendance record error: {eat}")
                         else:
-                            print(f"[AI] Staff check — best distance={best_staff_dist:.4f} for {known_staff_meta[best_staff_idx]['name']} (above 0.60 threshold)")
-                    
-                    best_cust_dist = 999.0
+                            print(f"[AI] Staff check — best sim={best_staff_sim:.4f} for {known_staff_meta[best_staff_idx]['name']} (below {FACE_STAFF_RELAXED} threshold)")
+
+                    best_cust_sim = -1.0
                     if match_id == "Unknown" and known_cust_enc:
-                        c_distances = face_recognition.face_distance(known_cust_enc, face_encodings[0])
-                        best_cust_idx = int(np.argmin(c_distances))
-                        best_cust_dist = float(c_distances[best_cust_idx])
-                        if best_cust_dist < 0.55:
+                        c_sims = _cos_sims(known_cust_enc, face_encodings[0])
+                        best_cust_idx = int(np.argmax(c_sims))
+                        best_cust_sim = float(c_sims[best_cust_idx])
+                        if best_cust_sim >= FACE_CUSTOMER:
                             match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
                             match_source = "customer"
                             matched_cust_idx = best_cust_idx
                             database.update_customer_encoding(known_cust_meta[matched_cust_idx]['id'], pickle.dumps(face_encodings[0]))
-                            print(f"[AI] Customer match: {known_cust_meta[best_cust_idx]['name']} (ID {known_cust_meta[best_cust_idx]['id']}) — distance={best_cust_dist:.4f}")
-                    
+                            print(f"[AI] Customer match: {known_cust_meta[best_cust_idx]['name']} (ID {known_cust_meta[best_cust_idx]['id']}) — sim={best_cust_sim:.4f}")
+
                     if match_id == "Unknown":
-                        print(f"[AI] No match found — best staff dist={best_staff_dist:.4f}, best cust dist={best_cust_dist:.4f}")
+                        print(f"[AI] No match found — best staff sim={best_staff_sim:.4f}, best cust sim={best_cust_sim:.4f}")
                 
                 # Update consensus and state under lock
                 refresh_faces = False
@@ -314,12 +416,12 @@ class VisionEngine:
                             known_staff_enc_q = list(self.known_face_encodings)
                             known_staff_meta_q = list(self.known_face_metadata)
                         if known_staff_enc_q:
-                            s_distances_q = face_recognition.face_distance(known_staff_enc_q, face_encodings[0])
-                            best_s_idx_q = int(np.argmin(s_distances_q))
-                            best_s_dist_q = float(s_distances_q[best_s_idx_q])
-                            if best_s_dist_q < 0.65:
+                            s_sims_q = _cos_sims(known_staff_enc_q, face_encodings[0])
+                            best_s_idx_q = int(np.argmax(s_sims_q))
+                            best_s_sim_q = float(s_sims_q[best_s_idx_q])
+                            if best_s_sim_q >= FACE_STAFF_RELAXED:
                                 s_meta_q = known_staff_meta_q[best_s_idx_q]
-                                print(f"[AI] Quick staff check: {s_meta_q['name']} (dist={best_s_dist_q:.4f}) — identifying immediately")
+                                print(f"[AI] Quick staff check: {s_meta_q['name']} (sim={best_s_sim_q:.4f}) — identifying immediately")
                                 with self.lock:
                                     if track_id in self.person_states:
                                         state = self.person_states[track_id]
@@ -358,15 +460,15 @@ class VisionEngine:
                                 known_staff_enc = list(self.known_face_encodings)
                                 known_staff_meta = list(self.known_face_metadata)
                             
-                            # Last-chance staff check with relaxed threshold (0.65)
+                            # Last-chance staff check with relaxed threshold
                             if known_staff_enc:
-                                s_distances = face_recognition.face_distance(known_staff_enc, face_encodings[0])
-                                best_s_idx = int(np.argmin(s_distances))
-                                best_s_dist = float(s_distances[best_s_idx])
-                                if best_s_dist < 0.65:
+                                s_sims = _cos_sims(known_staff_enc, face_encodings[0])
+                                best_s_idx = int(np.argmax(s_sims))
+                                best_s_sim = float(s_sims[best_s_idx])
+                                if best_s_sim >= FACE_STAFF_RELAXED:
                                     # Found a plausible staff match — update and skip customer creation
                                     s_meta = known_staff_meta[best_s_idx]
-                                    print(f"[AI] Last-chance staff match: {s_meta['name']} (dist={best_s_dist:.4f}) — NOT creating new customer")
+                                    print(f"[AI] Last-chance staff match: {s_meta['name']} (sim={best_s_sim:.4f}) — NOT creating new customer")
                                     with self.lock:
                                         if track_id in self.person_states:
                                             state = self.person_states[track_id]
@@ -387,10 +489,10 @@ class VisionEngine:
                             
                             fallback_match = False
                             if known_cust_enc:
-                                c_distances = face_recognition.face_distance(known_cust_enc, face_encodings[0])
-                                best_cust_idx = int(np.argmin(c_distances))
-                                best_cust_dist = float(c_distances[best_cust_idx])
-                                if best_cust_dist < 0.65:
+                                c_sims = _cos_sims(known_cust_enc, face_encodings[0])
+                                best_cust_idx = int(np.argmax(c_sims))
+                                best_cust_sim = float(c_sims[best_cust_idx])
+                                if best_cust_sim >= FACE_CUSTOMER:
                                     match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
                                     
                                     # Convert face_crop to base64 photo
@@ -400,7 +502,7 @@ class VisionEngine:
                                     
                                     database.update_customer_encoding(known_cust_meta[best_cust_idx]['id'], pickle.dumps(face_encodings[0]), photo=b64_photo)
                                     fallback_match = True
-                                    print(f"[AI] Auto-registered as RETURNING customer: {known_cust_meta[best_cust_idx]['name']} (dist={best_cust_dist:.4f})")
+                                    print(f"[AI] Auto-registered as RETURNING customer: {known_cust_meta[best_cust_idx]['name']} (sim={best_cust_sim:.4f})")
                                     with self.lock:
                                         if track_id in self.recognition_consensus:
                                             self.recognition_consensus[track_id].append(match_id)
@@ -457,26 +559,7 @@ class VisionEngine:
         try:
             global model, model_loading_active
             if model is None:
-                if not model_loading_active:
-                    model_loading_active = True
-                    def load():
-                        global model, model_loading_active
-                        try:
-                            from ultralytics import YOLO
-                            base_dir = os.path.abspath(os.path.dirname(__file__))
-                            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose.pt')
-                            print(f"[AI] Attempting to load YOLO model from: {model_path}")
-                            if os.path.exists(model_path):
-                                model = YOLO(model_path)
-                                print("[AI] Background Model Load Complete.")
-                            else:
-                                print(f"[AI ERROR] YOLO model file does not exist at {model_path}!")
-                        except Exception as e:
-                            print(f"[AI ERROR] Lazy load failed: {e}")
-                        finally:
-                            model_loading_active = False
-                    import threading
-                    threading.Thread(target=load, daemon=True).start()
+                _start_model_load()
                 return cv2.resize(frame, target_size), []
                 
             current_time = time.time()
@@ -495,14 +578,17 @@ class VisionEngine:
             face_source = original_frame if original_frame is not None else output_frame
             fh, fw = face_source.shape[:2]
             
-            # Run YOLO on a lightweight detection frame for CPU efficiency
-            DETECTION_WIDTH = 640
-            DETECTION_HEIGHT = 480
-            small_frame = cv2.resize(frame, (DETECTION_WIDTH, DETECTION_HEIGHT))
+            # Run YOLO on the native camera frame directly (cam_ai is already
+            # small — 640x360 16:9), keeping boxes in the SAME native coordinate
+            # space as the video the browser displays. No scaling, no distortion.
+            DETECTION_WIDTH = w_orig
+            DETECTION_HEIGHT = h_orig
+            small_frame = frame
             results = model.track(small_frame, persist=True, verbose=False, conf=0.25, iou=0.45)
             
-            scale_x = w_out / DETECTION_WIDTH
-            scale_y = h_out / DETECTION_HEIGHT
+            # Detection boxes stay in native pixel space (scale = 1.0).
+            scale_x = 1.0
+            scale_y = 1.0
             
             if results and results[0].boxes:
                 boxes = results[0].boxes.xyxy.cpu().numpy()

@@ -18,13 +18,16 @@ current_physical_rtsp_url = None
 #   "imou" -> Imou Open Platform HLS -> local RTSP relay (browser plays HLS directly)
 STREAM_MODE = "rtsp"
 
-# Imou HLS -> RTSP bridge (one ffmpeg process publishing the Imou HEVC relay to
-# MediaMTX path "cam"; MediaMTX's existing runOnInit transcodes cam -> cam_ai for AI).
+# Imou HLS -> H.264 RTSP bridge (one ffmpeg process transcoding the raw Imou
+# HLS live URL and publishing H.264 640x480 to MediaMTX path "cam_ai").
+# OpenCV/YOLO reads cam_ai directly (no physical RTSP, no HLS->RTSP copy chain).
 _imou_bridge_process = None
 _imou_bridge_lock = threading.Lock()
 _imou_supervisor_thread = None
 _imou_last_ai_frame_time = 0.0
-IMOU_STALL_SECONDS = 15
+_imou_bridge_start_time = 0.0
+_imou_bridge_log_file = None
+IMOU_STALL_SECONDS = 30
 
 # Resolution presets matching app.py QUALITY_PRESETS
 RESOLUTION_PRESETS = {
@@ -38,11 +41,32 @@ def set_stream_mode(mode):
     STREAM_MODE = mode
 
 def get_hls_proxy_url():
-    """Local Flask HLS proxy endpoint that the ffmpeg bridge pulls from.
+    """Local Flask HLS proxy endpoint that the browser hls.js player pulls from.
     The proxy re-fetches the Imou playlist on every request and auto-regenerates
-    the live URL when it goes stale, which prevents the ~10s freeze issue."""
+    the live URL when it goes stale, which prevents the ~10s freeze issue.
+    NOTE: the backend ffmpeg bridge must NOT use this proxy — the rewritten
+    segment URLs (``/api/stream/segment?u=...``) are rejected by FFmpeg's HLS
+    demuxer (allowed_segment_extensions check). The bridge reads the raw Imou
+    HLS URL directly instead (see get_imou_live_url)."""
     port = os.environ.get("STAFFLYTICS_PORT", "5000")
     return "http://127.0.0.1:%s/api/stream/playlist" % port
+
+def get_imou_live_url():
+    """Raw Imou Open Platform HLS live URL for the backend bridge.
+
+    Used instead of the proxied playlist because FFmpeg's HLS demuxer only
+    accepts segment URIs ending in a media extension (.ts/.m4s...); the proxy
+    rewrites segments to /api/stream/segment?u=... which FFmpeg rejects.
+    """
+    try:
+        import imou_client
+        client = imou_client.ImouClient()
+        url = client.get_live_url()
+        print(f"[STREAM MANAGER] Raw Imou live URL acquired: {url[:80]}...")
+        return url
+    except Exception as e:
+        print(f"[STREAM MANAGER ERROR] Failed to get raw Imou live URL: {e}")
+        return None
 
 def get_stream_resolution():
     """Read the configured camera_preset from DB and return (width, height) for streaming."""
@@ -118,20 +142,19 @@ paths:
 def _write_mediamtx_config_imou():
     """Imou HLS mode config.
 
-    MediaMTX is kept as the local RTSP hub so YOLO/vision and the MJPEG display
-    fallback keep working unchanged. Differences from legacy mode:
-      * cam path accepts a publisher (ffmpeg HLS bridge) instead of a static
-        physical RTSP source.
-      * webrtc is disabled (the browser now plays the Imou HLS directly, so the
-        MediaMTX/WebRTC conversion step is no longer needed for this flow).
+    MediaMTX is kept only as a tiny local RTSP target for the AI pipeline.
+    The ffmpeg Imou bridge transcodes the raw Imou HLS straight to H.264 and
+    publishes it on the single "cam_ai" path, which OpenCV/YOLO reads.
+    Differences from legacy mode:
+      * webrtc is disabled (the browser plays the Imou HLS directly).
       * the on-demand "mystream" (WHEP) path is removed.
-      * cam_ai H.264 transcode (used by AI) is preserved as-is.
+      * no "cam" relay / no runOnInit transcode — the bridge does the H.264
+        transcode itself, so there is exactly one moving part.
     """
     config_path = os.path.join(BIN_DIR, "mediamtx.yml")
-    ffmpeg_path = os.path.join(BIN_DIR, "ffmpeg.exe")
 
     config_content = f"""# MediaMTX configuration for Stafflytics - IMOU HLS MODE (auto-generated)
-# Local RTSP relay for the AI pipeline. Browser plays Imou HLS directly.
+# Local RTSP target for the AI pipeline. Browser plays Imou HLS directly.
 rtspAddress: :8554
 rtpAddress: :8556
 rtcpAddress: :8557
@@ -145,20 +168,16 @@ hls: no
 srt: no
 
 paths:
-  cam:
-    # Imou HLS -> RTSP relay. ffmpeg (imou bridge) publishes the Imou HEVC stream
-    # here; this path accepts external publishers only.
-    source: publisher
-
   cam_ai:
-    # H.264 transcoded stream for OpenCV / YOLO AI processing (unchanged).
-    runOnInit: '"{ffmpeg_path}" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
-    runOnInitRestart: yes
+    # H.264 transcoded AI stream. The ffmpeg Imou bridge (start_imou_bridge)
+    # publishes the raw Imou HLS transcoded to H.264 640x480 here; OpenCV/YOLO
+    # reads it. This path accepts external publishers only.
+    source: publisher
 """
     try:
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(config_content)
-        print("[STREAM MANAGER] Wrote Imou-mode mediamtx.yml (HLS->RTSP relay, WebRTC disabled).")
+        print("[STREAM MANAGER] Wrote Imou-mode mediamtx.yml (single cam_ai publisher path).")
     except Exception as e:
         print(f"[STREAM MANAGER ERROR] Failed to write Imou mediamtx.yml: {e}")
 
@@ -338,18 +357,24 @@ def stop_mediamtx():
         mediamtx_process = None
 
 # ---------------------------------------------------------------------------
-# Imou HLS -> RTSP bridge
+# Imou HLS -> H.264 bridge
 #
-# One ffmpeg process pulls the Imou HEVC live stream (via the local Flask HLS
-# proxy, which re-fetches + auto-regenerates the Imou playlist/live URL) and
-# republishes it to MediaMTX path "cam". The existing MediaMTX runOnInit
-# transcodes cam -> cam_ai (H.264 640x480) for OpenCV/YOLO, so AI frame
-# consumption is unchanged. A supervisor thread restarts the bridge whenever it
-# dies or stalls (the Imou freeze-after-~10s issue).
+# One ffmpeg process pulls the raw Imou HLS live stream (fetched from the Imou
+# Open Platform API — NOT the proxied playlist, whose rewritten segment URLs
+# FFmpeg's HLS demuxer rejects) and transcodes it to H.264 640x480, publishing
+# it to MediaMTX path "cam_ai" where OpenCV/YOLO reads it. A supervisor thread
+# restarts the bridge whenever it dies or stalls (the Imou freeze-after-~10s
+# issue), which also forces a fresh Imou live URL to be fetched.
 # ---------------------------------------------------------------------------
 
 def start_imou_bridge():
-    """Launch the ffmpeg process that relays Imou HLS -> MediaMTX cam path."""
+    """Launch the ffmpeg process that pulls the raw Imou HLS and transcodes it
+    straight to H.264 640x480 on MediaMTX path "cam_ai" (the AI stream YOLO and
+    the MJPEG fallback consume). Single transcode = fewer failure points than
+    the old copy-to-cam + runOnInit re-transcode chain.
+
+    Stderr is written to bin/imou_bridge.log so ffmpeg exit reasons can be
+    diagnosed instead of being swallowed."""
     global _imou_bridge_process
     with _imou_bridge_lock:
         if _imou_bridge_process is not None and _imou_bridge_process.poll() is None:
@@ -357,25 +382,52 @@ def start_imou_bridge():
         if not os.path.exists(FFMPEG_EXE):
             print("[STREAM MANAGER] Cannot start Imou bridge: ffmpeg binary not found.")
             return False
-        proxy_url = get_hls_proxy_url()
+        live_url = get_imou_live_url()
+        if not live_url:
+            return False
+        # HTTP reconnect flags: the Imou CDN (singapore) is flaky — reconnect
+        # mid-stream instead of exiting, and cap per-socket timeouts so a dead
+        # connection fails fast and the supervisor can restart with a fresh URL.
         cmd = [
-            FFMPEG_EXE, "-loglevel", "info",
+            FFMPEG_EXE, "-loglevel", "warning",
             "-fflags", "+discardcorrupt",
-            "-i", proxy_url,
-            "-c", "copy",
+            "-reconnect", "1",
+            "-reconnect_at_eof", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+            "-rw_timeout", "8000000",
+            "-i", live_url,
+            # 16:9 output to match the source aspect (no vertical stretch), so
+            # detection coordinates line up with the browser's HLS video.
+            "-vf", "scale=640:360",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
+            "-r", "15",
+            "-pix_fmt", "yuv420p",
             "-an",
             "-rtsp_transport", "tcp",
             "-f", "rtsp",
-            "rtsp://localhost:8554/cam",
+            "rtsp://localhost:8554/cam_ai",
         ]
-        print("[STREAM MANAGER] Launching Imou HLS bridge -> rtsp://localhost:8554/cam")
+        print("[STREAM MANAGER] Launching Imou HLS bridge (raw HLS -> H.264 cam_ai) -> rtsp://localhost:8554/cam_ai")
         try:
+            bridge_log = os.path.join(BIN_DIR, "imou_bridge.log")
+            global _imou_bridge_log_file
+            if _imou_bridge_log_file is not None:
+                try:
+                    _imou_bridge_log_file.close()
+                except Exception:
+                    pass
+            _imou_bridge_log_file = open(bridge_log, "a")
             _imou_bridge_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=_imou_bridge_log_file,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             )
+            global _imou_bridge_start_time
+            _imou_bridge_start_time = time.time()
             return True
         except Exception as e:
             print(f"[STREAM MANAGER ERROR] Failed to start Imou bridge: {e}")
@@ -413,7 +465,11 @@ def _restart_imou_bridge():
 
 def _imou_supervisor_loop():
     """Watchdog: keeps MediaMTX + bridge up and restarts the bridge when the
-    stream stalls (no frames for IMOU_STALL_SECONDS) or the process dies."""
+    stream stalls (no frames for IMOU_STALL_SECONDS) or the process dies.
+
+    Stall is measured from the later of the last received frame or the last
+    bridge start, so a bridge that never delivers a single frame (frozen CDN
+    HLS) is still restarted instead of hanging forever."""
     global _imou_last_ai_frame_time
     while True:
         time.sleep(5)
@@ -434,8 +490,10 @@ def _imou_supervisor_loop():
                 start_imou_bridge()
                 continue
             # Stall detection: frames stopped flowing while bridge is up.
-            since = time.time() - _imou_last_ai_frame_time
-            if _imou_last_ai_frame_time > 0 and since > IMOU_STALL_SECONDS:
+            # Baseline = last frame received, or bridge start time if none yet.
+            baseline = max(_imou_last_ai_frame_time, _imou_bridge_start_time)
+            since = time.time() - baseline
+            if baseline > 0 and since > IMOU_STALL_SECONDS:
                 print(f"[STREAM MANAGER] No frames for {since:.0f}s — stream frozen, restarting bridge.")
                 _restart_imou_bridge()
         except Exception as e:

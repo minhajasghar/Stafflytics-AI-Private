@@ -229,7 +229,38 @@ class MySQLConnectionWrapper:
     def close(self):
         self.conn.close()
 
+_mysql_check_done = False
+_mysql_ok = True
+
+def _verify_mysql():
+    """Probe MySQL once. If it can't be reached, fall back to SQLite so the
+    whole app keeps working instead of failing every query. The check runs only
+    once per process; init_db() and get_db_connection() both call it."""
+    global _mysql_check_done, _mysql_ok
+    if _mysql_check_done:
+        return _mysql_ok
+    _mysql_check_done = True
+    if DB_CONFIG["DB_TYPE"] != "mysql":
+        return True
+    try:
+        import mysql.connector
+        conn = mysql.connector.connect(
+            host=DB_CONFIG["MYSQL_HOST"],
+            port=DB_CONFIG["MYSQL_PORT"],
+            user=DB_CONFIG["MYSQL_USER"],
+            password=DB_CONFIG["MYSQL_PASSWORD"],
+            connect_timeout=4
+        )
+        conn.close()
+        _mysql_ok = True
+    except Exception as e:
+        _mysql_ok = False
+        print(f"[DB] MySQL unreachable ({e}) — falling back to SQLite ({DB_PATH}).")
+        DB_CONFIG["DB_TYPE"] = "sqlite"
+    return _mysql_ok
+
 def get_db_connection():
+    _verify_mysql()
     if DB_CONFIG["DB_TYPE"] == "mysql":
         import mysql.connector
         conn = mysql.connector.connect(
@@ -249,6 +280,7 @@ def get_db_connection():
 
 def init_db():
     _init_conn = None  # Reuse this connection for table creation (avoids second-connection drop)
+    _verify_mysql()
     if DB_CONFIG["DB_TYPE"] == "mysql":
         import mysql.connector
         try:
@@ -269,7 +301,7 @@ def init_db():
             _init_conn = MySQLConnectionWrapper(conn_raw)
         except Exception as e:
             print(f"[DB ERROR] MySQL pre-init database creation failed: {e}")
-            return  # Cannot create tables without a valid connection
+            return
     else:
         if not os.path.exists("data"):
             os.makedirs("data")
@@ -278,183 +310,31 @@ def init_db():
         conn = _init_conn if _init_conn is not None else get_db_connection()
         cursor = conn.cursor()
         
-        # Staff table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS staff (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            role TEXT NOT NULL,
-            shift_start TEXT DEFAULT '10:00',
-            shift TEXT DEFAULT 'Morning',
-            hourly_rate REAL DEFAULT 500.0,
-            salary_type TEXT DEFAULT 'Monthly',
-            face_encoding BLOB NOT NULL
-        )
-        ''')
-        
-        # Migration: Add columns if not exists
+        # DDL runs for BOTH SQLite and MySQL (MySQLCursorWrapper translates the
+        # SQLite syntax). The PRAGMA table_info calls become DESCRIBE for MySQL.
+        cursor.execute('''CREATE TABLE IF NOT EXISTS staff (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, shift_start TEXT DEFAULT '10:00', shift TEXT DEFAULT 'Morning', hourly_rate REAL DEFAULT 500.0, salary_type TEXT DEFAULT 'Monthly', face_encoding BLOB NOT NULL)''')
         cursor.execute("PRAGMA table_info(staff)")
         cols = [c[1] for c in cursor.fetchall()]
-        if 'salary_type' not in cols:
-            cursor.execute("ALTER TABLE staff ADD COLUMN salary_type TEXT DEFAULT 'Monthly'")
-        if 'photo' not in cols:
-            cursor.execute("ALTER TABLE staff ADD COLUMN photo TEXT")
-
-        # Attendance table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS attendance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            staff_id TEXT,
-            entry_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-            exit_time DATETIME,
-            status TEXT DEFAULT 'Present',
-            is_late BOOLEAN DEFAULT 0,
-            active_seconds REAL DEFAULT 0,
-            FOREIGN KEY (staff_id) REFERENCES staff(id)
-        )
-        ''')
-        
-        # Migration: Ensure active_seconds is REAL
-        cursor.execute("PRAGMA table_info(attendance)")
-        info = cursor.fetchall()
-        for col in info:
-            if col[1] == 'active_seconds' and col[2] == 'INTEGER':
-                # SQLite doesn't support changing type easily, but it handles REAL in INTEGER columns loosely.
-                # However, for clarity, we'll keep it as is or just rely on dynamic typing.
-                # Actually, let's just make sure we are adding floats. 
-                pass
-
-        # Activity logs
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS activity_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            staff_id TEXT,
-            zone TEXT,
-            action TEXT,
-            details TEXT,
-            FOREIGN KEY (staff_id) REFERENCES staff(id)
-        )
-        ''')
-
-        # Admins
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admins (
-            username TEXT PRIMARY KEY,
-            password TEXT NOT NULL,
-            email TEXT
-        )
-        ''')
+        if 'salary_type' not in cols: cursor.execute("ALTER TABLE staff ADD COLUMN salary_type TEXT DEFAULT 'Monthly'")
+        if 'photo' not in cols: cursor.execute("ALTER TABLE staff ADD COLUMN photo TEXT")
+        cursor.execute('''CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, staff_id TEXT, entry_time DATETIME DEFAULT CURRENT_TIMESTAMP, exit_time DATETIME, status TEXT DEFAULT 'Present', is_late BOOLEAN DEFAULT 0, active_seconds REAL DEFAULT 0, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, staff_id TEXT, zone TEXT, action TEXT, details TEXT, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS admins (username TEXT PRIMARY KEY, password TEXT NOT NULL, email TEXT)''')
         cursor.execute("SELECT COUNT(*) FROM admins")
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO admins (username, password, email) VALUES (?, ?, ?)", 
-                           ("minhajasghar", "minhajsahito66", "admin@stafflytics.ai"))
-
-        # Customers (Anonymous Sessions)
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS customers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entry_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-            exit_time DATETIME,
-            table_id TEXT,
-            duration_minutes REAL,
-            customer_id INTEGER
-        )
-        ''')
-        
-        # Migration: Add customer_id if not exists
+        if cursor.fetchone()[0] == 0: cursor.execute("INSERT INTO admins (username, password, email) VALUES (?, ?, ?)", ("minhajasghar", "minhajsahito66", "admin@stafflytics.ai"))
+        cursor.execute('''CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_time DATETIME DEFAULT CURRENT_TIMESTAMP, exit_time DATETIME, table_id TEXT, duration_minutes REAL, customer_id INTEGER)''')
         cursor.execute("PRAGMA table_info(customers)")
-        if 'customer_id' not in [c[1] for c in cursor.fetchall()]:
-            cursor.execute("ALTER TABLE customers ADD COLUMN customer_id INTEGER")
-
-        # Migration: Ensure duration_minutes is REAL or FLOAT
-        if DB_CONFIG["DB_TYPE"] == "mysql":
-            try:
-                cursor.execute("ALTER TABLE customers MODIFY COLUMN duration_minutes FLOAT")
-                conn.commit()
-            except Exception as e:
-                print(f"[DB MIGRATION] ALTER TABLE customers failed (might already be FLOAT): {e}")
-
-        # Customer Profiles (Recognized Individuals)
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS customer_profiles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT DEFAULT 'New Guest',
-            face_encoding BLOB NOT NULL,
-            first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-            visit_count INTEGER DEFAULT 1
-        )
-        ''')
-
-        # Migration: Ensure customer_profiles has a photo column
-        try:
-            cursor.execute("ALTER TABLE customer_profiles ADD COLUMN photo LONGTEXT NULL")
-            conn.commit()
-            print("[DB MIGRATION] Added photo column to customer_profiles table.")
-        except Exception:
-            pass # Column already exists
-
-
-        # Special Events & Peak Traffic
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS special_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date DATE UNIQUE,
-            event_type TEXT DEFAULT 'General Peak',
-            intensity TEXT DEFAULT 'High'
-        )
-        ''')
-
-        # Zones Config
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS zones_config (
-            name TEXT PRIMARY KEY,
-            points_json TEXT NOT NULL,
-            unauthorized_roles TEXT
-        )
-        ''')
-        
-        # Sales Tracking
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            staff_id TEXT,
-            amount REAL NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (staff_id) REFERENCES staff(id)
-        )
-        ''')
-
-        # Visitor Analytics Log (every face detection event)
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS visitor_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            customer_id INTEGER,
-            is_new_face BOOLEAN DEFAULT 1,
-            staff_id TEXT,
-            zone TEXT
-        )
-        ''')
-
-        # System Settings
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS system_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-        ''')
-        
-        # Initialize default settings if not exists
-        defaults = [
-            ('owner_email', 'admin@stafflytics.ai'),
-            ('sender_email', ''),
-            ('sender_password', ''),
-            ('rtsp_url', ''),
-            ('late_grace_minutes', '10'),
-            ('wellness_threshold', '4')
-        ]
+        if 'customer_id' not in [c[1] for c in cursor.fetchall()]: cursor.execute("ALTER TABLE customers ADD COLUMN customer_id INTEGER")
+        cursor.execute('''CREATE TABLE IF NOT EXISTS customer_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT DEFAULT 'New Guest', face_encoding BLOB NOT NULL, first_seen DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP, visit_count INTEGER DEFAULT 1)''')
+        try: cursor.execute("ALTER TABLE customer_profiles ADD COLUMN photo TEXT")
+        except: pass
+        cursor.execute('''CREATE TABLE IF NOT EXISTS special_events (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE UNIQUE, event_type TEXT DEFAULT 'General Peak', intensity TEXT DEFAULT 'High')''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS zones_config (name TEXT PRIMARY KEY, points_json TEXT NOT NULL, unauthorized_roles TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS sales (id INTEGER PRIMARY KEY AUTOINCREMENT, staff_id TEXT, amount REAL NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS visitor_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, customer_id INTEGER, is_new_face BOOLEAN DEFAULT 1, staff_id TEXT, zone TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
+            
+        defaults = [('owner_email', 'admin@stafflytics.ai'), ('sender_email', ''), ('sender_password', ''), ('rtsp_url', ''), ('late_grace_minutes', '10'), ('wellness_threshold', '4')]
         for key, val in defaults:
             cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
 
@@ -1329,13 +1209,26 @@ def update_admin_password(u, new_p):
         conn.close()
 
 def get_system_settings():
+    """Return all system_settings rows as a dict.
+    Backtick-quotes the reserved words `key`/`value` for MySQL/MariaDB
+    compatibility and gracefully returns {} if the table doesn't exist yet
+    (e.g. during the async init race window on first startup)."""
     with db_lock:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT key, value FROM system_settings")
-        res = cursor.fetchall()
-        conn.close()
-        return {r[0]: r[1] for r in res}
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            # `key` and `value` are reserved in MySQL — always quote them.
+            cursor.execute("SELECT `key`, `value` FROM system_settings")
+            res = cursor.fetchall()
+            conn.close()
+            return {r[0]: r[1] for r in res}
+        except Exception as e:
+            err_str = str(e)
+            # Silently swallow 'table doesn't exist' during first-boot init;
+            # log everything else.
+            if "doesn't exist" not in err_str and "Table" not in err_str:
+                print(f"[DB ERROR] get_system_settings: {e}")
+            return {}
 
 def update_system_settings(settings):
     with db_lock:

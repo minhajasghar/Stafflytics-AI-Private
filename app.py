@@ -6,6 +6,9 @@ os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["FFREPORT"] = "level=quiet"
 from dotenv import load_dotenv
 load_dotenv()
+# Also load from the app's own directory so the Imou/DB config is found even
+# when the process is launched from a different working directory.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 from flask import Flask, render_template, Response, jsonify, request, session, redirect, url_for
 from flask_sock import Sock
 import json
@@ -52,8 +55,8 @@ _wz_logger.setLevel(_logging.INFO)
 websocket_clients = set()
 websocket_lock = threading.Lock()
 
-def broadcast_detections(detections):
-    payload = json.dumps({"detections": detections})
+def broadcast_detections(detections, frame_w=640, frame_h=360):
+    payload = json.dumps({"detections": detections, "frame_w": frame_w, "frame_h": frame_h})
     with websocket_lock:
         inactive = set()
         for client in websocket_clients:
@@ -422,8 +425,10 @@ def vision_engine_loop():
             with processed_frame_lock:
                 latest_processed_frame = raw_frame.copy() if raw_frame is not None else None
             
-            # Broadcast detection coordinates to all websocket clients
-            broadcast_detections(detections)
+            # Broadcast detection coordinates to all websocket clients.
+            # frame_w/frame_h = the native detection space (cam_ai res, 16:9),
+            # so the browser canvas can scale boxes to the video exactly.
+            broadcast_detections(detections, frame_w=frame.shape[1], frame_h=frame.shape[0])
             # Throttle to max ~10 FPS to conserve CPU resources while retaining real-time analytics
             time.sleep(0.1)
         except Exception as e:
@@ -478,6 +483,7 @@ def background_system_init():
         init_status = "Warmup Vision Engine..."
         from vision_engine import VisionEngine
         engine = VisionEngine()
+        engine.warmup()  # Preload the YOLO model so detection is ready immediately
         print("[SYSTEM] Vision Engine Placeholder Loaded.")
     except Exception as e:
         print(f"[SYSTEM ERROR] Vision Engine failed: {e}")
@@ -495,16 +501,25 @@ def background_system_init():
 
     try:
         init_status = "Connecting Display Camera Stream..."
-        # cam: full HD relay — used by /video_feed for crystal-clear display
-        display_stream = CameraStream(rtsp_override=DISPLAY_RTSP_URL).start()
-        print(f"[SYSTEM] Display camera stream (cam, full HD) started.")
+        # cam: full HD relay — used by /video_feed for crystal-clear display.
+        # In Imou HLS mode cam carries the raw HEVC relay (which OpenCV may not
+        # decode reliably), so the MJPEG fallback feed reads cam_ai (H.264)
+        # instead. The browser plays the Imou HLS directly for the main view.
+        import stream_manager
+        display_url = RTSP_URL if stream_manager.STREAM_MODE == "imou" else DISPLAY_RTSP_URL
+        display_stream = CameraStream(rtsp_override=display_url).start()
+        print(f"[SYSTEM] Display camera stream ({display_url}) started.")
     except Exception as e:
         print(f"[SYSTEM ERROR] Display camera stream failed (non-critical): {e}")
 
-    # 4. Pre-connect ONVIF for PTZ (saves ~18s on first click)
+    # 4. Pre-connect ONVIF for PTZ (saves ~18s on first click). Skipped in Imou
+    # HLS mode: PTZ is handled by the Imou API, and we must NOT dial out to the
+    # physical camera over ONVIF/RTSP when the source is Imou HLS only.
     try:
-        init_status = "Connecting PTZ..."
-        _get_onvif_connection()
+        import stream_manager
+        if stream_manager.STREAM_MODE != "imou":
+            init_status = "Connecting PTZ..."
+            _get_onvif_connection()
     except Exception as e:
         print(f"[PTZ] Pre-connect skipped: {e}")
         
@@ -540,10 +555,11 @@ def generate_frames():
                 sync_camera_preset()
                 refresh_counter = 0
 
-            # If camera stream is offline, return CAM OFFLINE
-            # Check display_stream (HD feed) for the visual; fall back to camera_stream status
-            stream_for_display = display_stream if display_stream else camera_stream
-            if stream_for_display and not stream_for_display.online:
+            # If all camera streams are offline, return CAM OFFLINE.
+            # In Imou mode only cam_ai is consumed (cam may be HEVC); never show
+            # OFFLINE while at least one stream is producing frames.
+            streams = [s for s in (display_stream, camera_stream) if s is not None]
+            if not any(s.online for s in streams):
                 err = np.zeros((camera_height or 480, camera_width or 640, 3), np.uint8)
                 cv2.putText(err, "CAMERA OFFLINE", (140, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50, 50, 255), 3)
                 ret, buf = cv2.imencode('.jpg', err)
@@ -558,8 +574,8 @@ def generate_frames():
 
             # Fallback if no frame has been processed by analytics loop yet
             if display_frame is None:
-                # Try display_stream first (full HD), fall back to camera_stream
-                src = display_stream if display_stream and display_stream.online else camera_stream
+                # Prefer an online stream for the fallback frame
+                src = next((s for s in streams if s.online), None)
                 if src:
                     res, fid = src.read_buffered()
                     if res is not None:
@@ -723,6 +739,10 @@ def stream_segment():
                 for chunk in r.iter_content(chunk_size=65536):
                     if chunk:
                         yield chunk
+            except Exception:
+                # CDN closed the connection prematurely — stop the generator
+                # cleanly rather than letting the exception propagate to WSGI.
+                return
             finally:
                 r.close()
         resp = Response(generate(), mimetype='video/mp2t')
@@ -1135,14 +1155,14 @@ def delete_staff(staff_id):
 def enroll_staff():
     data = request.json
     try:
-        import face_recognition # Local import
-        from vision_engine import face_rec_lock
+        from vision_engine import face_rec_lock, _encode_face
         header, encoded = data['image'].split(",", 1)
         img = Image.open(io.BytesIO(base64.b64decode(encoded)))
+        bgr = np.ascontiguousarray(cv2.cvtColor(np.array(img.convert('RGB')), cv2.COLOR_RGB2BGR))
         with face_rec_lock:
-            enc = face_recognition.face_encodings(np.array(img.convert('RGB')))
-        if not enc: return jsonify({"status": "error", "message": "No face detected"}), 400
-        database.add_staff(data['id'], data['name'], data['role'], pickle.dumps([enc[0]]), 
+            enc = _encode_face(bgr)
+        if enc is None: return jsonify({"status": "error", "message": "No face detected"}), 400
+        database.add_staff(data['id'], data['name'], data['role'], pickle.dumps([enc]),
                           data.get('shift_time', '10:00'), data.get('shift', 'Morning'), data.get('rate', 500), data.get('salary_type', 'Monthly'))
         engine.load_known_faces()
         return jsonify({"status": "success"})
@@ -1153,8 +1173,7 @@ def enroll_staff():
 def enroll_staff_with_faces():
     data = request.json
     try:
-        import face_recognition
-        from vision_engine import face_rec_lock
+        from vision_engine import face_rec_lock, _encode_face, _detect_face_box
         images = data.get('images', [])
         if len(images) < 2:
             return jsonify({"status": "error", "message": "Need at least 2 face captures"}), 400
@@ -1166,30 +1185,28 @@ def enroll_staff_with_faces():
                 header, encoded = b64_img.split(",", 1)
                 pil_img = Image.open(io.BytesIO(base64.b64decode(encoded)))
                 rgb = np.array(pil_img.convert('RGB'))
+                bgr = np.ascontiguousarray(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
                 
                 # Detect face location first, then crop to face for encoding
                 with face_rec_lock:
-                    face_locs = face_recognition.face_locations(rgb)
-                if not face_locs:
+                    face_box = _detect_face_box(bgr)
+                    enc = _encode_face(bgr) if face_box is not None else None
+                if enc is None:
                     continue
-                t, r, b, l = face_locs[0]
-                
-                with face_rec_lock:
-                    encs = face_recognition.face_encodings(rgb, known_face_locations=[(t, r, b, l)])
-                if encs:
-                    encodings.append(encs[0])
-                    if idx == 0 or first_photo is None:
-                        margin = 80
-                        h_rgb, w_rgb = rgb.shape[:2]
-                        y1 = max(0, t - margin)
-                        y2 = min(h_rgb, b + margin)
-                        x1 = max(0, l - margin)
-                        x2 = min(w_rgb, r + margin)
-                        face_pil = Image.fromarray(rgb[y1:y2, x1:x2])
-                        buf = io.BytesIO()
-                        face_pil.save(buf, format='JPEG', quality=90)
-                        b64_face = base64.b64encode(buf.getvalue()).decode('utf-8')
-                        first_photo = f"data:image/jpeg;base64,{b64_face}"
+                encodings.append(enc)
+                if idx == 0 or first_photo is None:
+                    x, y, w_b, h_b = [int(v) for v in face_box]
+                    margin = 80
+                    h_rgb, w_rgb = rgb.shape[:2]
+                    y1 = max(0, y - margin)
+                    y2 = min(h_rgb, y + h_b + margin)
+                    x1 = max(0, x - margin)
+                    x2 = min(w_rgb, x + w_b + margin)
+                    face_pil = Image.fromarray(rgb[y1:y2, x1:x2])
+                    buf = io.BytesIO()
+                    face_pil.save(buf, format='JPEG', quality=90)
+                    b64_face = base64.b64encode(buf.getvalue()).decode('utf-8')
+                    first_photo = f"data:image/jpeg;base64,{b64_face}"
             except Exception:
                 continue
         

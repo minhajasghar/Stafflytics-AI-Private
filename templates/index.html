@@ -535,7 +535,7 @@
             detectionSocket.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    drawDetections(data.detections);
+                    drawDetections(data);
                 } catch (e) {
                     console.error("[WebSocket] Error parsing detection metadata:", e);
                 }
@@ -551,46 +551,82 @@
             };
         }
 
+        // The detection canvas fills the whole wrapper, but the <video> uses
+        // object-fit:contain, so the visible picture is a letterboxed/pillarboxed
+        // rectangle inside it. Detections must be scaled/offset to THAT rect or
+        // boxes drift away from people whenever the wrapper isn't 16:9.
+        let videoFitRect = { x: 0, y: 0, w: 0, h: 0 };
+        let videoAspect = 16 / 9;
+
+        function updateVideoAspect() {
+            const hlsEl = document.getElementById('hls-video');
+            const rtcEl = document.getElementById('webrtc-video');
+            const imgEl = document.getElementById('video-feed');
+            let vw = 0, vh = 0;
+            if (hlsEl && hlsEl.style.display !== 'none' && hlsEl.videoWidth) { vw = hlsEl.videoWidth; vh = hlsEl.videoHeight; }
+            else if (rtcEl && rtcEl.style.display !== 'none' && rtcEl.videoWidth) { vw = rtcEl.videoWidth; vh = rtcEl.videoHeight; }
+            else if (imgEl && imgEl.complete && imgEl.naturalWidth) { vw = imgEl.naturalWidth; vh = imgEl.naturalHeight; }
+            if (vw && vh) videoAspect = vw / vh;
+        }
+
         function resizeCanvas() {
             const canvas = document.getElementById('detection-canvas');
             if (!canvas) return;
             const container = canvas.parentElement;
             canvas.width = container.clientWidth;
             canvas.height = container.clientHeight;
+            updateVideoAspect();
+            // Compute the largest centered rect with the video aspect that fits
+            // the canvas — mirrors what object-fit:contain renders.
+            const cw = canvas.width, ch = canvas.height;
+            const ar = videoAspect;
+            let dw = cw, dh = cw / ar;
+            if (dh > ch) { dh = ch; dw = ch * ar; }
+            videoFitRect = { x: (cw - dw) / 2, y: (ch - dh) / 2, w: dw, h: dh };
         }
 
         window.addEventListener('resize', resizeCanvas);
 
-        let detectionDwellBuffer = []; // { detections, timestamp }
-        function drawDetections(detections) {
+        let detectionDwellBuffer = []; // { detections, frameW, frameH, timestamp }
+        function drawDetections(data) {
             const canvas = document.getElementById('detection-canvas');
             if (!canvas) return;
             const ctx = canvas.getContext('2d');
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+            let detections = data && data.detections ? data.detections : null;
+            // Detection frame space from the backend (native cam_ai res, 16:9).
+            let frameW = (data && data.frame_w) || 640;
+            let frameH = (data && data.frame_h) || 360;
+
             const now = Date.now();
             if (!detections || detections.length === 0) {
                 detectionDwellBuffer = detectionDwellBuffer.filter(d => now - d.ts < 400);
                 if (detectionDwellBuffer.length > 0) {
-                    detections = detectionDwellBuffer[detectionDwellBuffer.length - 1].dets;
+                    const last = detectionDwellBuffer[detectionDwellBuffer.length - 1];
+                    detections = last.dets;
+                    frameW = last.frameW;
+                    frameH = last.frameH;
                 }
             } else {
-                detectionDwellBuffer.push({ dets: detections, ts: now });
+                detectionDwellBuffer.push({ dets: detections, frameW: frameW, frameH: frameH, ts: now });
                 if (detectionDwellBuffer.length > 10) detectionDwellBuffer.shift();
             }
             if (!detections || detections.length === 0) return;
-            
-            console.log("[CANVAS] Labels received:", detections.map(d => d.label).join(', '));
 
-            // Coordinates from backend YOLOv8-pose are scaled to 640x480
-            const scaleX = canvas.width / 640.0;
-            const scaleY = canvas.height / 480.0;
+            // Coordinates from backend are in the native detection frame space.
+            // Map them into the visible (contain-fit) video rect only.
+            const fit = videoFitRect;
+            const scaleX = (fit.w > 0 ? fit.w : canvas.width) / frameW;
+            const scaleY = (fit.h > 0 ? fit.h : canvas.height) / frameH;
+            const offX = fit.x;
+            const offY = fit.y;
 
             detections.forEach(det => {
-                const x1 = det.box[0] * scaleX;
-                const y1 = det.box[1] * scaleY;
-                const x2 = det.box[2] * scaleX;
-                const y2 = det.box[3] * scaleY;
+                const x1 = det.box[0] * scaleX + offX;
+                const y1 = det.box[1] * scaleY + offY;
+                const x2 = det.box[2] * scaleX + offX;
+                const y2 = det.box[3] * scaleY + offY;
                 const w = x2 - x1;
                 const h = y2 - y1;
 
@@ -628,7 +664,7 @@
         let hlsPlayer = null;
         let hlsWatchdogTimer = null;
         let hlsRecovering = false;
-        const HLS_FREEZE_SECONDS = 8;
+        const HLS_FREEZE_SECONDS = 12;
 
         async function initVideoStream() {
             const video = document.getElementById('hls-video');
@@ -637,6 +673,8 @@
             const label = document.getElementById('webrtc-status-text');
             const overlay = document.getElementById('webrtc-status-overlay');
             if (!video || !fallbackImg || !dot || !label || !overlay) return;
+
+            fallbackImg.addEventListener('load', () => { updateVideoAspect(); resizeCanvas(); });
 
             function setStatus(text, color, pulse = true) {
                 label.innerText = text;
@@ -697,6 +735,7 @@
                 video.style.display = 'block';
                 fallbackImg.style.display = 'none';
                 setStatus('HLS Live', '#22c55e', false);
+                updateVideoAspect(); resizeCanvas();
                 setTimeout(() => { if (label.innerText === 'HLS Live') overlay.style.opacity = '0'; }, 3000);
                 startHlsWatchdog();
             }
@@ -705,6 +744,7 @@
                 video.style.display = 'none';
                 fallbackImg.style.display = 'block';
                 setStatus(msg, '#ef4444', false);
+                updateVideoAspect(); resizeCanvas();
             }
 
             function handleFatal(details) {
@@ -771,10 +811,12 @@
                 });
                 video.addEventListener('playing', () => { hlsConnected(); }, { once: true });
                 video.addEventListener('loadeddata', () => { if (video.readyState >= 2) hlsConnected(); }, { once: true });
+                video.addEventListener('loadedmetadata', () => { updateVideoAspect(); resizeCanvas(); });
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 // Safari native HLS
                 video.src = playlistUrl;
                 video.addEventListener('playing', () => hlsConnected(), { once: true });
+                video.addEventListener('loadedmetadata', () => { updateVideoAspect(); resizeCanvas(); });
                 video.addEventListener('error', () => hlsFallback('HLS Unsupported (MJPEG Fallback)'), { once: true });
             } else {
                 hlsFallback('HLS Not Supported (MJPEG Fallback)');
@@ -836,8 +878,9 @@
 
                 pc.ontrack = (event) => {
                     if (event.streams && event.streams[0]) {
-                        video.srcObject = event.streams[0];
-                        video.style.display = 'block';
+                    video.srcObject = event.streams[0];
+                    video.style.display = 'block';
+                    updateVideoAspect(); resizeCanvas();
                         fallbackImg.style.display = 'none';
                         setStatus('WebRTC Live', '#22c55e', false);
                         

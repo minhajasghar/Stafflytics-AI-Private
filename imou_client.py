@@ -33,6 +33,7 @@ CODE_OK = "0"
 CODE_LIVE_ALREADY_EXISTS = "LV1001"
 
 # PTZ operation codes for the Imou controlMovePTZ API.
+# NOTE: controlMovePTZ requires NUMERIC operation codes (0..10), not words.
 _IMOU_DIRECTION_MAP = {
     "Up":        "UP",
     "Down":      "DOWN",
@@ -44,6 +45,21 @@ _IMOU_DIRECTION_MAP = {
     "DownRight": "LOWER_RIGHT",
     "ZoomIn":    "ZOOM_IN",
     "ZoomOut":   "ZOOM_OUT",
+}
+
+# Word -> Imou numeric operation code.
+_IMOU_PTZ_OP_CODES = {
+    "UP":          "0",
+    "DOWN":        "1",
+    "LEFT":        "2",
+    "RIGHT":       "3",
+    "UPPER_LEFT":  "4",
+    "LOWER_LEFT":  "5",
+    "UPPER_RIGHT": "6",
+    "LOWER_RIGHT": "7",
+    "ZOOM_IN":     "8",
+    "ZOOM_OUT":    "9",
+    "STOP":        "10",
 }
 
 # Token is considered stale 60s before its reported expiry (reference behaviour).
@@ -253,8 +269,19 @@ class ImouClient:
 
         operation: Imou operation string — use _IMOU_DIRECTION_MAP to convert
                    from app direction names, or pass 'STOP' directly.
+                   controlMovePTZ requires NUMERIC codes (0..10) as strings,
+                   so word operations are translated here via _IMOU_PTZ_OP_CODES.
         duration:  Movement duration in milliseconds (default 500 ms).
+                   Imou expects this as a string number.
         """
+        op = str(operation).upper()
+        if op in _IMOU_PTZ_OP_CODES:
+            code = _IMOU_PTZ_OP_CODES[op]
+        else:
+            # Already a numeric code string; keep as-is.
+            code = op
+        if op == "STOP":
+            duration = 100
         with self.lock:
             token = self._ensure_token_locked()
         call_api(
@@ -264,8 +291,8 @@ class ImouClient:
                 "token": token,
                 "deviceId": self.cfg["device_id"],
                 "channelId": str(self.cfg["channel_id"]),
-                "operation": operation,
-                "duration": duration,
+                "operation": code,
+                "duration": str(int(duration)),
             },
         )
 
