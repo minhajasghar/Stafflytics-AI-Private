@@ -106,6 +106,17 @@ def sync_camera_config():
         print("[SYSTEM] IMOU HLS MODE active — AI stream via cam_ai, browser plays HLS directly.")
         return
 
+    # --- REMOTE RTSP MODE (env-var driven). ---
+    # When CAMERA_SOURCE_MODE=remote_rtsp, MediaMTX pulls directly from
+    # REMOTE_RTSP_URL (e.g. a Tailscale peer). No local camera or Imou bridge
+    # is used. Must be checked BEFORE the legacy local-RTSP block so that
+    # set_stream_mode("rtsp") and setup_mediamtx() are never called in this mode.
+    if stream_manager.CAMERA_SOURCE_MODE == "remote_rtsp":
+        stream_manager.setup_remote_rtsp_stream()
+        RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"  # H.264 transcoded AI stream
+        print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {stream_manager.REMOTE_RTSP_URL}")
+        return
+
     # --- LEGACY LOCAL-RTSP MODE (deactivated when Imou is configured). ---
     stream_manager.set_stream_mode("rtsp")
     conf = database.get_system_settings()
