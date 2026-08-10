@@ -1336,4 +1336,5 @@ def test_camera():
 
 import sqlite3
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', debug=False, port=5000, threaded=True, use_reloader=False)
+    port = int(os.environ.get('STAFFLYTICS_PORT', 5000))
+    app.run(host='0.0.0.0', debug=False, port=port, threaded=True, use_reloader=False)
