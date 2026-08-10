@@ -31,13 +31,14 @@
         }
 
         /* Scale video to fill container while preserving aspect ratio (no stretching) */
-        #webrtc-video, img#video-feed {
+        #webrtc-video, #hls-video, img#video-feed {
             width: 100% !important;
             height: 100% !important;
             object-fit: contain !important;
         }
         
         .camera-canvas:fullscreen #webrtc-video,
+        .camera-canvas:fullscreen #hls-video,
         .camera-canvas:fullscreen img#video-feed {
             width: 100% !important;
             height: 100% !important;
@@ -87,15 +88,17 @@
                         </div>
                     </div>
                     <div class="video-wrapper">
-                        <!-- WebRTC Video Feed (Hardware Accelerated & Stable) -->
+                        <!-- Imou Open Platform HLS Video Feed (primary) -->
+                        <video id="hls-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none;"></video>
+                        <!-- WebRTC Video Feed (legacy local-RTSP deployment; disabled in Imou mode) -->
                         <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none;"></video>
                         <!-- Fallback MJPEG Image Feed -->
                         <img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed" style="width:100%; height:100%; object-fit:contain; display:block;">
                         
-                        <!-- WebRTC Status Overlay -->
+                        <!-- Stream Status Overlay -->
                         <div id="webrtc-status-overlay" style="position:absolute; top:15px; left:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s;">
                             <span class="webrtc-pulse-dot" id="webrtc-status-dot" style="width:8px; height:8px; background:#94a3b8; border-radius:50%; display:inline-block;"></span>
-                            <span id="webrtc-status-text">WebRTC Checking...</span>
+                            <span id="webrtc-status-text">Checking...</span>
                         </div>
                         <!-- AI Detection Canvas Overlay (Z-index high but click-through) -->
                         <canvas id="detection-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:5;"></canvas>
@@ -511,6 +514,7 @@
         </div>
     </div>
 
+    <script src="{{ url_for('static', filename='js/hls.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/main.js', v=2) }}"></script>
     
     <script>
@@ -614,6 +618,167 @@
                 ctx.fillStyle = '#ffffff';
                 ctx.fillText(labelText, x1 + 4, labelY + 13);
             });
+        }
+
+        // ------------------------------------------------------------------
+        // Imou Open Platform HLS player (primary feed in Imou mode).
+        // The WebRTC player below is kept intact for the legacy local-RTSP
+        // deployment and is only used when the Imou bridge is not active.
+        // ------------------------------------------------------------------
+        let hlsPlayer = null;
+        let hlsWatchdogTimer = null;
+        let hlsRecovering = false;
+        const HLS_FREEZE_SECONDS = 8;
+
+        async function initVideoStream() {
+            const video = document.getElementById('hls-video');
+            const fallbackImg = document.getElementById('video-feed');
+            const dot = document.getElementById('webrtc-status-dot');
+            const label = document.getElementById('webrtc-status-text');
+            const overlay = document.getElementById('webrtc-status-overlay');
+            if (!video || !fallbackImg || !dot || !label || !overlay) return;
+
+            function setStatus(text, color, pulse = true) {
+                label.innerText = text;
+                dot.style.background = color;
+                dot.classList.toggle('webrtc-pulse-dot', pulse);
+                overlay.style.opacity = '1';
+            }
+
+            try {
+                const statusRes = await fetch('/api/stream/status');
+                const statusData = await statusRes.json();
+                if (statusData.mode === 'imou' && statusData.enabled) {
+                    initHlsStream(setStatus);
+                    return;
+                }
+            } catch (err) {
+                console.warn("[Video] Status check failed, using WebRTC fallback.", err);
+            }
+            // Legacy deployment (no Imou bridge) => WebRTC player.
+            initWebRTCStream();
+        }
+
+        function destroyHlsPlayer() {
+            if (hlsWatchdogTimer) { clearInterval(hlsWatchdogTimer); hlsWatchdogTimer = null; }
+            if (hlsPlayer) {
+                try { hlsPlayer.destroy(); } catch(e) {}
+                hlsPlayer = null;
+            }
+        }
+
+        async function refreshHlsStream(setStatus) {
+            if (hlsRecovering) return;
+            hlsRecovering = true;
+            setStatus('HLS Reconnecting...', '#eab308');
+            destroyHlsPlayer();
+            const hlsVideo = document.getElementById('hls-video');
+            const fallbackImg = document.getElementById('video-feed');
+            try {
+                await fetch('/api/stream/refresh', { method: 'POST' });
+            } catch(e) {
+                console.warn("[HLS] refresh request failed", e);
+            }
+            await new Promise(r => setTimeout(r, 1200));
+            initHlsStream(setStatus);
+            hlsRecovering = false;
+        }
+
+        function initHlsStream(setStatus) {
+            const video = document.getElementById('hls-video');
+            const fallbackImg = document.getElementById('video-feed');
+            const label = document.getElementById('webrtc-status-text');
+            const overlay = document.getElementById('webrtc-status-overlay');
+            if (!video) return;
+
+            setStatus('HLS Connecting...', '#3b82f6');
+
+            function hlsConnected() {
+                video.style.display = 'block';
+                fallbackImg.style.display = 'none';
+                setStatus('HLS Live', '#22c55e', false);
+                setTimeout(() => { if (label.innerText === 'HLS Live') overlay.style.opacity = '0'; }, 3000);
+                startHlsWatchdog();
+            }
+
+            function hlsFallback(msg) {
+                video.style.display = 'none';
+                fallbackImg.style.display = 'block';
+                setStatus(msg, '#ef4444', false);
+            }
+
+            function handleFatal(details) {
+                console.error("[HLS] Fatal error:", details);
+                refreshHlsStream(setStatus);
+            }
+
+            function startHlsWatchdog() {
+                if (hlsWatchdogTimer) clearInterval(hlsWatchdogTimer);
+                let lastTime = video.currentTime;
+                let lastCheck = Date.now();
+                hlsWatchdogTimer = setInterval(() => {
+                    if (video.paused) { lastTime = video.currentTime; lastCheck = Date.now(); return; }
+                    const now = Date.now();
+                    if (video.readyState >= 2 && video.currentTime === lastTime) {
+                        if (now - lastCheck >= HLS_FREEZE_SECONDS * 1000) {
+                            console.warn("[HLS] Stream frozen for " + HLS_FREEZE_SECONDS + "s — refreshing live URL + bridge.");
+                            refreshHlsStream(setStatus);
+                        }
+                    } else {
+                        lastTime = video.currentTime;
+                        lastCheck = now;
+                    }
+                }, 3000);
+            }
+
+            const playlistUrl = '/api/stream/playlist';
+
+            if (window.Hls && Hls.isSupported()) {
+                const hls = new Hls({
+                    maxBufferLength: 15,
+                    maxMaxBufferLength: 30,
+                    liveSyncDurationCount: 3,
+                    liveMaxLatencyDurationCount: 8,
+                    lowLatencyMode: false,
+                    manifestLoadingTimeOut: 15000,
+                    fragLoadingTimeOut: 20000,
+                    levelLoadingTimeOut: 15000,
+                    fragLoadingMaxRetry: 4,
+                    manifestLoadingMaxRetry: 4,
+                    levelLoadingMaxRetry: 4,
+                    nudgeMaxRetry: 5,
+                    nudgeOffset: 0.5,
+                });
+                hlsPlayer = hls;
+                hls.loadSource(playlistUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    setStatus('HLS Playing...', '#3b82f6');
+                    video.play().catch(e => console.warn("[HLS] play() failed:", e));
+                });
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (!data.fatal) return;
+                    switch (data.type) {
+                        case Hls.ErrorTypes.NETWORK_ERROR:
+                            hls.startLoad();
+                            break;
+                        case Hls.ErrorTypes.MEDIA_ERROR:
+                            hls.recoverMediaError();
+                            break;
+                        default:
+                            handleFatal(data.details);
+                    }
+                });
+                video.addEventListener('playing', () => { hlsConnected(); }, { once: true });
+                video.addEventListener('loadeddata', () => { if (video.readyState >= 2) hlsConnected(); }, { once: true });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari native HLS
+                video.src = playlistUrl;
+                video.addEventListener('playing', () => hlsConnected(), { once: true });
+                video.addEventListener('error', () => hlsFallback('HLS Unsupported (MJPEG Fallback)'), { once: true });
+            } else {
+                hlsFallback('HLS Not Supported (MJPEG Fallback)');
+            }
         }
 
         async function initWebRTCStream() {
@@ -754,7 +919,7 @@
         window.addEventListener('DOMContentLoaded', () => {
             loadSavedTheme();
             setTimeout(() => {
-                initWebRTCStream();
+                initVideoStream();
                 resizeCanvas();
                 initDetectionWebSocket();
                 

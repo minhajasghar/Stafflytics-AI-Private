@@ -248,29 +248,34 @@ def get_db_connection():
         return conn
 
 def init_db():
+    _init_conn = None  # Reuse this connection for table creation (avoids second-connection drop)
     if DB_CONFIG["DB_TYPE"] == "mysql":
         import mysql.connector
         try:
-            conn = mysql.connector.connect(
+            conn_raw = mysql.connector.connect(
                 host=DB_CONFIG["MYSQL_HOST"],
                 port=DB_CONFIG["MYSQL_PORT"],
                 user=DB_CONFIG["MYSQL_USER"],
                 password=DB_CONFIG["MYSQL_PASSWORD"]
             )
-            cursor = conn.cursor()
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['MYSQL_DATABASE']}")
-            conn.commit()
-            cursor.close()
-            conn.close()
+            cur = conn_raw.cursor()
+            cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_CONFIG['MYSQL_DATABASE']}`")
+            # Switch to the database on the SAME connection — avoids the second
+            # connect() that was being forcibly closed by MySQL (Errno 10054).
+            cur.execute(f"USE `{DB_CONFIG['MYSQL_DATABASE']}`")
+            conn_raw.commit()
+            cur.close()
             print(f"[DB] Verified/Created MySQL database '{DB_CONFIG['MYSQL_DATABASE']}'")
+            _init_conn = MySQLConnectionWrapper(conn_raw)
         except Exception as e:
             print(f"[DB ERROR] MySQL pre-init database creation failed: {e}")
+            return  # Cannot create tables without a valid connection
     else:
         if not os.path.exists("data"):
             os.makedirs("data")
         
     with db_lock:
-        conn = get_db_connection()
+        conn = _init_conn if _init_conn is not None else get_db_connection()
         cursor = conn.cursor()
         
         # Staff table

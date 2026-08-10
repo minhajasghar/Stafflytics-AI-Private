@@ -1,14 +1,10 @@
-# MediaMTX configuration for Stafflytics (auto-generated)
+# MediaMTX configuration for Stafflytics - IMOU HLS MODE (auto-generated)
+# Local RTSP relay for the AI pipeline. Browser plays Imou HLS directly.
 rtspAddress: :8554
 rtpAddress: :8556
 rtcpAddress: :8557
 
-webrtc: yes
-webrtcAddress: :8889
-webrtcAllowOrigin: '*'
-webrtcLocalUDPAddress: :8189
-webrtcLocalTCPAddress: :8189
-webrtcHandshakeTimeout: 30s
+webrtc: no
 
 readTimeout: 30s
 
@@ -18,20 +14,11 @@ srt: no
 
 paths:
   cam:
-    # Full-quality relay from physical camera — used for the display video feed.
-    # TCP transport prevents UDP packet loss that causes HEVC decode errors.
-    source: rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0
-    rtspTransport: tcp
+    # Imou HLS -> RTSP relay. ffmpeg (imou bridge) publishes the Imou HEVC stream
+    # here; this path accepts external publishers only.
+    source: publisher
 
   cam_ai:
-    # H.264 transcoded stream for OpenCV / YOLO AI processing.
-    # FFmpeg pulls from the local cam relay (already over TCP), re-encodes to H.264
-    # at 640x480 for lightweight, error-free AI reads. ultrafast+zerolatency keeps
-    # latency under 200ms while eliminating all HEVC decode failures that caused
-    # frame drops and bounding box disappearances.
-    runOnInit: '"C:\Users\Sultan Mahmood\Desktop\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    # H.264 transcoded stream for OpenCV / YOLO AI processing (unchanged).
+    runOnInit: '"D:\Desktop\Stafflytics\stafflytics-ai\bin\ffmpeg.exe" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
     runOnInitRestart: yes
-
-  mystream:
-    runOnDemand: '"C:\Users\Sultan Mahmood\Desktop\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=1920:1080" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
-    runOnDemandRestart: yes

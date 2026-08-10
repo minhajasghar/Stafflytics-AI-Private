@@ -878,11 +878,15 @@ function startCaptureStream() {
     const canvas = document.getElementById('capture-canvas');
     const img = document.getElementById('video-feed');
     const webrtcVideo = document.getElementById('webrtc-video');
+    const hlsVideo = document.getElementById('hls-video');
     if (!canvas || !img) return;
     const ctx = canvas.getContext('2d');
     if (captureAnimFrame) cancelAnimationFrame(captureAnimFrame);
 
     function getActiveSource() {
+        if (hlsVideo && hlsVideo.style.display !== 'none' && hlsVideo.readyState >= 2) {
+            return hlsVideo;
+        }
         if (webrtcVideo && webrtcVideo.style.display !== 'none' && webrtcVideo.readyState >= 2) {
             return webrtcVideo;
         }
@@ -954,15 +958,19 @@ function captureFace() {
 
     const img = document.getElementById('video-feed');
     const webrtcVideo = document.getElementById('webrtc-video');
+    const hlsVideo = document.getElementById('hls-video');
     
     let src = img;
-    let isWebRTC = webrtcVideo && webrtcVideo.style.display !== 'none' && webrtcVideo.readyState >= 2;
-    if (isWebRTC) {
+    let isVideo = hlsVideo && hlsVideo.style.display !== 'none' && hlsVideo.readyState >= 2;
+    if (isVideo) {
+        src = hlsVideo;
+    } else if (webrtcVideo && webrtcVideo.style.display !== 'none' && webrtcVideo.readyState >= 2) {
+        isVideo = true;
         src = webrtcVideo;
     }
 
-    const w = isWebRTC ? src.videoWidth : src.naturalWidth;
-    const h = isWebRTC ? src.videoHeight : src.naturalHeight;
+    const w = isVideo ? src.videoWidth : src.naturalWidth;
+    const h = isVideo ? src.videoHeight : src.naturalHeight;
     if (!src || w === 0 || h === 0) {
         alert('Camera feed not ready. Please wait...');
         return;
