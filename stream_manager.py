@@ -2,13 +2,16 @@ import os
 import sys
 import time
 import zipfile
+import platform
 import requests
 import subprocess
 import threading
 import cv2
 
 BIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "bin"))
-MEDIAMTX_EXE = os.path.join(BIN_DIR, "mediamtx.exe")
+_IS_WINDOWS = platform.system() == "Windows"
+MEDIAMTX_BINARY_NAME = "mediamtx.exe" if _IS_WINDOWS else "mediamtx"
+MEDIAMTX_EXE = os.path.join(BIN_DIR, MEDIAMTX_BINARY_NAME)
 FFMPEG_EXE = os.path.join(BIN_DIR, "ffmpeg.exe")
 
 current_physical_rtsp_url = None
@@ -140,7 +143,7 @@ def _downloader_worker():
             
             download_status = "Extracting MediaMTX..."
             print(f"[STREAM MANAGER] {download_status}")
-            success = extract_file_from_zip(zip_path, "mediamtx.exe", MEDIAMTX_EXE)
+            success = extract_file_from_zip(zip_path, MEDIAMTX_BINARY_NAME, MEDIAMTX_EXE)
             
             # Also extract the yml config if present
             extract_file_from_zip(zip_path, "mediamtx.yml", os.path.join(BIN_DIR, "mediamtx.yml"))
@@ -154,7 +157,7 @@ def _downloader_worker():
             except: pass
             
             if not success:
-                raise Exception("mediamtx.exe not found in downloaded zip file")
+                raise Exception(f"{MEDIAMTX_BINARY_NAME} not found in downloaded zip file")
             print("[STREAM MANAGER] MediaMTX extracted successfully.")
         except Exception as e:
             download_error = f"MediaMTX download failed: {str(e)}"
