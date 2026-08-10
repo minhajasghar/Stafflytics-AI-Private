@@ -17,10 +17,21 @@ FFMPEG_EXE = os.path.join(BIN_DIR, "ffmpeg.exe") if _IS_WINDOWS else "ffmpeg"
 
 current_physical_rtsp_url = None
 
-# Stream source mode:
-#   "rtsp" -> original local-RTSP + MediaMTX/WebRTC flow (feature-flagged legacy path)
-#   "imou" -> Imou Open Platform HLS -> local RTSP relay (browser plays HLS directly)
-STREAM_MODE = "rtsp"
+# ---------------------------------------------------------------------------
+# Camera source mode — controlled by the CAMERA_SOURCE_MODE environment var.
+#
+#   "imou"         (default) — Imou Open Platform HLS -> local RTSP relay.
+#                              Browser plays Imou HLS directly.  The ffmpeg
+#                              bridge + supervisor are used.
+#   "remote_rtsp"  — MediaMTX pulls directly from REMOTE_RTSP_URL (e.g. a
+#                    Tailscale peer running MediaMTX).  No ffmpeg bridge.
+#   "rtsp"         — legacy local-RTSP + MediaMTX/WebRTC flow.
+# ---------------------------------------------------------------------------
+CAMERA_SOURCE_MODE = os.environ.get("CAMERA_SOURCE_MODE", "imou").strip().lower()
+REMOTE_RTSP_URL    = os.environ.get("REMOTE_RTSP_URL", "").strip()
+
+# Internal runtime mode (may be overridden by setup_* helpers at runtime).
+STREAM_MODE = CAMERA_SOURCE_MODE
 
 # Imou HLS -> RTSP bridge (one ffmpeg process publishing the Imou HEVC relay to
 # MediaMTX path "cam"; MediaMTX's existing runOnInit transcodes cam -> cam_ai for AI).
@@ -66,6 +77,9 @@ def write_mediamtx_config():
     global current_physical_rtsp_url
     if STREAM_MODE == "imou":
         _write_mediamtx_config_imou()
+        return
+    if STREAM_MODE == "remote_rtsp":
+        _write_mediamtx_config_remote_rtsp()
         return
     if not current_physical_rtsp_url:
         return
@@ -165,6 +179,70 @@ paths:
         print("[STREAM MANAGER] Wrote Imou-mode mediamtx.yml (HLS->RTSP relay, WebRTC disabled).")
     except Exception as e:
         print(f"[STREAM MANAGER ERROR] Failed to write Imou mediamtx.yml: {e}")
+
+def _write_mediamtx_config_remote_rtsp():
+    """Remote RTSP mode config.
+
+    MediaMTX's "cam" path pulls directly from REMOTE_RTSP_URL (e.g. a Tailscale
+    peer running MediaMTX).  cam_ai transcoding for AI is preserved unchanged.
+    The Imou HLS bridge is NOT used in this mode.
+    """
+    remote_url = REMOTE_RTSP_URL
+    if not remote_url:
+        print("[STREAM MANAGER ERROR] remote_rtsp mode selected but REMOTE_RTSP_URL is not set.")
+        return
+    config_path = os.path.join(BIN_DIR, "mediamtx.yml")
+    ffmpeg_path = FFMPEG_EXE
+
+    config_content = f"""# MediaMTX configuration for Stafflytics - REMOTE RTSP MODE (auto-generated)
+# "cam" pulls directly from the remote RTSP source; no Imou bridge needed.
+rtspAddress: :8554
+rtpAddress: :8556
+rtcpAddress: :8557
+
+webrtc: no
+
+readTimeout: 30s
+
+rtmp: no
+hls: no
+srt: no
+
+paths:
+  cam:
+    # Pull directly from the remote RTSP peer (e.g. Tailscale MediaMTX node).
+    source: {remote_url}
+    rtspTransport: tcp
+
+  cam_ai:
+    # H.264 transcoded stream for OpenCV / YOLO AI processing (unchanged).
+    runOnInit: '"{ffmpeg_path}" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    runOnInitRestart: yes
+"""
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(config_content)
+        print(f"[STREAM MANAGER] Wrote remote-rtsp mediamtx.yml (source: {remote_url}).")
+    except Exception as e:
+        print(f"[STREAM MANAGER ERROR] Failed to write remote-rtsp mediamtx.yml: {e}")
+
+def setup_remote_rtsp_stream(remote_url=None):
+    """Switch the whole streaming pipeline to Remote RTSP mode.
+
+    Optionally accepts a runtime override for the URL; otherwise uses the
+    REMOTE_RTSP_URL environment variable set at startup.
+    The Imou HLS bridge is stopped and not restarted.
+    """
+    global STREAM_MODE, REMOTE_RTSP_URL
+    if remote_url:
+        REMOTE_RTSP_URL = remote_url
+    print(f"[STREAM MANAGER] Switching to REMOTE RTSP mode (source: {REMOTE_RTSP_URL}).")
+    STREAM_MODE = "remote_rtsp"
+    stop_imou_bridge()   # no-op if not running
+    write_mediamtx_config()
+    stop_mediamtx()
+    start_mediamtx()
+    return True
 
 def setup_imou_stream():
     """Switch the whole streaming pipeline to Imou HLS mode."""
@@ -299,14 +377,19 @@ def _ffmpeg_available():
 
 def ensure_binaries_async():
     global downloader_thread
+    # In remote_rtsp mode ffmpeg is only needed for cam_ai transcoding (same as
+    # imou mode), so we still require it.  The check is otherwise identical.
     if os.path.exists(MEDIAMTX_EXE) and _ffmpeg_available():
         global download_status, download_complete
         download_status = "Complete"
         download_complete = True
         print("[STREAM MANAGER] Binaries already exist / are available.")
-        if current_physical_rtsp_url:
-            write_mediamtx_config()
+        # Write the correct config for whichever mode was active at startup.
+        write_mediamtx_config()
         start_mediamtx()
+        # Start the Imou bridge supervisor only when in imou mode.
+        if STREAM_MODE == "imou":
+            _ensure_imou_supervisor()
         return
         
     if downloader_thread is None or not downloader_thread.is_alive():
