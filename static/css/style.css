@@ -814,7 +814,12 @@ input:focus {
         border-right: none;
         border-bottom: 1px solid var(--border);
         overflow-x: auto;
+        overflow-y: hidden;
         gap: 0.5rem;
+        position: sticky;
+        top: 0;
+        z-index: 500;
+        background: var(--surface);
     }
     .sidebar-nav {
         flex-direction: row;
@@ -828,6 +833,7 @@ input:focus {
         height: auto;
         min-height: 100vh;
         padding: 1rem;
+        gap: 1.25rem;
     }
     .right-monitor {
         border-left: none;
@@ -835,22 +841,93 @@ input:focus {
         height: auto;
         padding: 1rem;
     }
+    .top-bar {
+        flex-wrap: wrap;
+        gap: 0.75rem;
+    }
+    .top-bar h1 { font-size: 1.2rem; }
     .camera-canvas {
+        height: 46vh;
         max-height: 50vh;
+        flex: 0 0 auto;
         margin-bottom: 0.75rem;
     }
+    .camera-canvas:fullscreen {
+        height: 100vh;
+        max-height: none;
+        flex: 1 1 auto;
+    }
+    .camera-canvas:fullscreen .video-wrapper {
+        height: calc(100vh - 52px);
+    }
+    .camera-canvas .video-header {
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 10px 12px;
+    }
     .camera-canvas .video-header h3 { font-size: 0.75rem; }
-    .btn-zone { font-size: 0.65rem; padding: 4px 10px; }
-    .ptz-controls { transform: scale(0.8); }
-    .stats-bar { grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
-    .stat-pill { padding: 0.5rem; }
+    .btn-zone { font-size: 0.65rem; padding: 5px 10px; }
+    .ptz-controls {
+        transform: none;
+        grid-template-columns: repeat(3, 46px);
+        grid-template-rows: repeat(3, 46px);
+        bottom: 12px;
+        right: 12px;
+    }
+    .ptz-btn { font-size: 1.05rem; }
+    .stats-bar { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; }
+    .stat-pill { padding: 0.75rem; gap: 0.75rem; }
+    .stat-info div { font-size: 1.25rem; }
     #analytics-grid { grid-template-columns: 1fr !important; }
+    .metrics-grid,
+    .analytics-cols,
+    .optimization-grid,
+    .settings-grid,
+    #daily-report-summary {
+        grid-template-columns: 1fr !important;
+    }
+    .metrics-grid { grid-template-columns: repeat(2, 1fr) !important; }
+    .metrics-grid .stat-value { font-size: 1.7rem; }
     .standard-card { padding: 1rem; }
     table.data-table { font-size: 0.75rem; }
     .data-table th, .data-table td { padding: 0.4rem 0.5rem; }
     .security-overlay { font-size: 0.9rem; }
     .chat-container { width: calc(100vw - 2rem); right: 1rem; bottom: 90px; }
     .chat-bubble { right: 1rem; bottom: 1rem; }
-    .modal-content { max-width: 95vw !important; margin: 1rem; }
+    .fab { right: 6rem; bottom: 1rem; }
+    .modal-content { max-width: 95vw !important; width: 100%; margin: 0; max-height: 90vh; overflow-y: auto; }
     .form-group input, .form-group select { font-size: 0.85rem; }
+    .section-toolbar { flex-wrap: wrap; gap: 0.75rem; }
+    .filter-group { flex-wrap: wrap; }
+    .filter-group input { max-width: none !important; flex: 1; min-width: 130px; }
+    .report-actions { flex-wrap: wrap; }
+    .report-actions .btn-primary { flex: 1 1 100%; justify-content: center; }
+    .inline-row { flex-wrap: wrap; }
+    .inline-row select { width: 100% !important; }
+    .cam-url-row { flex-wrap: wrap; }
+    .report-container { padding: 1rem; }
+    .breach-card { padding: 2rem 1.5rem; }
+    .standard-card h3 { font-size: 0.95rem; }
+    .settings-grid > div { min-width: 0; }
+    .optimization-chart-container, #optimization-chart-container { min-height: auto; }
+}
+
+@media (max-width: 480px) {
+    .stats-bar { grid-template-columns: repeat(2, 1fr); }
+    .stat-pill { padding: 0.6rem; }
+    .stat-info span { font-size: 0.65rem; }
+    .stat-info div { font-size: 1.1rem; }
+    .stat-pill i { width: 32px; height: 32px; font-size: 0.85rem; }
+    .camera-canvas { height: 42vh; }
+    .btn-zone { padding: 4px 8px; }
+    .btn-zone i { margin-right: 0; }
+    .video-header .btn-zone { font-size: 0.6rem; }
+    .ptz-controls { grid-template-columns: repeat(3, 42px); grid-template-rows: repeat(3, 42px); }
+    .metrics-grid { grid-template-columns: 1fr !important; }
+    .chat-bubble { width: 52px; height: 52px; }
+    .fab { width: 52px; height: 52px; right: 5rem; }
+    .modal { width: 100%; }
+    .top-bar > div { width: 100%; }
+    .top-bar > div:last-child { justify-content: flex-start; }
+    .data-table th, .data-table td { padding: 0.35rem 0.4rem; }
 }

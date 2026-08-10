@@ -383,6 +383,11 @@ async function saveCameraSettings() {
 // --- PTZ CONTROLS ---
 let ptzDir = 'Up';
 
+function ptzStartTouch(e, direction) {
+    if (e && e.preventDefault) e.preventDefault();
+    ptzStart(direction);
+}
+
 function ptzStart(direction) {
     ptzDir = direction;
     fetch('/api/camera/ptz', {

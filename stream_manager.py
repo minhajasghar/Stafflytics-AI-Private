@@ -2,21 +2,36 @@ import os
 import sys
 import time
 import zipfile
+import platform
 import requests
 import subprocess
 import threading
 import cv2
 
 BIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "bin"))
-MEDIAMTX_EXE = os.path.join(BIN_DIR, "mediamtx.exe")
-FFMPEG_EXE = os.path.join(BIN_DIR, "ffmpeg.exe")
+_IS_WINDOWS = platform.system() == "Windows"
+MEDIAMTX_BINARY_NAME = "mediamtx.exe" if _IS_WINDOWS else "mediamtx"
+MEDIAMTX_EXE = os.path.join(BIN_DIR, MEDIAMTX_BINARY_NAME)
+# On Windows use the bundled binary; on Linux/Mac rely on the system-installed ffmpeg.
+FFMPEG_EXE = os.path.join(BIN_DIR, "ffmpeg.exe") if _IS_WINDOWS else "ffmpeg"
 
 current_physical_rtsp_url = None
 
-# Stream source mode:
-#   "rtsp" -> original local-RTSP + MediaMTX/WebRTC flow (feature-flagged legacy path)
-#   "imou" -> Imou Open Platform HLS -> local RTSP relay (browser plays HLS directly)
-STREAM_MODE = "rtsp"
+# ---------------------------------------------------------------------------
+# Camera source mode — controlled by the CAMERA_SOURCE_MODE environment var.
+#
+#   "imou"         (default) — Imou Open Platform HLS -> local RTSP relay.
+#                              Browser plays Imou HLS directly.  The ffmpeg
+#                              bridge + supervisor are used.
+#   "remote_rtsp"  — MediaMTX pulls directly from REMOTE_RTSP_URL (e.g. a
+#                    Tailscale peer running MediaMTX).  No ffmpeg bridge.
+#   "rtsp"         — legacy local-RTSP + MediaMTX/WebRTC flow.
+# ---------------------------------------------------------------------------
+CAMERA_SOURCE_MODE = os.environ.get("CAMERA_SOURCE_MODE", "imou").strip().lower()
+REMOTE_RTSP_URL    = os.environ.get("REMOTE_RTSP_URL", "").strip()
+
+# Internal runtime mode (may be overridden by setup_* helpers at runtime).
+STREAM_MODE = CAMERA_SOURCE_MODE
 
 # Imou HLS -> H.264 RTSP bridge (one ffmpeg process transcoding the raw Imou
 # HLS live URL and publishing H.264 640x480 to MediaMTX path "cam_ai").
@@ -87,11 +102,14 @@ def write_mediamtx_config():
     if STREAM_MODE == "imou":
         _write_mediamtx_config_imou()
         return
+    if STREAM_MODE == "remote_rtsp":
+        _write_mediamtx_config_remote_rtsp()
+        return
     if not current_physical_rtsp_url:
         return
     
     config_path = os.path.join(BIN_DIR, "mediamtx.yml")
-    ffmpeg_path = os.path.join(BIN_DIR, "ffmpeg.exe")
+    ffmpeg_path = FFMPEG_EXE
     stream_w, stream_h = get_stream_resolution()
     
     config_content = f"""# MediaMTX configuration for Stafflytics (auto-generated)
@@ -181,6 +199,70 @@ paths:
     except Exception as e:
         print(f"[STREAM MANAGER ERROR] Failed to write Imou mediamtx.yml: {e}")
 
+def _write_mediamtx_config_remote_rtsp():
+    """Remote RTSP mode config.
+
+    MediaMTX's "cam" path pulls directly from REMOTE_RTSP_URL (e.g. a Tailscale
+    peer running MediaMTX).  cam_ai transcoding for AI is preserved unchanged.
+    The Imou HLS bridge is NOT used in this mode.
+    """
+    remote_url = REMOTE_RTSP_URL
+    if not remote_url:
+        print("[STREAM MANAGER ERROR] remote_rtsp mode selected but REMOTE_RTSP_URL is not set.")
+        return
+    config_path = os.path.join(BIN_DIR, "mediamtx.yml")
+    ffmpeg_path = FFMPEG_EXE
+
+    config_content = f"""# MediaMTX configuration for Stafflytics - REMOTE RTSP MODE (auto-generated)
+# "cam" pulls directly from the remote RTSP source; no Imou bridge needed.
+rtspAddress: :8554
+rtpAddress: :8556
+rtcpAddress: :8557
+
+webrtc: no
+
+readTimeout: 30s
+
+rtmp: no
+hls: no
+srt: no
+
+paths:
+  cam:
+    # Pull directly from the remote RTSP peer (e.g. Tailscale MediaMTX node).
+    source: {remote_url}
+    rtspTransport: tcp
+
+  cam_ai:
+    # H.264 transcoded stream for OpenCV / YOLO AI processing (unchanged).
+    runOnInit: '"{ffmpeg_path}" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    runOnInitRestart: yes
+"""
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(config_content)
+        print(f"[STREAM MANAGER] Wrote remote-rtsp mediamtx.yml (source: {remote_url}).")
+    except Exception as e:
+        print(f"[STREAM MANAGER ERROR] Failed to write remote-rtsp mediamtx.yml: {e}")
+
+def setup_remote_rtsp_stream(remote_url=None):
+    """Switch the whole streaming pipeline to Remote RTSP mode.
+
+    Optionally accepts a runtime override for the URL; otherwise uses the
+    REMOTE_RTSP_URL environment variable set at startup.
+    The Imou HLS bridge is stopped and not restarted.
+    """
+    global STREAM_MODE, REMOTE_RTSP_URL
+    if remote_url:
+        REMOTE_RTSP_URL = remote_url
+    print(f"[STREAM MANAGER] Switching to REMOTE RTSP mode (source: {REMOTE_RTSP_URL}).")
+    STREAM_MODE = "remote_rtsp"
+    stop_imou_bridge()   # no-op if not running
+    write_mediamtx_config()
+    stop_mediamtx()
+    start_mediamtx()
+    return True
+
 def setup_imou_stream():
     """Switch the whole streaming pipeline to Imou HLS mode."""
     global STREAM_MODE
@@ -244,7 +326,7 @@ def _downloader_worker():
             
             download_status = "Extracting MediaMTX..."
             print(f"[STREAM MANAGER] {download_status}")
-            success = extract_file_from_zip(zip_path, "mediamtx.exe", MEDIAMTX_EXE)
+            success = extract_file_from_zip(zip_path, MEDIAMTX_BINARY_NAME, MEDIAMTX_EXE)
             
             # Also extract the yml config if present
             extract_file_from_zip(zip_path, "mediamtx.yml", os.path.join(BIN_DIR, "mediamtx.yml"))
@@ -258,7 +340,7 @@ def _downloader_worker():
             except: pass
             
             if not success:
-                raise Exception("mediamtx.exe not found in downloaded zip file")
+                raise Exception(f"{MEDIAMTX_BINARY_NAME} not found in downloaded zip file")
             print("[STREAM MANAGER] MediaMTX extracted successfully.")
         except Exception as e:
             download_error = f"MediaMTX download failed: {str(e)}"
@@ -266,8 +348,8 @@ def _downloader_worker():
             print(f"[STREAM MANAGER] {download_error}")
             return
 
-    # 2. Download FFmpeg if missing
-    if not os.path.exists(FFMPEG_EXE):
+    # 2. Download FFmpeg if missing (Windows only — Linux uses system ffmpeg from PATH)
+    if _IS_WINDOWS and not os.path.exists(FFMPEG_EXE):
         try:
             download_status = "Downloading FFmpeg (~60MB)..."
             print(f"[STREAM MANAGER] {download_status}")
@@ -304,16 +386,29 @@ def _downloader_worker():
     # Auto-start MediaMTX since binaries are ready
     start_mediamtx()
 
+def _ffmpeg_available():
+    """Return True when the ffmpeg command/binary is usable."""
+    if _IS_WINDOWS:
+        return os.path.exists(FFMPEG_EXE)
+    # On Linux/Mac we rely on system ffmpeg — check it is on PATH.
+    import shutil
+    return shutil.which("ffmpeg") is not None
+
 def ensure_binaries_async():
     global downloader_thread
-    if os.path.exists(MEDIAMTX_EXE) and os.path.exists(FFMPEG_EXE):
+    # In remote_rtsp mode ffmpeg is only needed for cam_ai transcoding (same as
+    # imou mode), so we still require it.  The check is otherwise identical.
+    if os.path.exists(MEDIAMTX_EXE) and _ffmpeg_available():
         global download_status, download_complete
         download_status = "Complete"
         download_complete = True
-        print("[STREAM MANAGER] Binaries already exist in bin/ folder.")
-        if current_physical_rtsp_url:
-            write_mediamtx_config()
+        print("[STREAM MANAGER] Binaries already exist / are available.")
+        # Write the correct config for whichever mode was active at startup.
+        write_mediamtx_config()
         start_mediamtx()
+        # Start the Imou bridge supervisor only when in imou mode.
+        if STREAM_MODE == "imou":
+            _ensure_imou_supervisor()
         return
         
     if downloader_thread is None or not downloader_thread.is_alive():
@@ -379,8 +474,8 @@ def start_imou_bridge():
     with _imou_bridge_lock:
         if _imou_bridge_process is not None and _imou_bridge_process.poll() is None:
             return True
-        if not os.path.exists(FFMPEG_EXE):
-            print("[STREAM MANAGER] Cannot start Imou bridge: ffmpeg binary not found.")
+        if not _ffmpeg_available():
+            print("[STREAM MANAGER] Cannot start Imou bridge: ffmpeg not found (install via apt install ffmpeg on Linux).")
             return False
         live_url = get_imou_live_url()
         if not live_url:
@@ -476,7 +571,7 @@ def _imou_supervisor_loop():
         try:
             if STREAM_MODE != "imou":
                 continue
-            if not os.path.exists(MEDIAMTX_EXE) or not os.path.exists(FFMPEG_EXE):
+            if not os.path.exists(MEDIAMTX_EXE) or not _ffmpeg_available():
                 continue
             # Keep MediaMTX running with the Imou config.
             if mediamtx_process is None or mediamtx_process.poll() is not None:

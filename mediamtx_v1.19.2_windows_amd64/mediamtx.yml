@@ -14,7 +14,8 @@ webrtcHandshakeTimeout: 30s
 readTimeout: 30s
 
 # Disable unused protocols to prevent port conflicts with Node/Express/Next.js
-rtmp: no
+rtmp: yes
+rtmpAddress: :1935
 hls: no
 srt: no
 

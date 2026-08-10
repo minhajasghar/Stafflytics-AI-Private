@@ -104,10 +104,10 @@
                         <canvas id="detection-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:5;"></canvas>
                         <canvas id="zone-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none;"></canvas>
                         <div class="ptz-controls" id="ptz-controls">
-                            <button class="ptz-btn ptz-up" data-dir="Up" onmousedown="ptzStart('Up')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-up"></i></button>
-                            <button class="ptz-btn ptz-left" data-dir="Left" onmousedown="ptzStart('Left')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-left"></i></button>
-                            <button class="ptz-btn ptz-right" data-dir="Right" onmousedown="ptzStart('Right')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-right"></i></button>
-                            <button class="ptz-btn ptz-down" data-dir="Down" onmousedown="ptzStart('Down')" onmouseup="ptzStop()" onmouseleave="ptzStop()"><i class="fas fa-chevron-down"></i></button>
+                            <button class="ptz-btn ptz-up" data-dir="Up" onmousedown="ptzStart('Up')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Up')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-up"></i></button>
+                            <button class="ptz-btn ptz-left" data-dir="Left" onmousedown="ptzStart('Left')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Left')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-left"></i></button>
+                            <button class="ptz-btn ptz-right" data-dir="Right" onmousedown="ptzStart('Right')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Right')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-right"></i></button>
+                            <button class="ptz-btn ptz-down" data-dir="Down" onmousedown="ptzStart('Down')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Down')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-down"></i></button>
                         </div>
                     </div>
                 </section>
@@ -144,7 +144,7 @@
                 </header>
 
                 <!-- Visitor Metrics Cards -->
-                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: var(--section-gap);">
+                <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: var(--section-gap);">
                     <div class="stat-card-big"><span class="stat-label">Unique Visitors</span><div class="stat-value" id="visitor-total">—</div></div>
                     <div class="stat-card-big"><span class="stat-label">New Faces</span><div class="stat-value accent" id="visitor-new">—</div></div>
                     <div class="stat-card-big"><span class="stat-label">Returning</span><div class="stat-value green" id="visitor-returning">—</div></div>
@@ -192,7 +192,7 @@
                 <!-- Existing Synergy / Engagement / Wellbeing / Loyalty -->
                 <div id="analytics-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: var(--section-gap);"></div>
 
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--section-gap); align-items: stretch;">
+                <div class="analytics-cols" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--section-gap); align-items: stretch;">
                     <div class="standard-card">
                         <h3 style="margin-bottom:1.5rem;"><i class="fas fa-handshake-angle" style="color:var(--accent);"></i> Service Engagement</h3>
                         <div id="engagement-list" style="display:flex; flex-direction:column; gap:12px;"></div>
@@ -218,7 +218,7 @@
             </div>
 
             <div id="section-reporting" class="view-section hidden">
-                <div style="display:flex; justify-content:space-between; margin-bottom: 2rem;">
+                <div class="section-toolbar" style="display:flex; justify-content:space-between; margin-bottom: 2rem;">
                     <h1>Attendance Reports</h1>
                     <div class="filter-group" style="display:flex; gap:10px; align-items:center;">
                         <input type="month" id="report-filter" onchange="loadAttendanceReports()" class="custom-input" style="max-width:180px;">
@@ -248,7 +248,7 @@
                 <div style="margin-top:2rem; background:var(--surface); padding:2rem; border-radius:24px; box-shadow:var(--shadow); color: var(--text);">
                     <h2 style="margin-bottom:1.5rem;">Executive Report Center</h2>
                     <p style="color:var(--text-muted); margin-bottom:1.5rem;">Professional business intelligence reports including performance metrics, synergy analytics, and security summaries.</p>
-                    <div style="display:flex; gap:15px;">
+                    <div class="report-actions" style="display:flex; gap:15px;">
                         <button class="btn-primary" onclick="downloadPeriodReport('daily', 'pdf')"><i class="fas fa-file-pdf"></i> Daily Executive PDF</button>
                         <button class="btn-primary" style="background:var(--accent);" onclick="downloadPeriodReport('weekly', 'pdf')"><i class="fas fa-file-pdf"></i> Weekly BI Report (PDF)</button>
                         <button class="btn-primary" style="background:var(--green);" onclick="downloadPeriodReport('weekly', 'excel')"><i class="fas fa-file-excel"></i> Weekly Full Audit (Excel)</button>
@@ -278,7 +278,7 @@
             </div>
 
             <div id="section-roi" class="view-section hidden">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2rem;">
+                <div class="section-toolbar" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2rem;">
                     <h1>Salary Administration</h1>
                 </div>
                 <p style="color:var(--text-muted); margin-bottom: 2rem;">Administrative view of staff monthly salaries and hourly rates for payroll purposes.</p>
@@ -305,7 +305,7 @@
                     <div><h1>Shift Optimization Intelligence</h1><p style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">AI analysis of hourly activity levels to suggest staffing adjustments.</p></div>
                 </header>
                 
-                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: var(--section-gap);">
+                <div class="optimization-grid" style="display: grid; grid-template-columns: 2fr 1fr; gap: var(--section-gap);">
                     <div class="standard-card">
                         <h3 style="margin-bottom: 1.5rem;">Hourly Rhythm (Last 7 Days)</h3>
                         <div id="optimization-chart-container" style="min-height:220px; display:flex; flex-direction:column; justify-content:center;">
@@ -327,7 +327,7 @@
                 <header class="top-bar">
                     <div><h1>Owner Configuration</h1><p style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">Control system thresholds, communication, and business rules.</p></div>
                 </header>
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap: var(--section-gap);">
+                <div class="settings-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap: var(--section-gap);">
                     <div class="standard-card" style="border: 1px solid var(--accent);">
                         <h3 style="margin-bottom:1.5rem;">Staff Policies</h3>
                         <div class="form-group" style="margin-bottom:15px;">
@@ -345,7 +345,7 @@
                         <h3 style="margin-bottom:1.5rem;"><i class="fas fa-fire-flame-curved" style="color:var(--red);"></i> High-Traffic Events</h3>
                         <div id="event-list" style="margin-bottom:1.5rem; font-size:0.85rem; max-height: 120px; overflow-y: auto;"></div>
                         <div style="display:flex; flex-direction:column; gap:10px;">
-                            <div style="display:flex; gap:10px;">
+                            <div class="inline-row" style="display:flex; gap:10px;">
                                 <input type="date" id="new-event-date" style="flex:1">
                                 <select id="new-event-intensity" style="width:100px;">
                                     <option>High</option>
@@ -368,7 +368,7 @@
                         <h3 style="margin-bottom:1.5rem;"><i class="fas fa-video" style="color:var(--primary);"></i> Camera Configuration</h3>
                         <div class="form-group" style="margin-bottom:10px;">
                             <label>RTSP Camera URL</label>
-                            <div style="display:flex; align-items:flex-start; gap:10px;">
+                            <div class="cam-url-row" style="display:flex; align-items:flex-start; gap:10px;">
                                 <input type="text" id="cam-rtsp-url" placeholder="rtsp://admin:password@192.168.1.100:554/stream1" style="flex:1;">
                                 <div style="width:80px; height:56px; border-radius:6px; overflow:hidden; background:#000; flex-shrink:0; position:relative; border:1px solid #e2e8f0;">
                                     <img src="{{ url_for('video_feed') }}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">

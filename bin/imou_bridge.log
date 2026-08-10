@@ -1755,3 +1755,130 @@ Invalid report file level
     Last message repeated 9 times
 mime type is not rfc8216 compliant
 [http @ 000002a501e51b00] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 0000023805771b00] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 0000023805771b00] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000002e138811b00] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000002e138811b00] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[tcp @ 000002037d0c1940] Failed to resolve hostname cmgw-sg.easy4ipcloud.com: The name does not resolve for the supplied parameters
+[in#0 @ 000002037d0c10c0] Error opening input: I/O error
+Error opening input file http://cmgw-sg.easy4ipcloud.com:8888/iot/LCO/K91N3XST/55A35CCPSF59147/0/0/20260801T104654/opensgbfba63ad759a41a280f085b7c1e2ba95.m3u8?source=open.
+Error opening input files: I/O error
+Invalid report file level
+[http @ 000002776f9c1b80] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000002776f9c1b80] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 00000135dbb41bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 00000135dbb41bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000002a9646e1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000002a9646e1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 0000021147141bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 0000021147141bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 0000028876be1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 0000028876be1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000001e020531bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000001e020531bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000001e798811bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000001e798811bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000002d2ef301bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000002d2ef301bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 0000025e5cda1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 0000025e5cda1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000001e4f13f1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000001e4f13f1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 00000235b7931bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 00000235b7931bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000001a1eafe1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000001a1eafe1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 00000219d6721bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 00000219d6721bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000002588c4a1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000002588c4a1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000002b909f71bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000002b909f71bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000002c151051bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000002c151051bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 00000213ff5c1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 00000213ff5c1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000001b67e611bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000001b67e611bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 0000023151f71bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 0000023151f71bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 00000262bbcd1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 00000262bbcd1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000001f789ff1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000001f789ff1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 000002cf319a1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+    Last message repeated 9 times
+mime type is not rfc8216 compliant
+[http @ 000002cf319a1bc0] Will reconnect at 192 in 0 second(s), error=End of file.
+Invalid report file level
+[http @ 0000024064861bc0] Will reconnect at 192 in 0 second(s), error=End of file.
