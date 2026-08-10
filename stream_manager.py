@@ -12,7 +12,8 @@ BIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "bin"))
 _IS_WINDOWS = platform.system() == "Windows"
 MEDIAMTX_BINARY_NAME = "mediamtx.exe" if _IS_WINDOWS else "mediamtx"
 MEDIAMTX_EXE = os.path.join(BIN_DIR, MEDIAMTX_BINARY_NAME)
-FFMPEG_EXE = os.path.join(BIN_DIR, "ffmpeg.exe")
+# On Windows use the bundled binary; on Linux/Mac rely on the system-installed ffmpeg.
+FFMPEG_EXE = os.path.join(BIN_DIR, "ffmpeg.exe") if _IS_WINDOWS else "ffmpeg"
 
 current_physical_rtsp_url = None
 
@@ -70,7 +71,7 @@ def write_mediamtx_config():
         return
     
     config_path = os.path.join(BIN_DIR, "mediamtx.yml")
-    ffmpeg_path = os.path.join(BIN_DIR, "ffmpeg.exe")
+    ffmpeg_path = FFMPEG_EXE
     stream_w, stream_h = get_stream_resolution()
     
     config_content = f"""# MediaMTX configuration for Stafflytics (auto-generated)
@@ -131,7 +132,7 @@ def _write_mediamtx_config_imou():
       * cam_ai H.264 transcode (used by AI) is preserved as-is.
     """
     config_path = os.path.join(BIN_DIR, "mediamtx.yml")
-    ffmpeg_path = os.path.join(BIN_DIR, "ffmpeg.exe")
+    ffmpeg_path = FFMPEG_EXE
 
     config_content = f"""# MediaMTX configuration for Stafflytics - IMOU HLS MODE (auto-generated)
 # Local RTSP relay for the AI pipeline. Browser plays Imou HLS directly.
@@ -250,8 +251,8 @@ def _downloader_worker():
             print(f"[STREAM MANAGER] {download_error}")
             return
 
-    # 2. Download FFmpeg if missing
-    if not os.path.exists(FFMPEG_EXE):
+    # 2. Download FFmpeg if missing (Windows only — Linux uses system ffmpeg from PATH)
+    if _IS_WINDOWS and not os.path.exists(FFMPEG_EXE):
         try:
             download_status = "Downloading FFmpeg (~60MB)..."
             print(f"[STREAM MANAGER] {download_status}")
@@ -288,13 +289,21 @@ def _downloader_worker():
     # Auto-start MediaMTX since binaries are ready
     start_mediamtx()
 
+def _ffmpeg_available():
+    """Return True when the ffmpeg command/binary is usable."""
+    if _IS_WINDOWS:
+        return os.path.exists(FFMPEG_EXE)
+    # On Linux/Mac we rely on system ffmpeg — check it is on PATH.
+    import shutil
+    return shutil.which("ffmpeg") is not None
+
 def ensure_binaries_async():
     global downloader_thread
-    if os.path.exists(MEDIAMTX_EXE) and os.path.exists(FFMPEG_EXE):
+    if os.path.exists(MEDIAMTX_EXE) and _ffmpeg_available():
         global download_status, download_complete
         download_status = "Complete"
         download_complete = True
-        print("[STREAM MANAGER] Binaries already exist in bin/ folder.")
+        print("[STREAM MANAGER] Binaries already exist / are available.")
         if current_physical_rtsp_url:
             write_mediamtx_config()
         start_mediamtx()
@@ -357,8 +366,8 @@ def start_imou_bridge():
     with _imou_bridge_lock:
         if _imou_bridge_process is not None and _imou_bridge_process.poll() is None:
             return True
-        if not os.path.exists(FFMPEG_EXE):
-            print("[STREAM MANAGER] Cannot start Imou bridge: ffmpeg binary not found.")
+        if not _ffmpeg_available():
+            print("[STREAM MANAGER] Cannot start Imou bridge: ffmpeg not found (install via apt install ffmpeg on Linux).")
             return False
         proxy_url = get_hls_proxy_url()
         cmd = [
@@ -423,7 +432,7 @@ def _imou_supervisor_loop():
         try:
             if STREAM_MODE != "imou":
                 continue
-            if not os.path.exists(MEDIAMTX_EXE) or not os.path.exists(FFMPEG_EXE):
+            if not os.path.exists(MEDIAMTX_EXE) or not _ffmpeg_available():
                 continue
             # Keep MediaMTX running with the Imou config.
             if mediamtx_process is None or mediamtx_process.poll() is not None:
