@@ -925,10 +925,10 @@
                     }
                 });
 
-                // Connect directly to the cam path — it already carries H264 and is online.
-                // /mystream requires an ffmpeg runOnDemand which may not be available.
-                const whepUrl = `http://${window.location.hostname}:8889/cam/whep`;
-                const response = await fetch(whepUrl, {
+                // Proxy the WHEP SDP exchange through Flask (/api/webrtc/whep -> localhost:8889/cam/whep).
+                // Direct port 8889 access fails from remote domains: port may not be publicly
+                // open, and http:// fetches from an https:// page are blocked as mixed content.
+                const response = await fetch('/api/webrtc/whep', {
                     method: 'POST',
                     body: pc.localDescription.sdp,
                     headers: { 'Content-Type': 'application/sdp' }

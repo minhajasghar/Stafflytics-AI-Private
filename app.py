@@ -694,6 +694,45 @@ def webrtc_status():
         "error": stream_manager.download_error
     })
 
+@app.route('/api/webrtc/whep', methods=['POST', 'OPTIONS'])
+@login_required
+def webrtc_whep_proxy():
+    """Proxy the WHEP SDP offer/answer exchange to MediaMTX running on localhost:8889.
+
+    This avoids exposing port 8889 publicly and eliminates mixed-content (http vs https)
+    browser blocks — the browser posts the SDP offer to this same-origin Flask endpoint,
+    Flask forwards it to MediaMTX on localhost, and returns the SDP answer.
+    Works regardless of whether the site is served over HTTP or HTTPS.
+    """
+    if request.method == 'OPTIONS':
+        # Pre-flight for browsers that check CORS before posting
+        resp = Response('', status=204)
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return resp
+
+    sdp_offer = request.get_data(as_text=True)
+    if not sdp_offer:
+        return jsonify({"error": "No SDP offer provided"}), 400
+
+    try:
+        r = requests.post(
+            'http://127.0.0.1:8889/cam/whep',
+            data=sdp_offer,
+            headers={'Content-Type': 'application/sdp'},
+            timeout=10
+        )
+        if not r.ok:
+            print(f"[WHEP PROXY] MediaMTX returned {r.status_code}: {r.text[:200]}")
+            return Response(r.text, status=r.status_code, mimetype='text/plain')
+        resp = Response(r.text, status=r.status_code, mimetype='application/sdp')
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        print(f"[WHEP PROXY ERROR] {e}")
+        return jsonify({"error": str(e)}), 502
+
 # ---------------------------------------------------------------------------
 # Stream status endpoints
 # ---------------------------------------------------------------------------
