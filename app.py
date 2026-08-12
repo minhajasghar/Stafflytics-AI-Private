@@ -948,22 +948,24 @@ def _parse_rtsp_url(url):
 
 def _camera_targets():
     """Candidate PTZ targets ordered by priority:
-    1) the active camera source (the remote RTSP host on the VPS), and
-    2) the default physical camera (works when Tailscale subnet routing makes
-       the local 192.168.x.x camera directly reachable).
+    1) the default physical camera (always tried first — it has real ONVIF credentials
+       and a direct IP, unlike the Tailscale relay which has no ONVIF service), and
+    2) the active camera source (the remote RTSP host on the VPS), as a fallback.
 
     If the active source URL carries no credentials (e.g. a plain relay URL
     like rtsp://10.x.x.x:8554/cam), the physical camera's credentials are
     filled in so ONVIF/CGI can still authenticate against the reachable host."""
     default = _parse_rtsp_url(_DEFAULT_PHYSICAL_RTSP_URL)
     targets = []
+    # Always try the hardcoded physical camera first — it has ONVIF and real credentials.
+    if default[0]:
+        targets.append(default)
+    # Also try the active relay host in case the physical camera is unreachable.
     t = _parse_rtsp_url(PHYSICAL_RTSP_URL)
-    if t[0]:
+    if t[0] and t[0] != default[0]:
         if not t[1]:
             t = (t[0], default[1], default[2], t[3])
         targets.append(t)
-    if PHYSICAL_RTSP_URL != _DEFAULT_PHYSICAL_RTSP_URL and default[0]:
-        targets.append(default)
     return targets
 
 def _get_onvif_connection():
