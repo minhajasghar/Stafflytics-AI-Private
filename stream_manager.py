@@ -217,13 +217,19 @@ def _write_mediamtx_config_remote_rtsp():
     config_path = os.path.join(BIN_DIR, "mediamtx.yml")
     ffmpeg_path = FFMPEG_EXE
 
+    stream_w, stream_h = get_stream_resolution()
     config_content = f"""# MediaMTX configuration for Stafflytics - REMOTE RTSP MODE (auto-generated)
 # "cam" pulls directly from the remote RTSP source; no Imou bridge needed.
 rtspAddress: :8554
 rtpAddress: :8556
 rtcpAddress: :8557
 
-webrtc: no
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigin: '*'
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcHandshakeTimeout: 30s
 
 readTimeout: 30s
 
@@ -241,6 +247,10 @@ paths:
     # H.264 transcoded stream for OpenCV / YOLO AI processing (unchanged).
     runOnInit: '"{ffmpeg_path}" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
     runOnInitRestart: yes
+
+  mystream:
+    runOnDemand: '"{ffmpeg_path}" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf \"scale={stream_w}:{stream_h}\" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
+    runOnDemandRestart: yes
 """
     try:
         with open(config_path, "w", encoding="utf-8") as f:
