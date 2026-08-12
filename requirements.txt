@@ -53,3 +53,4 @@ onvif-zeep==0.2.12
 flask-sock==0.7.0
 google-generativeai>=0.8.0
 python-dotenv>=1.0.0
+mysql-connector-python>=9.0.0

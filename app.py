@@ -89,7 +89,8 @@ camera_stream = None  # AI stream: cam_ai (H.264 640x480) — used by YOLO/visio
 display_stream = None # Display stream: cam (full HD relay) — used by video_feed
 
 # RTSP Camera Configuration
-PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
+_DEFAULT_PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
+PHYSICAL_RTSP_URL = _DEFAULT_PHYSICAL_RTSP_URL
 RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"   # AI stream: H.264 640x480, stable, no HEVC errors
 DISPLAY_RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Display stream: full HD relay
 
@@ -97,19 +98,7 @@ def sync_camera_config():
     global RTSP_URL, PHYSICAL_RTSP_URL
     import stream_manager
 
-    # --- IMOU HLS MODE (primary). ---
-    # When Imou credentials are present in .env, the video source is the Imou
-    # Open Platform HLS stream. The browser plays HLS directly; the backend
-    # relays HLS -> MediaMTX "cam"/"cam_ai" so YOLO frame consumption is
-    # unchanged. The legacy local-RTSP + WebRTC path stays in the codebase but
-    # is deactivated (feature-flagged off).
-    if imou_client.imou_enabled():
-        stream_manager.setup_imou_stream()
-        RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"  # H.264 transcoded AI stream
-        print("[SYSTEM] IMOU HLS MODE active — AI stream via cam_ai, browser plays HLS directly.")
-        return
-
-    # --- REMOTE RTSP MODE (env-var driven). ---
+    # --- REMOTE RTSP MODE (default, env-var driven). ---
     # When CAMERA_SOURCE_MODE=remote_rtsp, MediaMTX pulls directly from
     # REMOTE_RTSP_URL (e.g. a Tailscale peer). No local camera or Imou bridge
     # is used. Must be checked BEFORE the legacy local-RTSP block so that
@@ -117,6 +106,11 @@ def sync_camera_config():
     if stream_manager.CAMERA_SOURCE_MODE == "remote_rtsp":
         stream_manager.setup_remote_rtsp_stream()
         RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"  # H.264 transcoded AI stream
+        # Point the PTZ/ONVIF target at the host we actually stream from, so
+        # camera movement works from the VPS (the local 192.168.x.x default is
+        # not reachable there).
+        if stream_manager.REMOTE_RTSP_URL:
+            PHYSICAL_RTSP_URL = stream_manager.REMOTE_RTSP_URL
         print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {stream_manager.REMOTE_RTSP_URL}")
         return
 
@@ -689,29 +683,21 @@ def webrtc_status():
     })
 
 # ---------------------------------------------------------------------------
-# Imou HLS streaming endpoints (proxy + auto-recovery)
+# Stream status endpoints
 # ---------------------------------------------------------------------------
 
 def _stream_mode_json():
     import stream_manager
     return {
         "mode": stream_manager.STREAM_MODE,
-        "enabled": imou_client.imou_enabled(),
-        "bridge_online": stream_manager.is_imou_bridge_alive() if imou_client.imou_enabled() else False,
+        "enabled": False,   # Imou is disabled — this software does not use Imou.
         "camera_online": camera_online,
     }
 
 @app.route('/api/stream/status')
 @login_required
 def stream_status():
-    info = _stream_mode_json()
-    if info["enabled"]:
-        try:
-            info["source"] = imou.get_live_url()
-        except Exception as e:
-            info["source"] = None
-            info["error"] = str(e)
-    return jsonify(info)
+    return jsonify(_stream_mode_json())
 
 @app.route('/api/stream/playlist')
 def stream_playlist():
@@ -941,64 +927,60 @@ _DIRECTION_VECTORS = {
 
 _onvif_cache = {"cam": None, "ptz": None, "profile": None, "port": None}
 
-def _parse_rtsp():
-    """Parse PHYSICAL_RTSP_URL into (ip, user, password, rtsp_port)."""
-    m = re.match(r'rtsp://(.+?):(.+?)@(.+?)(?::(\d+))?(?:/|$)', PHYSICAL_RTSP_URL)
+def _parse_rtsp_url(url):
+    """Parse an RTSP URL into (ip, user, password, rtsp_port)."""
+    m = re.match(r'rtsp://(.+?):(.+?)@(.+?)(?::(\d+))?(?:/|$)', url)
     if m:
         return m.group(3), m.group(1), m.group(2), int(m.group(4) or 554)
     return None, None, None, None
+
+def _camera_targets():
+    """Candidate PTZ targets ordered by priority:
+    1) the active camera source (the remote RTSP host on the VPS), and
+    2) the default physical camera (works when Tailscale subnet routing makes
+       the local 192.168.x.x camera directly reachable)."""
+    targets = []
+    t = _parse_rtsp_url(PHYSICAL_RTSP_URL)
+    if t[0]:
+        targets.append(t)
+    if PHYSICAL_RTSP_URL != _DEFAULT_PHYSICAL_RTSP_URL:
+        d = _parse_rtsp_url(_DEFAULT_PHYSICAL_RTSP_URL)
+        if d[0] and all(d != t for t in targets):
+            targets.append(d)
+    return targets
 
 def _get_onvif_connection():
     """Get cached ONVIF connection or create a new one."""
     if _onvif_cache["ptz"] is not None:
         return _onvif_cache["ptz"], _onvif_cache["profile"]
 
-    ip, user, pwd, _ = _parse_rtsp()
-    if not ip:
-        return None, None
-
     onvif_ports = [80, 8080, 8899, 8000, 8081]
-    for port in onvif_ports:
-        try:
-            cam = ONVIFCamera(ip, port, user, pwd)
-            media = cam.create_media_service()
-            profiles = media.GetProfiles()
-            if not profiles:
+    for ip, user, pwd, _ in _camera_targets():
+        for port in onvif_ports:
+            try:
+                cam = ONVIFCamera(ip, port, user, pwd)
+                media = cam.create_media_service()
+                profiles = media.GetProfiles()
+                if not profiles:
+                    continue
+                profile = profiles[0]
+                ptz = cam.create_ptz_service()
+                _onvif_cache["cam"] = cam
+                _onvif_cache["ptz"] = ptz
+                _onvif_cache["profile"] = profile
+                _onvif_cache["port"] = port
+                print(f"[PTZ-ONVIF] Connected on {ip}:{port}, profile={profile.token}")
+                return ptz, profile
+            except Exception as e:
+                print(f"[PTZ-ONVIF] {ip}:{port} failed: {e}")
                 continue
-            profile = profiles[0]
-            ptz = cam.create_ptz_service()
-            _onvif_cache["cam"] = cam
-            _onvif_cache["ptz"] = ptz
-            _onvif_cache["profile"] = profile
-            _onvif_cache["port"] = port
-            print(f"[PTZ-ONVIF] Connected on port {port}, profile={profile.token}")
-            return ptz, profile
-        except Exception as e:
-            print(f"[PTZ-ONVIF] Port {port} failed: {e}")
-            continue
     return None, None
 
 def _ptz_send(direction, action):
-    """Send PTZ command via Imou API (Imou mode) or ONVIF/CGI fallback (RTSP mode)."""
-    import stream_manager
-    # --- Imou HLS mode: use Imou Open Platform controlMovePTZ API ---
-    if stream_manager.STREAM_MODE == "imou" and imou_client.imou_enabled():
-        try:
-            if action == "stop":
-                imou.control_ptz("STOP")
-                print("[PTZ-IMOU] Stopped")
-            else:
-                op = imou_client._IMOU_DIRECTION_MAP.get(direction)
-                if not op:
-                    return False, f"Unknown direction: {direction}"
-                imou.control_ptz(op, duration=500)
-                print(f"[PTZ-IMOU] Moved {direction} ({op})")
-            return True, ""
-        except Exception as e:
-            print(f"[PTZ-IMOU] Error: {e}")
-            return False, str(e)
-
-    # --- Legacy RTSP mode: ONVIF with CGI fallback ---
+    """Send a PTZ command via ONVIF with a CGI fallback, targeting the active
+    camera source (the remote RTSP host on the VPS, not a hardcoded local IP).
+    The Imou Open Platform API is NOT used."""
+    # --- ONVIF with CGI fallback ---
     ptz, profile = _get_onvif_connection()
     if ptz and profile:
         try:
@@ -1028,28 +1010,25 @@ def _ptz_send(direction, action):
             _onvif_cache["ptz"] = None
             _onvif_cache["profile"] = None
 
-    ip, user, pwd, _ = _parse_rtsp()
-    if not ip:
-        return False, "Could not parse camera URL"
-
     last_err = ""
-    for http_port in ['80', '8080']:
-        base = f"http://{ip}:{http_port}"
-        for channel in ['1', '0']:
-            url = f"{base}/cgi-bin/ptz.cgi?action={action}&channel={channel}&code={direction}&arg1=0&arg2=5"
-            for auth in [None, (user, pwd), HTTPDigestAuth(user, pwd)]:
-                try:
-                    r = requests.get(url, timeout=3, auth=auth)
-                    print(f"[PTZ-CGI] {url[:90]} -> status={r.status_code}")
-                    if r.ok or 'OK' in r.text:
-                        return True, ""
-                    if r.status_code == 401:
+    for ip, user, pwd, _ in _camera_targets():
+        for http_port in ['80', '8080']:
+            base = f"http://{ip}:{http_port}"
+            for channel in ['1', '0']:
+                url = f"{base}/cgi-bin/ptz.cgi?action={action}&channel={channel}&code={direction}&arg1=0&arg2=5"
+                for auth in [None, (user, pwd), HTTPDigestAuth(user, pwd)]:
+                    try:
+                        r = requests.get(url, timeout=3, auth=auth)
+                        print(f"[PTZ-CGI] {url[:90]} -> status={r.status_code}")
+                        if r.ok or 'OK' in r.text:
+                            return True, ""
+                        if r.status_code == 401:
+                            continue
+                        last_err = f"HTTP {r.status_code}: {r.text[:80]}"
+                        break
+                    except Exception as e:
+                        last_err = str(e)[:100]
                         continue
-                    last_err = f"HTTP {r.status_code}: {r.text[:80]}"
-                    break
-                except Exception as e:
-                    last_err = str(e)[:100]
-                    continue
 
     return False, f"ONVIF unavailable, CGI failed: {last_err}"
 

@@ -3,13 +3,17 @@ import threading
 import os
 import json
 import re
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal as _Decimal
 
 # Use RLock to prevent deadlocks when functions call each other
 db_lock = threading.RLock()
 
-DB_PATH = "data/stafflytics.db"
+# Absolute path (anchored to this file) so SQLite always points at the same
+# file regardless of the working directory the app is started from.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "data", "stafflytics.db")
 
 # Load database configuration from config.json
 DB_CONFIG = {
@@ -229,19 +233,26 @@ class MySQLConnectionWrapper:
     def close(self):
         self.conn.close()
 
+_CONFIGURED_DB_TYPE = DB_CONFIG.get("DB_TYPE", "sqlite")
 _mysql_check_done = False
 _mysql_ok = True
+_last_mysql_fail_time = 0.0
+_MYSQL_RETRY_SECONDS = 30
 
 def _verify_mysql():
-    """Probe MySQL once. If it can't be reached, fall back to SQLite so the
-    whole app keeps working instead of failing every query. The check runs only
-    once per process; init_db() and get_db_connection() both call it."""
-    global _mysql_check_done, _mysql_ok
-    if _mysql_check_done:
-        return _mysql_ok
-    _mysql_check_done = True
-    if DB_CONFIG["DB_TYPE"] != "mysql":
+    """Probe MySQL. If it can't be reached, temporarily fall back to SQLite so
+    the whole app keeps working instead of failing every query — but log the
+    failure loudly and re-probe automatically so the app reconnects to MySQL
+    once it is available again (avoids silently saving data to a SQLite file
+    forever). The check runs only once per process unless MySQL was down."""
+    global _mysql_check_done, _mysql_ok, _last_mysql_fail_time
+    if _CONFIGURED_DB_TYPE != "mysql":
         return True
+    if DB_CONFIG["DB_TYPE"] == "mysql" and _mysql_check_done and _mysql_ok:
+        return True
+    now = time.time()
+    if now - _last_mysql_fail_time < _MYSQL_RETRY_SECONDS:
+        return _mysql_ok
     try:
         import mysql.connector
         conn = mysql.connector.connect(
@@ -253,10 +264,19 @@ def _verify_mysql():
         )
         conn.close()
         _mysql_ok = True
+        _mysql_check_done = True
+        if DB_CONFIG["DB_TYPE"] != "mysql":
+            DB_CONFIG["DB_TYPE"] = "mysql"
+            print("[DB] MySQL reachable again — switched back to MySQL.")
     except Exception as e:
         _mysql_ok = False
-        print(f"[DB] MySQL unreachable ({e}) — falling back to SQLite ({DB_PATH}).")
-        DB_CONFIG["DB_TYPE"] = "sqlite"
+        _last_mysql_fail_time = now
+        if DB_CONFIG["DB_TYPE"] == "mysql":
+            DB_CONFIG["DB_TYPE"] = "sqlite"
+            print(f"[DB ERROR] MySQL unreachable ({e}). TEMPORARILY using SQLite "
+                  f"({DB_PATH}). Data saved now will NOT appear in MySQL until "
+                  f"MySQL is back and the app reconnects. Install the MySQL driver "
+                  f"with: pip install mysql-connector-python")
     return _mysql_ok
 
 def get_db_connection():
@@ -303,37 +323,66 @@ def init_db():
             print(f"[DB ERROR] MySQL pre-init database creation failed: {e}")
             return
     else:
-        if not os.path.exists("data"):
-            os.makedirs("data")
+        data_dir = os.path.dirname(DB_PATH)
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir, exist_ok=True)
         
+    def _try(cursor, sql, label):
+        """Run a single DDL/DML statement and swallow benign failures
+        (e.g. ALTER on a column that already exists, or a corrupt table).
+        IMPORTANT: we never use PRAGMA table_info / DESCRIBE here — on MariaDB
+        that crashes the server when a table's metadata is damaged."""
+        try:
+            cursor.execute(sql)
+            return True
+        except Exception as e:
+            err = str(e)
+            if "duplicate column" in err.lower() or "duplicate column name" in err.lower() or "already exists" in err.lower():
+                pass
+            else:
+                print(f"[DB] init note ({label}): {e}")
+            return False
+
     with db_lock:
         conn = _init_conn if _init_conn is not None else get_db_connection()
         cursor = conn.cursor()
-        
+
         # DDL runs for BOTH SQLite and MySQL (MySQLCursorWrapper translates the
-        # SQLite syntax). The PRAGMA table_info calls become DESCRIBE for MySQL.
+        # SQLite syntax). Column additions use idempotent try/except ALTERs —
+        # never PRAGMA table_info (DESCRIBE crashes MariaDB on damaged tables).
         cursor.execute('''CREATE TABLE IF NOT EXISTS staff (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, shift_start TEXT DEFAULT '10:00', shift TEXT DEFAULT 'Morning', hourly_rate REAL DEFAULT 500.0, salary_type TEXT DEFAULT 'Monthly', face_encoding BLOB NOT NULL)''')
-        cursor.execute("PRAGMA table_info(staff)")
-        cols = [c[1] for c in cursor.fetchall()]
-        if 'salary_type' not in cols: cursor.execute("ALTER TABLE staff ADD COLUMN salary_type TEXT DEFAULT 'Monthly'")
-        if 'photo' not in cols: cursor.execute("ALTER TABLE staff ADD COLUMN photo TEXT")
+        _try(cursor, "ALTER TABLE staff ADD COLUMN salary_type TEXT DEFAULT 'Monthly'", "staff.salary_type")
+        _try(cursor, "ALTER TABLE staff ADD COLUMN photo TEXT", "staff.photo")
         cursor.execute('''CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, staff_id TEXT, entry_time DATETIME DEFAULT CURRENT_TIMESTAMP, exit_time DATETIME, status TEXT DEFAULT 'Present', is_late BOOLEAN DEFAULT 0, active_seconds REAL DEFAULT 0, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, staff_id TEXT, zone TEXT, action TEXT, details TEXT, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS admins (username TEXT PRIMARY KEY, password TEXT NOT NULL, email TEXT)''')
-        cursor.execute("SELECT COUNT(*) FROM admins")
-        if cursor.fetchone()[0] == 0: cursor.execute("INSERT INTO admins (username, password, email) VALUES (?, ?, ?)", ("minhajasghar", "minhajsahito66", "admin@stafflytics.ai"))
+        admin_seeded = False
+        try:
+            cursor.execute("SELECT COUNT(*) FROM admins")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("INSERT INTO admins (username, password, email) VALUES (?, ?, ?)", ("minhajasghar", "minhajsahito66", "admin@stafflytics.ai"))
+                admin_seeded = True
+        except Exception as e:
+            print(f"[DB] admins table unreadable ({e}) — attempting repair...")
+            _try(cursor, "DROP TABLE IF EXISTS admins", "admins.drop")
+            cursor.execute('''CREATE TABLE IF NOT EXISTS admins (username TEXT PRIMARY KEY, password TEXT NOT NULL, email TEXT)''')
+            try:
+                cursor.execute("INSERT INTO admins (username, password, email) VALUES (?, ?, ?)", ("minhajasghar", "minhajsahito66", "admin@stafflytics.ai"))
+                admin_seeded = True
+            except Exception as e2:
+                print(f"[DB] admins reseed failed: {e2}")
+        if admin_seeded:
+            print("[DB] Seeded default admin account (minhajasghar).")
         cursor.execute('''CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_time DATETIME DEFAULT CURRENT_TIMESTAMP, exit_time DATETIME, table_id TEXT, duration_minutes REAL, customer_id INTEGER)''')
-        cursor.execute("PRAGMA table_info(customers)")
-        if 'customer_id' not in [c[1] for c in cursor.fetchall()]: cursor.execute("ALTER TABLE customers ADD COLUMN customer_id INTEGER")
+        _try(cursor, "ALTER TABLE customers ADD COLUMN customer_id INTEGER", "customers.customer_id")
         cursor.execute('''CREATE TABLE IF NOT EXISTS customer_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT DEFAULT 'New Guest', face_encoding BLOB NOT NULL, first_seen DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP, visit_count INTEGER DEFAULT 1)''')
-        try: cursor.execute("ALTER TABLE customer_profiles ADD COLUMN photo TEXT")
-        except: pass
+        _try(cursor, "ALTER TABLE customer_profiles ADD COLUMN photo TEXT", "customer_profiles.photo")
         cursor.execute('''CREATE TABLE IF NOT EXISTS special_events (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE UNIQUE, event_type TEXT DEFAULT 'General Peak', intensity TEXT DEFAULT 'High')''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS zones_config (name TEXT PRIMARY KEY, points_json TEXT NOT NULL, unauthorized_roles TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS sales (id INTEGER PRIMARY KEY AUTOINCREMENT, staff_id TEXT, amount REAL NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS visitor_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, customer_id INTEGER, is_new_face BOOLEAN DEFAULT 1, staff_id TEXT, zone TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
-            
+
         defaults = [('owner_email', 'admin@stafflytics.ai'), ('sender_email', ''), ('sender_password', ''), ('rtsp_url', ''), ('late_grace_minutes', '10'), ('wellness_threshold', '4')]
         for key, val in defaults:
             cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
@@ -1193,12 +1242,16 @@ def get_zones_config():
 
 def validate_admin(u, p):
     with db_lock:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT password FROM admins WHERE username=?", (u,))
-        r = cursor.fetchone()
-        conn.close()
-        return r and r[0] == p
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT password FROM admins WHERE username=?", (u,))
+            r = cursor.fetchone()
+            conn.close()
+            return r and r[0] == p
+        except Exception as e:
+            print(f"[DB ERROR] validate_admin: {e}")
+            return False
 
 def update_admin_password(u, new_p):
     with db_lock:

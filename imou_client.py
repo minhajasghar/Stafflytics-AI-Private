@@ -97,8 +97,10 @@ def os_environ(key):
 
 
 def imou_enabled():
-    cfg = load_imou_config()
-    return bool(cfg["app_id"] and cfg["app_secret"] and cfg["device_id"])
+    # Imou Open Platform API is intentionally DISABLED. This software does not
+    # use Imou, so it returns False even if IMOU_* variables are present in the
+    # environment. This guarantees the Imou API is never called.
+    return False
 
 
 def make_sign(app_secret, ts, nonce):

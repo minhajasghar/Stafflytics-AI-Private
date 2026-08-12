@@ -20,14 +20,18 @@ current_physical_rtsp_url = None
 # ---------------------------------------------------------------------------
 # Camera source mode — controlled by the CAMERA_SOURCE_MODE environment var.
 #
-#   "imou"         (default) — Imou Open Platform HLS -> local RTSP relay.
-#                              Browser plays Imou HLS directly.  The ffmpeg
-#                              bridge + supervisor are used.
-#   "remote_rtsp"  — MediaMTX pulls directly from REMOTE_RTSP_URL (e.g. a
-#                    Tailscale peer running MediaMTX).  No ffmpeg bridge.
+#   "remote_rtsp"  (default) — MediaMTX pulls directly from REMOTE_RTSP_URL
+#                              (e.g. a Tailscale peer running MediaMTX).
 #   "rtsp"         — legacy local-RTSP + MediaMTX/WebRTC flow.
+#
+#   "imou"         — DISABLED. This software does not use the Imou Open
+#                    Platform API, so any "imou" value is treated as
+#                    "remote_rtsp".
 # ---------------------------------------------------------------------------
-CAMERA_SOURCE_MODE = os.environ.get("CAMERA_SOURCE_MODE", "imou").strip().lower()
+CAMERA_SOURCE_MODE = os.environ.get("CAMERA_SOURCE_MODE", "remote_rtsp").strip().lower()
+if CAMERA_SOURCE_MODE == "imou":
+    print("[STREAM MANAGER] 'imou' mode is disabled — forcing remote_rtsp.")
+    CAMERA_SOURCE_MODE = "remote_rtsp"
 REMOTE_RTSP_URL    = os.environ.get("REMOTE_RTSP_URL", "").strip()
 
 # Internal runtime mode (may be overridden by setup_* helpers at runtime).
@@ -249,12 +253,22 @@ def setup_remote_rtsp_stream(remote_url=None):
     """Switch the whole streaming pipeline to Remote RTSP mode.
 
     Optionally accepts a runtime override for the URL; otherwise uses the
-    REMOTE_RTSP_URL environment variable set at startup.
+    REMOTE_RTSP_URL environment variable set at startup, falling back to the
+    RTSP URL saved in the database (Settings -> RTSP Camera URL).
     The Imou HLS bridge is stopped and not restarted.
     """
     global STREAM_MODE, REMOTE_RTSP_URL
     if remote_url:
         REMOTE_RTSP_URL = remote_url
+    if not REMOTE_RTSP_URL:
+        try:
+            import database
+            saved = database.get_system_settings().get('rtsp_url', '').strip()
+            if saved:
+                REMOTE_RTSP_URL = saved
+                print(f"[STREAM MANAGER] REMOTE_RTSP_URL not set — using saved camera URL: {saved}")
+        except Exception as e:
+            print(f"[STREAM MANAGER ERROR] Could not read saved RTSP URL: {e}")
     print(f"[STREAM MANAGER] Switching to REMOTE RTSP mode (source: {REMOTE_RTSP_URL}).")
     STREAM_MODE = "remote_rtsp"
     stop_imou_bridge()   # no-op if not running
@@ -264,15 +278,12 @@ def setup_remote_rtsp_stream(remote_url=None):
     return True
 
 def setup_imou_stream():
-    """Switch the whole streaming pipeline to Imou HLS mode."""
+    """Imou HLS mode is DISABLED — this software does not use the Imou API.
+    Calling this function is a no-op that never activates Imou mode."""
     global STREAM_MODE
-    print("[STREAM MANAGER] Switching to IMOU HLS stream mode (WebRTC/RTSP source deactivated).")
-    STREAM_MODE = "imou"
-    write_mediamtx_config()
-    stop_mediamtx()
-    start_mediamtx()
-    _ensure_imou_supervisor()
-    return True
+    print("[STREAM MANAGER] IMOU HLS MODE is DISABLED — ignoring setup_imou_stream().")
+    STREAM_MODE = "remote_rtsp"
+    return False
 
 def setup_mediamtx(physical_rtsp_url):
     global current_physical_rtsp_url
