@@ -123,7 +123,7 @@ rtcpAddress: :8557
 
 webrtc: yes
 webrtcAddress: :8889
-webrtcAllowOrigins: ['*']
+webrtcAllowOrigin: "*"
 webrtcICEServers2:
   - url: stun:stun.l.google.com:19302
 webrtcLocalUDPAddress: :8189
@@ -228,7 +228,7 @@ rtcpAddress: :8557
 
 webrtc: yes
 webrtcAddress: :8889
-webrtcAllowOrigins: ['*']
+webrtcAllowOrigin: "*"
 webrtcICEServers2:
   - url: stun:stun.l.google.com:19302
 webrtcLocalUDPAddress: :8189
