@@ -84,6 +84,7 @@
                         <div style="display:flex; gap:10px;">
                             <button class="btn-zone" style="background:var(--primary); color:white;" onclick="refreshCamera()"><i class="fas fa-sync"></i> Refresh Camera</button>
                             <button class="btn-zone" onclick="toggleZoneEditor()">Edit Zones</button>
+                            <button class="btn-zone" onclick="diagnosePtz()" style="background:#f59e0b; color:#1e293b;"><i class="fas fa-stethoscope"></i> Diagnose PTZ</button>
                             <button class="btn-zone" onclick="toggleFullscreen()" style="background:rgba(255,255,255,0.25); color:white;"><i class="fas fa-expand" id="fullscreen-icon"></i></button>
                         </div>
                     </div>
@@ -109,6 +110,7 @@
                             <button class="ptz-btn ptz-right" data-dir="Right" onmousedown="ptzStart('Right')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Right')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-right"></i></button>
                             <button class="ptz-btn ptz-down" data-dir="Down" onmousedown="ptzStart('Down')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Down')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-down"></i></button>
                         </div>
+                        <div id="ptz-status" style="position:absolute; left:15px; bottom:15px; z-index:10; display:none; background:rgba(239,68,68,0.9); color:white; padding:6px 12px; border-radius:30px; font-size:0.72rem; font-weight:700; box-shadow:0 4px 12px rgba(0,0,0,0.2);"></div>
                     </div>
                 </section>
                 <section class="stats-bar">

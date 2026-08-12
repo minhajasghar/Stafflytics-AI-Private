@@ -938,15 +938,20 @@ def _camera_targets():
     """Candidate PTZ targets ordered by priority:
     1) the active camera source (the remote RTSP host on the VPS), and
     2) the default physical camera (works when Tailscale subnet routing makes
-       the local 192.168.x.x camera directly reachable)."""
+       the local 192.168.x.x camera directly reachable).
+
+    If the active source URL carries no credentials (e.g. a plain relay URL
+    like rtsp://10.x.x.x:8554/cam), the physical camera's credentials are
+    filled in so ONVIF/CGI can still authenticate against the reachable host."""
+    default = _parse_rtsp_url(_DEFAULT_PHYSICAL_RTSP_URL)
     targets = []
     t = _parse_rtsp_url(PHYSICAL_RTSP_URL)
     if t[0]:
+        if not t[1]:
+            t = (t[0], default[1], default[2], t[3])
         targets.append(t)
-    if PHYSICAL_RTSP_URL != _DEFAULT_PHYSICAL_RTSP_URL:
-        d = _parse_rtsp_url(_DEFAULT_PHYSICAL_RTSP_URL)
-        if d[0] and all(d != t for t in targets):
-            targets.append(d)
+    if PHYSICAL_RTSP_URL != _DEFAULT_PHYSICAL_RTSP_URL and default[0]:
+        targets.append(default)
     return targets
 
 def _get_onvif_connection():
@@ -1048,7 +1053,43 @@ def camera_ptz():
     ok, msg = _ptz_send(direction, action)
     if ok:
         return jsonify({"status": "success"})
+    print(f"[PTZ] FAILED {direction}/{action} against hosts "
+          f"{[t[0] for t in _camera_targets()]}: {msg}")
     return jsonify({"status": "error", "message": msg}), 502
+
+def _tcp_reachable(ip, port, timeout=2):
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+@app.route('/api/camera/ptz/diagnose')
+@login_required
+def camera_ptz_diagnose():
+    """Browser-visible PTZ diagnosis: which camera hosts are TCP-reachable from
+    this server, and whether Dahua CGI authentication succeeds on them. Lets the
+    user see exactly why camera movement fails without SSH access."""
+    report = {"generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "targets": []}
+    for ip, user, pwd, _ in _camera_targets():
+        entry = {
+            "host": ip,
+            "user": user or "(none)",
+            "tcp80": _tcp_reachable(ip, 80),
+            "tcp8080": _tcp_reachable(ip, 8080),
+            "cgi_auth": {},
+        }
+        probe_port = "80" if entry["tcp80"] else "8080" if entry["tcp8080"] else None
+        if probe_port:
+            url = f"http://{ip}:{probe_port}/cgi-bin/magicBox.cgi?action=getSystemInfo"
+            for name, a in (("no-auth", None), ("basic", (user, pwd)), ("digest", HTTPDigestAuth(user, pwd))):
+                try:
+                    r = requests.get(url, timeout=3, auth=a)
+                    entry["cgi_auth"][name] = str(r.status_code)
+                except Exception as e:
+                    entry["cgi_auth"][name] = f"err: {str(e)[:50]}"
+        report["targets"].append(entry)
+    return jsonify(report)
 
 @app.route('/api/export/attendance/<format>')
 @login_required

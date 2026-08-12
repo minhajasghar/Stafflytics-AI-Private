@@ -382,6 +382,17 @@ async function saveCameraSettings() {
 
 // --- PTZ CONTROLS ---
 let ptzDir = 'Up';
+let ptzStatusTimer = null;
+
+function ptzStatus(msg) {
+    const st = document.getElementById('ptz-status');
+    if (!st) return;
+    st.textContent = '⚠ PTZ: ' + (msg || 'failed');
+    st.style.display = 'block';
+    st.style.background = 'rgba(239,68,68,0.9)';
+    clearTimeout(ptzStatusTimer);
+    ptzStatusTimer = setTimeout(() => { st.style.display = 'none'; }, 5000);
+}
 
 function ptzStartTouch(e, direction) {
     if (e && e.preventDefault) e.preventDefault();
@@ -395,8 +406,8 @@ function ptzStart(direction) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ direction, action: 'start' })
     }).then(r => r.json()).then(d => {
-        if (d.status !== 'success') console.warn('[PTZ]', d.message);
-    }).catch(e => console.warn('[PTZ]', e));
+        if (d.status !== 'success') ptzStatus(d.message);
+    }).catch(e => { ptzStatus(String(e)); console.warn('[PTZ]', e); });
 }
 
 function ptzStop() {
@@ -405,8 +416,33 @@ function ptzStop() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ direction: ptzDir, action: 'stop' })
     }).then(r => r.json()).then(d => {
-        if (d.status !== 'success') console.warn('[PTZ]', d.message);
+        if (d.status !== 'success') ptzStatus(d.message);
     }).catch(e => console.warn('[PTZ]', e));
+}
+
+async function diagnosePtz() {
+    const st = document.getElementById('ptz-status');
+    const show = (txt, color) => { if (st) { st.textContent = txt; st.style.display = 'block'; st.style.background = color; } };
+    show('Diagnosing PTZ...', 'rgba(245,158,11,0.9)');
+    try {
+        const r = await fetch('/api/camera/ptz/diagnose');
+        const d = await r.json();
+        const lines = d.targets.map(t => {
+            const reach = (t.tcp80 || t.tcp8080) ? 'REACHABLE' : 'UNREACHABLE';
+            const auth = Object.entries(t.cgi_auth || {}).map(([k, v]) => `${k}: ${v}`).join('  ');
+            return `${t.host} (user: ${t.user}) → ${reach}\n   CGI → ${auth}`;
+        });
+        alert('PTZ Diagnosis (generated ' + d.generated + ')\n\n' +
+            lines.join('\n\n') +
+            '\n\nREACHABLE = server can open a TCP connection to the camera.\n' +
+            'CGI 200 = camera responds to PTZ commands. If the physical camera ' +
+            '(192.168.x.x) shows UNREACHABLE, approve the subnet route in the ' +
+            'Tailscale admin console and run "tailscale up --accept-routes" on this server.');
+        st.style.display = 'none';
+    } catch (e) {
+        show('PTZ diagnosis failed', 'rgba(239,68,68,0.9)');
+        console.warn('[PTZ-diagnose]', e);
+    }
 }
 
 async function testPtz() {
