@@ -123,8 +123,9 @@ rtcpAddress: :8557
 
 webrtc: yes
 webrtcAddress: :8889
-webrtcAllowOrigin: '*'
-webrtcSTUNServers: [stun:stun.l.google.com:19302]
+webrtcAllowOrigins: ['*']
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s
@@ -227,8 +228,9 @@ rtcpAddress: :8557
 
 webrtc: yes
 webrtcAddress: :8889
-webrtcAllowOrigin: '*'
-webrtcSTUNServers: [stun:stun.l.google.com:19302]
+webrtcAllowOrigins: ['*']
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s
@@ -306,15 +308,15 @@ def setup_mediamtx(physical_rtsp_url):
 
 
 # MediaMTX download URL — platform-aware so Linux VPS gets the correct binary.
-_MEDIAMTX_VERSION = "1.9.0"
-_MEDIAMTX_TAG    = "v1.9.0"
+_MEDIAMTX_VERSION = "1.19.2"
+_MEDIAMTX_TAG    = "v1.19.2"
 if _IS_WINDOWS:
-    MEDIAMTX_URL = f"https://github.com/bluenviron/mediamtx/releases/download/{_MEDIAMTX_TAG}/mediamtx_{_MEDIAMTX_VERSION}_windows_amd64.zip"
+    MEDIAMTX_URL = f"https://github.com/bluenviron/mediamtx/releases/download/{_MEDIAMTX_TAG}/mediamtx_{_MEDIAMTX_TAG}_windows_amd64.zip"
     _MEDIAMTX_ARCHIVE_EXT = ".zip"
 else:
     import struct as _struct
     _arch = "arm64" if _struct.calcsize("P") == 8 and platform.machine().lower() in ("aarch64", "arm64") else "amd64"
-    MEDIAMTX_URL = f"https://github.com/bluenviron/mediamtx/releases/download/{_MEDIAMTX_TAG}/mediamtx_{_MEDIAMTX_VERSION}_linux_{_arch}.tar.gz"
+    MEDIAMTX_URL = f"https://github.com/bluenviron/mediamtx/releases/download/{_MEDIAMTX_TAG}/mediamtx_{_MEDIAMTX_TAG}_linux_{_arch}.tar.gz"
     _MEDIAMTX_ARCHIVE_EXT = ".tar.gz"
 # GyanD essentials zip containing ffmpeg.exe (Windows only)
 FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/7.0.1/ffmpeg-7.0.1-essentials_build.zip"
