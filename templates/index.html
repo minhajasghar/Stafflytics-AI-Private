@@ -911,8 +911,12 @@
                     if (pc.iceGatheringState === 'complete') {
                         resolve();
                     } else {
+                        // Timeout after 5s — on local networks with no STUN servers
+                        // icegatheringstatechange may never fire 'complete', hanging forever.
+                        const timer = setTimeout(resolve, 5000);
                         function checkState() {
                             if (pc.iceGatheringState === 'complete') {
+                                clearTimeout(timer);
                                 pc.removeEventListener('icegatheringstatechange', checkState);
                                 resolve();
                             }

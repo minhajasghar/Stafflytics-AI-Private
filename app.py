@@ -572,14 +572,28 @@ def generate_frames():
                 time.sleep(1); continue
 
 
-            # Fetch the pre-processed frame from background analytics thread
-            with processed_frame_lock:
-                display_frame = latest_processed_frame.copy() if latest_processed_frame is not None else None
-                buf_frame_id = -1
+            # Prefer the full-res display_stream frame for a sharp MJPEG feed.
+            # latest_processed_frame comes from cam_ai (640x480) and is blurry
+            # when upscaled — only use it if display_stream is unavailable.
+            display_frame = None
+            buf_frame_id = -1
 
-            # Fallback if no frame has been processed by analytics loop yet
+            if display_stream is not None and display_stream.online:
+                res, fid = display_stream.read_buffered()
+                if res is not None:
+                    if fid == last_sent_frame_id:
+                        time.sleep(0.01)
+                        continue
+                    display_frame = res
+                    buf_frame_id = fid
+
             if display_frame is None:
-                # Prefer an online stream for the fallback frame
+                # Fall back to processed frame (may be low-res) if display stream not ready
+                with processed_frame_lock:
+                    display_frame = latest_processed_frame.copy() if latest_processed_frame is not None else None
+
+            # Last resort: read from any online stream
+            if display_frame is None:
                 src = next((s for s in streams if s.online), None)
                 if src:
                     res, fid = src.read_buffered()
@@ -587,9 +601,7 @@ def generate_frames():
                         if fid == last_sent_frame_id:
                             time.sleep(0.01)
                             continue
-                        tw = camera_width or 640
-                        th = camera_height or 480
-                        display_frame = cv2.resize(res, (tw, th))
+                        display_frame = res
                         buf_frame_id = fid
                     else:
                         time.sleep(0.05)
