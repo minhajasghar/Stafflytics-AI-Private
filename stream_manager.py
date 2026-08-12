@@ -303,8 +303,18 @@ def setup_mediamtx(physical_rtsp_url):
     start_mediamtx()
 
 
-MEDIAMTX_URL = "https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_windows_amd64.zip"
-# GyanD essentials zip containing ffmpeg.exe
+# MediaMTX download URL — platform-aware so Linux VPS gets the correct binary.
+_MEDIAMTX_VERSION = "1.9.0"
+_MEDIAMTX_TAG    = "v1.9.0"
+if _IS_WINDOWS:
+    MEDIAMTX_URL = f"https://github.com/bluenviron/mediamtx/releases/download/{_MEDIAMTX_TAG}/mediamtx_{_MEDIAMTX_VERSION}_windows_amd64.zip"
+    _MEDIAMTX_ARCHIVE_EXT = ".zip"
+else:
+    import struct as _struct
+    _arch = "arm64" if _struct.calcsize("P") == 8 and platform.machine().lower() in ("aarch64", "arm64") else "amd64"
+    MEDIAMTX_URL = f"https://github.com/bluenviron/mediamtx/releases/download/{_MEDIAMTX_TAG}/mediamtx_{_MEDIAMTX_VERSION}_linux_{_arch}.tar.gz"
+    _MEDIAMTX_ARCHIVE_EXT = ".tar.gz"
+# GyanD essentials zip containing ffmpeg.exe (Windows only)
 FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/7.0.1/ffmpeg-7.0.1-essentials_build.zip"
 
 mediamtx_process = None
@@ -326,6 +336,26 @@ def extract_file_from_zip(zip_path, file_suffix, dest_path):
                 return True
     return False
 
+def _extract_mediamtx(archive_path, dest_path):
+    """Extract the mediamtx binary from either a .zip or .tar.gz archive."""
+    if archive_path.endswith('.tar.gz') or archive_path.endswith('.tgz'):
+        import tarfile
+        print(f"[STREAM MANAGER] Extracting tar.gz {archive_path}...")
+        with tarfile.open(archive_path, 'r:gz') as tar:
+            for member in tar.getmembers():
+                if member.name.endswith(MEDIAMTX_BINARY_NAME) or member.name == MEDIAMTX_BINARY_NAME:
+                    member.name = os.path.basename(member.name)
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    with tar.extractfile(member) as src, open(dest_path, 'wb') as dst:
+                        dst.write(src.read())
+                    # Make executable on Linux
+                    if not _IS_WINDOWS:
+                        os.chmod(dest_path, 0o755)
+                    return True
+        return False
+    else:
+        return extract_file_from_zip(archive_path, MEDIAMTX_BINARY_NAME, dest_path)
+
 def _downloader_worker():
     global download_status, download_complete, download_error
     os.makedirs(BIN_DIR, exist_ok=True)
@@ -334,34 +364,34 @@ def _downloader_worker():
     if not os.path.exists(MEDIAMTX_EXE):
         try:
             download_status = "Downloading MediaMTX..."
-            print(f"[STREAM MANAGER] {download_status}")
-            zip_path = os.path.join(BIN_DIR, "mediamtx.zip")
+            print(f"[STREAM MANAGER] {download_status} ({MEDIAMTX_URL})")
+            archive_path = os.path.join(BIN_DIR, "mediamtx" + _MEDIAMTX_ARCHIVE_EXT)
             
             # Download with progress log
             r = requests.get(MEDIAMTX_URL, stream=True)
             r.raise_for_status()
-            with open(zip_path, 'wb') as f:
+            with open(archive_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
             
             download_status = "Extracting MediaMTX..."
             print(f"[STREAM MANAGER] {download_status}")
-            success = extract_file_from_zip(zip_path, MEDIAMTX_BINARY_NAME, MEDIAMTX_EXE)
+            success = _extract_mediamtx(archive_path, MEDIAMTX_EXE)
             
-            # Also extract the yml config if present
-            extract_file_from_zip(zip_path, "mediamtx.yml", os.path.join(BIN_DIR, "mediamtx.yml"))
+            # Also extract the yml config if present (zip only)
+            if archive_path.endswith('.zip'):
+                extract_file_from_zip(archive_path, "mediamtx.yml", os.path.join(BIN_DIR, "mediamtx.yml"))
             
-            # Apply dynamic config if available
-            if current_physical_rtsp_url:
-                write_mediamtx_config()
+            # Apply dynamic config
+            write_mediamtx_config()
             
-            # Cleanup zip
-            try: os.remove(zip_path)
+            # Cleanup archive
+            try: os.remove(archive_path)
             except: pass
             
             if not success:
-                raise Exception(f"{MEDIAMTX_BINARY_NAME} not found in downloaded zip file")
+                raise Exception(f"{MEDIAMTX_BINARY_NAME} not found in downloaded archive")
             print("[STREAM MANAGER] MediaMTX extracted successfully.")
         except Exception as e:
             download_error = f"MediaMTX download failed: {str(e)}"
