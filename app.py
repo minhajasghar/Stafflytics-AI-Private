@@ -697,15 +697,17 @@ def webrtc_status():
 @app.route('/api/webrtc/whep', methods=['POST', 'OPTIONS'])
 @login_required
 def webrtc_whep_proxy():
-    """Proxy the WHEP SDP offer/answer exchange to MediaMTX running on localhost:8889.
+    """Proxy the WHEP SDP offer/answer exchange to MediaMTX.
 
-    This avoids exposing port 8889 publicly and eliminates mixed-content (http vs https)
-    browser blocks — the browser posts the SDP offer to this same-origin Flask endpoint,
-    Flask forwards it to MediaMTX on localhost, and returns the SDP answer.
-    Works regardless of whether the site is served over HTTP or HTTPS.
+    Tries in order:
+    1) 127.0.0.1:8889 — VPS-local MediaMTX (stream_manager manages this)
+    2) <remote_tailscale_host>:8889 — the Tailscale peer running MediaMTX
+       (parsed from REMOTE_RTSP_URL / the saved DB camera URL)
+
+    This avoids exposing port 8889 publicly and fixes mixed-content blocks
+    when the site is served over HTTPS.
     """
     if request.method == 'OPTIONS':
-        # Pre-flight for browsers that check CORS before posting
         resp = Response('', status=204)
         resp.headers['Access-Control-Allow-Origin'] = '*'
         resp.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
@@ -716,22 +718,47 @@ def webrtc_whep_proxy():
     if not sdp_offer:
         return jsonify({"error": "No SDP offer provided"}), 400
 
+    # Build list of MediaMTX hosts to try: local first, then the Tailscale peer
+    mediamtx_hosts = ['127.0.0.1']
     try:
-        r = requests.post(
-            'http://127.0.0.1:8889/cam/whep',
-            data=sdp_offer,
-            headers={'Content-Type': 'application/sdp'},
-            timeout=10
-        )
-        if not r.ok:
-            print(f"[WHEP PROXY] MediaMTX returned {r.status_code}: {r.text[:200]}")
-            return Response(r.text, status=r.status_code, mimetype='text/plain')
-        resp = Response(r.text, status=r.status_code, mimetype='application/sdp')
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        return resp
+        import stream_manager
+        remote_url = stream_manager.REMOTE_RTSP_URL
+        if not remote_url:
+            # Fall back to the RTSP URL saved in the database
+            remote_url = database.get_system_settings().get('rtsp_url', '')
+        if remote_url:
+            # Parse host out of rtsp://[user:pass@]host[:port]/path
+            m = re.match(r'rtsp://(?:[^@]+@)?([^:/]+)', remote_url)
+            if m:
+                tailscale_host = m.group(1)
+                if tailscale_host not in mediamtx_hosts:
+                    mediamtx_hosts.append(tailscale_host)
     except Exception as e:
-        print(f"[WHEP PROXY ERROR] {e}")
-        return jsonify({"error": str(e)}), 502
+        print(f"[WHEP PROXY] Could not resolve remote host: {e}")
+
+    last_err = None
+    for host in mediamtx_hosts:
+        whep_url = f'http://{host}:8889/cam/whep'
+        try:
+            r = requests.post(
+                whep_url,
+                data=sdp_offer,
+                headers={'Content-Type': 'application/sdp'},
+                timeout=8
+            )
+            if r.ok:
+                print(f"[WHEP PROXY] Success via {host}")
+                resp = Response(r.text, status=r.status_code, mimetype='application/sdp')
+                resp.headers['Access-Control-Allow-Origin'] = '*'
+                return resp
+            print(f"[WHEP PROXY] {host} returned {r.status_code}: {r.text[:100]}")
+            last_err = f"HTTP {r.status_code} from {host}"
+        except Exception as e:
+            print(f"[WHEP PROXY] {host} unreachable: {e}")
+            last_err = str(e)
+
+    print(f"[WHEP PROXY] All hosts failed. Last error: {last_err}")
+    return jsonify({"error": last_err or "MediaMTX unreachable"}), 502
 
 # ---------------------------------------------------------------------------
 # Stream status endpoints
