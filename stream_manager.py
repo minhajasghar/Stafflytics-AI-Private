@@ -124,6 +124,7 @@ rtcpAddress: :8557
 webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigin: '*'
+webrtcSTUNServers: [stun:stun.l.google.com:19302]
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s
@@ -227,6 +228,7 @@ rtcpAddress: :8557
 webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigin: '*'
+webrtcSTUNServers: [stun:stun.l.google.com:19302]
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s
