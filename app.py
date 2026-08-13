@@ -1017,7 +1017,7 @@ _onvif_cache = {"cam": None, "ptz": None, "profile": None, "port": None}
 
 def _parse_rtsp_url(url):
     """Parse an RTSP URL into (ip, user, password, rtsp_port)."""
-    m = re.match(r'rtsp://(.+?):(.+?)@(.+?)(?::(\d+))?(?:/|$)', url)
+    m = re.match(r'rtsp://(?:(.+?):(.+?)@)?([^:/]+)(?::(\d+))?(?:/|$)', url)
     if m:
         return m.group(3), m.group(1), m.group(2), int(m.group(4) or 554)
     return None, None, None, None

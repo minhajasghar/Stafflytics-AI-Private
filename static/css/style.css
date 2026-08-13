@@ -1005,7 +1005,9 @@ html { overflow-x: hidden; }
    =========================================================================== */
 @media (max-width: 1440px) {
     .dashboard {
-        grid-template-columns: 80px 1fr 280px;
+        grid-template-columns: 75px 1fr 260px;
+        height: 100vh;
+        overflow: hidden;
     }
     #analytics-grid {
         grid-template-columns: repeat(2, 1fr) !important;
@@ -1017,7 +1019,7 @@ html { overflow-x: hidden; }
         grid-column: span 2;
     }
     .camera-canvas {
-        max-height: 50vh;
+        max-height: 45vh;
         min-height: 0;
         flex: 1;
     }
