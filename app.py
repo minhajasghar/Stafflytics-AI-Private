@@ -55,8 +55,12 @@ _wz_logger.setLevel(_logging.INFO)
 websocket_clients = set()
 websocket_lock = threading.Lock()
 
+last_detection_payload = "{}"
+
 def broadcast_detections(detections, frame_w=640, frame_h=360):
+    global last_detection_payload
     payload = json.dumps({"detections": detections, "frame_w": frame_w, "frame_h": frame_h})
+    last_detection_payload = payload
     with websocket_lock:
         inactive = set()
         for client in websocket_clients:
@@ -81,6 +85,12 @@ def detection_ws(ws):
     finally:
         with websocket_lock:
             websocket_clients.discard(ws)
+
+@app.route('/api/detection_poll', methods=['GET'])
+def detection_poll():
+    # Fallback polling endpoint if WebSocket Upgrade is stripped by reverse proxy (like Apache)
+    global last_detection_payload
+    return Response(last_detection_payload, mimetype='application/json')
 
 
 # Initialize database & Mailer
@@ -1014,24 +1024,32 @@ def _parse_rtsp_url(url):
 
 def _camera_targets():
     """Candidate PTZ targets ordered by priority:
-    1) the default physical camera (always tried first — it has real ONVIF credentials
-       and a direct IP, unlike the Tailscale relay which has no ONVIF service), and
-    2) the active camera source (the remote RTSP host on the VPS), as a fallback.
-
-    If the active source URL carries no credentials (e.g. a plain relay URL
-    like rtsp://10.x.x.x:8554/cam), the physical camera's credentials are
-    filled in so ONVIF/CGI can still authenticate against the reachable host."""
-    default = _parse_rtsp_url(_DEFAULT_PHYSICAL_RTSP_URL)
+    1) the remote tailscale bridge (if remote_rtsp mode is used),
+    2) the default physical camera,
+    3) the active camera source fallback."""
+    import stream_manager
     targets = []
-    # Always try the hardcoded physical camera first — it has ONVIF and real credentials.
+    default = _parse_rtsp_url(_DEFAULT_PHYSICAL_RTSP_URL)
+    
+    # 1. If remote_rtsp is active, use the remote URL host (Tailscale IP)
+    if stream_manager.CAMERA_SOURCE_MODE == "remote_rtsp" and stream_manager.REMOTE_RTSP_URL:
+        remote = _parse_rtsp_url(stream_manager.REMOTE_RTSP_URL)
+        if remote[0]:
+            if not remote[1]: # Inherit credentials from default camera if none provided
+                remote = (remote[0], default[1], default[2], remote[3])
+            targets.append(remote)
+
+    # 2. Always try the hardcoded physical camera (local network fallback)
     if default[0]:
         targets.append(default)
-    # Also try the active relay host in case the physical camera is unreachable.
+        
+    # 3. Also try the active relay host in case it's different
     t = _parse_rtsp_url(PHYSICAL_RTSP_URL)
-    if t[0] and t[0] != default[0]:
+    if t[0] and t[0] != default[0] and (not targets or t[0] != targets[0][0]):
         if not t[1]:
             t = (t[0], default[1], default[2], t[3])
         targets.append(t)
+        
     return targets
 
 def _get_onvif_connection():

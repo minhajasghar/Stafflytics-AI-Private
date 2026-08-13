@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stafflytics AI | Business Intelligence Suite</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=2) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=4) }}">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         .chat-bubble { position: fixed; bottom: 30px; right: 30px; width: 60px; height: 60px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; cursor: pointer; box-shadow: 0 10px 25px rgba(217,119,6,0.4); z-index: 2000; transition: 0.3s; }
@@ -517,40 +517,67 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/hls.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/main.js', v=2) }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js', v=4) }}"></script>
     
     <script>
         let webrtcPeerConnection = null;
         let detectionSocket = null;
 
+        let detectionPollInterval = null;
+
         function initDetectionWebSocket() {
             if (detectionSocket && (detectionSocket.readyState === WebSocket.OPEN || detectionSocket.readyState === WebSocket.CONNECTING)) {
                 return;
+            }
+            if (detectionPollInterval !== null) {
+                return; // Already polling
             }
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/api/detection`;
             console.log("[WebSocket] Connecting to AI metadata stream:", wsUrl);
             
-            detectionSocket = new WebSocket(wsUrl);
-            
-            detectionSocket.onmessage = (event) => {
+            try {
+                detectionSocket = new WebSocket(wsUrl);
+                
+                detectionSocket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        drawDetections(data);
+                    } catch (e) {
+                        console.error("[WebSocket] Error parsing detection metadata:", e);
+                    }
+                };
+                
+                detectionSocket.onclose = (event) => {
+                    console.warn("[WebSocket] Connection lost or rejected.", event.code);
+                    // If connection fails immediately or gets a 400 (which often results in a quick close), fallback to HTTP polling
+                    startDetectionPolling();
+                };
+                
+                detectionSocket.onerror = (err) => {
+                    console.error("[WebSocket] Connection error. Falling back to polling...", err);
+                    startDetectionPolling();
+                };
+            } catch (err) {
+                console.error("[WebSocket] Failed to instantiate WebSocket. Falling back to polling...", err);
+                startDetectionPolling();
+            }
+        }
+
+        function startDetectionPolling() {
+            if (detectionPollInterval !== null) return;
+            console.log("[HTTP] Starting HTTP polling fallback for AI detections (every 100ms)...");
+            detectionPollInterval = setInterval(async () => {
                 try {
-                    const data = JSON.parse(event.data);
+                    const res = await fetch('/api/detection_poll');
+                    if (!res.ok) return;
+                    const data = await res.json();
                     drawDetections(data);
                 } catch (e) {
-                    console.error("[WebSocket] Error parsing detection metadata:", e);
+                    // silent ignore to prevent console spam
                 }
-            };
-            
-            detectionSocket.onclose = () => {
-                console.warn("[WebSocket] Connection lost. Reconnecting in 2 seconds...");
-                setTimeout(initDetectionWebSocket, 2000);
-            };
-            
-            detectionSocket.onerror = (err) => {
-                console.error("[WebSocket] Connection error:", err);
-            };
+            }, 100);
         }
 
         // The detection canvas fills the whole wrapper, but the <video> uses
