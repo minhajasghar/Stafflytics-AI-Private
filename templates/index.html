@@ -567,7 +567,7 @@
 
         function startDetectionPolling() {
             if (detectionPollInterval !== null) return;
-            console.log("[HTTP] Starting HTTP polling fallback for AI detections (every 100ms)...");
+            console.log("[Polling] Starting polling fallback for AI detections (every 100ms)...");
             detectionPollInterval = setInterval(async () => {
                 try {
                     // Append a timestamp to perfectly bust Cloudflare/Apache GET caches
