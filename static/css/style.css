@@ -1000,3 +1000,35 @@ html { overflow-x: hidden; }
     .top-bar p { font-size: 0.72rem; }
 }
 
+/* ===========================================================================
+   Laptop responsiveness — 1440px and 1366px
+   =========================================================================== */
+@media (max-width: 1440px) {
+    .dashboard {
+        grid-template-columns: 80px 1fr 280px;
+    }
+    #analytics-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+    }
+    .analytics-cols, #daily-report-summary {
+        grid-template-columns: repeat(2, 1fr) !important;
+    }
+    .analytics-cols > div:last-child {
+        grid-column: span 2;
+    }
+    .camera-canvas {
+        min-height: 400px;
+    }
+}
+
+@media (max-width: 1024px) {
+    .dashboard {
+        grid-template-columns: 80px 1fr;
+    }
+    .right-monitor {
+        display: none; /* Hide or move tracker to bottom */
+    }
+    .camera-canvas {
+        min-height: 350px;
+    }
+}
