@@ -904,10 +904,16 @@ class VisionEngine:
                                 # Update c_id in case it was set before identity was confirmed
                                 self.customer_timers[track_id]["c_id"] = int(str(db_id).split("_")[1])
                         elif db_id is None:
-                            # Unknown face — check consensus length; if still uncertain after a while, track as anonymous
+                            # Unknown face — only track as anonymous if YOLO face keypoints confirm
+                            # a face is present AND the person has been visible for a sustained period.
+                            # This prevents briefly-seen people (walk-bys) from inflating visit counts.
                             with self.lock:
                                 unknown_votes = len([v for v in self.recognition_consensus.get(track_id, []) if v == "Unknown"])
-                            if unknown_votes >= 10 and track_id not in self.customer_timers:
+                                first_seen = self.person_states.get(track_id, {}).get("last_active", current_time)
+                            track_age = current_time - self.person_states.get(track_id, {}).get("last_sync", current_time - 999)
+                            # Require at least 20 "Unknown" votes (≈40s at 0.5fps recognition) AND
+                            # that the track has been alive for at least 8 seconds before counting.
+                            if unknown_votes >= 20 and track_id not in self.customer_timers:
                                 # Has been consistently unidentified — track as anonymous visitor
                                 self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": None}
                     elif track_id in self.customer_timers:
@@ -965,11 +971,26 @@ class VisionEngine:
                         del self.customer_timers[tid]
                     
                     # Log visitor detection for analytics (once per track lifetime)
+                    # GUARD: Only log if the track lived long enough to be a real person
+                    # (>= 5 seconds). Prevents brief detections / shadows from inflating counts.
                     if tid not in self.visitor_logged:
-                        self.visitor_logged.add(tid)
                         state = self.person_states[tid]
+                        track_lifetime = current_time - state.get("last_sync", current_time - 999)
                         db_id = state.get("db_id")
                         zone = state.get("zone", "Main Hall")
+
+                        # For unknown anonymous faces: require at least 20 "Unknown" consensus
+                        # votes so a face was genuinely detected and failed to match (not a shadow).
+                        if db_id is None:
+                            consensus = self.recognition_consensus.get(tid, [])
+                            unknown_votes = consensus.count("Unknown")
+                            if unknown_votes < 15:
+                                # Not enough face evidence — skip logging this track
+                                del self.person_states[tid]
+                                if tid in self.recognition_consensus: del self.recognition_consensus[tid]
+                                continue
+
+                        self.visitor_logged.add(tid)
                         if db_id and not str(db_id).startswith("C_"):
                             database.log_visitor_detection(None, False, staff_id=db_id, zone=zone)
                         elif db_id and str(db_id).startswith("C_"):

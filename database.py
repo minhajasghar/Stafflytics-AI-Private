@@ -873,15 +873,57 @@ def get_today_customer_stats():
         return {"today_count": r[0] or 0, "today_minutes": round(r[1] or 0, 1)}
 
 def log_visitor_detection(customer_id, is_new_face, staff_id=None, zone=None):
+    """Log a visitor/staff detection event with same-day deduplication.
+
+    Rules:
+    - Known customer (customer_id set): only one log per customer per calendar day.
+    - Staff (staff_id set): one log per staff member per day.
+    - Anonymous (both None): rate-limited to one entry per 30-minute window globally
+      to prevent the same unrecognised person being logged dozens of times.
+    """
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
+        today_filter = "date(timestamp, 'localtime') = date('now', 'localtime')"
+
+        # --- Known customer dedup: once per day per customer_id ---
+        if customer_id is not None:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM visitor_log WHERE customer_id = ? AND {today_filter}",
+                (customer_id,)
+            )
+            if cursor.fetchone()[0] > 0:
+                conn.close()
+                return  # Already logged today
+
+        # --- Staff dedup: once per day per staff_id ---
+        elif staff_id is not None:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM visitor_log WHERE staff_id = ? AND {today_filter}",
+                (staff_id,)
+            )
+            if cursor.fetchone()[0] > 0:
+                conn.close()
+                return  # Already logged today
+
+        # --- Anonymous: max one log per 30 minutes to prevent spam ---
+        else:
+            cursor.execute(
+                "SELECT COUNT(*) FROM visitor_log "
+                "WHERE customer_id IS NULL AND staff_id IS NULL "
+                "AND timestamp >= datetime('now', '-30 minutes')"
+            )
+            if cursor.fetchone()[0] > 0:
+                conn.close()
+                return  # Too soon after last anonymous log
+
         cursor.execute(
             "INSERT INTO visitor_log (customer_id, is_new_face, staff_id, zone) VALUES (?, ?, ?, ?)",
             (customer_id, 1 if is_new_face else 0, staff_id, zone or "Main Hall")
         )
         conn.commit()
         conn.close()
+
 
 def get_visitor_analytics(scope="day"):
     """Returns per-day or per-month visitor analytics.

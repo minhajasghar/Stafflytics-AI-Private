@@ -916,6 +916,7 @@
                     updateVideoAspect(); resizeCanvas();
                         fallbackImg.style.display = 'none';
                         setStatus('WebRTC Live', '#22c55e', false);
+                        window._webrtcRetryCount = 0; // Reset backoff on success
                         
                         // Force browser video tag to play
                         video.play().catch(e => console.warn("[WebRTC] play() failed:", e));
@@ -993,9 +994,27 @@
                 if (window.webrtcRetryTimer) {
                     clearTimeout(window.webrtcRetryTimer);
                 }
-                window.webrtcRetryTimer = setTimeout(initWebRTCStream, 5000);
+
+                // Don't retry if video is currently playing (avoids false disconnect triggers)
+                if (video.readyState >= 3 && !video.paused) {
+                    return;
+                }
+
+                // Exponential backoff: 5s, 10s, 20s, 40s, 60s max
+                if (!window._webrtcRetryCount) window._webrtcRetryCount = 0;
+                window._webrtcRetryCount++;
+                const delay = Math.min(5000 * Math.pow(2, window._webrtcRetryCount - 1), 60000);
+                console.log(`[WebRTC] Retry #${window._webrtcRetryCount} in ${delay/1000}s`);
+                setStatus(`${msg} — retrying in ${Math.round(delay/1000)}s`, '#f97316', false);
+                window.webrtcRetryTimer = setTimeout(() => {
+                    window._webrtcRetryCount = Math.min(window._webrtcRetryCount, 4); // cap backoff at 60s
+                    initWebRTCStream();
+                }, delay);
             }
         }
+
+        // Reset retry count on successful connection
+        window._webrtcRetryCount = 0;
 
         window.addEventListener('DOMContentLoaded', () => {
             loadSavedTheme();
