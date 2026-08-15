@@ -6,7 +6,7 @@
     <title>Stafflytics AI | Business Intelligence Suite</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <!-- Cache buster to ensure mobile layout fixes are loaded -->
-    <link rel="stylesheet" href="/static/css/style.css?v=11">
+    <link rel="stylesheet" href="/static/css/style.css?v=12">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -74,11 +74,15 @@
         </nav>
 
         <!-- Mobile Bottom Nav -->
-        <nav class="mobile-bottom-nav">
+        <nav class="mobile-bottom-nav" id="mobile-nav-scroll">
             <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
             <div class="nav-item" title="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i></div>
             <div class="nav-item" title="Staff List" onclick="handleNavClick(this)"><i class="fas fa-user-friends"></i></div>
             <div class="nav-item" title="Reporting" onclick="handleNavClick(this)"><i class="fas fa-file-invoice"></i></div>
+            <div class="nav-item" title="Performance" onclick="handleNavClick(this)"><i class="fas fa-bolt"></i></div>
+            <div class="nav-item" title="ROI Analysis" onclick="handleNavClick(this)"><i class="fas fa-hand-holding-dollar"></i></div>
+            <div class="nav-item" title="Shift Optimizer" onclick="handleNavClick(this)"><i class="fas fa-calendar-check"></i></div>
+            <div class="nav-item" title="Settings" onclick="handleNavClick(this)"><i class="fas fa-cog"></i></div>
             <div class="nav-item" title="Toggle Theme" onclick="toggleTheme()" style="color: var(--accent);"><i class="fas fa-moon"></i></div>
         </nav>
 

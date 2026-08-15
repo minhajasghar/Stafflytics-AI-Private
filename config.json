@@ -3,6 +3,6 @@
     "MYSQL_HOST": "localhost",
     "MYSQL_PORT": 3306,
     "MYSQL_USER": "stafflytics_user",
-    "MYSQL_PASSWORD": "YOUR_PASSWORD_HERE",
+    "MYSQL_PASSWORD": "minhajasghar66",
     "MYSQL_DATABASE": "stafflytics"
 }
