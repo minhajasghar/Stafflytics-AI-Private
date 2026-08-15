@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stafflytics AI | Business Intelligence Suite</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=9) }}">
+    <!-- Cache buster to ensure mobile layout fixes are loaded -->
+    <link rel="stylesheet" href="/static/css/style.css?v=11">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -893,7 +894,14 @@
                 setStatus('Connecting WebRTC...', '#3b82f6');
 
                 if (webrtcPeerConnection) {
+                    webrtcPeerConnection.ontrack = null;
+                    webrtcPeerConnection.oniceconnectionstatechange = null;
                     try { webrtcPeerConnection.close(); } catch(e) {}
+                    webrtcPeerConnection = null;
+                }
+
+                if (window._videoFreezeWatchdog) {
+                    clearInterval(window._videoFreezeWatchdog);
                 }
 
                 // If connecting locally, omit stun servers to prevent NAT hairpinning loops
@@ -926,13 +934,32 @@
                                 overlay.style.opacity = '0';
                             }
                         }, 3000);
+
+                        // Watchdog to check if video froze silently
+                        let lastTime = -1;
+                        let freezeCount = 0;
+                        window._videoFreezeWatchdog = setInterval(() => {
+                            if (video.readyState >= 3 && !video.paused) {
+                                if (video.currentTime === lastTime) {
+                                    freezeCount++;
+                                    if (freezeCount >= 4) { // 4 seconds frozen
+                                        console.warn("[WebRTC] Video froze silently. Forcing reconnect...");
+                                        clearInterval(window._videoFreezeWatchdog);
+                                        handleWebRTCFallback('WebRTC Frozen (Reconnecting...)');
+                                    }
+                                } else {
+                                    freezeCount = 0;
+                                    lastTime = video.currentTime;
+                                }
+                            }
+                        }, 1000);
                     }
                 };
 
                 pc.oniceconnectionstatechange = () => {
-                    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-                        console.warn("[WebRTC] Connection lost. Falling back to MJPEG.");
-                        handleWebRTCFallback('WebRTC Disconnected (MJPEG Fallback)');
+                    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+                        console.warn("[WebRTC] Connection lost. State: " + pc.iceConnectionState);
+                        handleWebRTCFallback('WebRTC Disconnected (Reconnecting...)');
                     }
                 };
 
