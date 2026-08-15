@@ -499,7 +499,7 @@ def background_system_init():
         from vision_engine import VisionEngine
         engine = VisionEngine()
         engine.warmup()  # Preload the YOLO model so detection is ready immediately
-        print("[SYSTEM] Vision Engine Placeholder Loaded.")
+        print("[SYSTEM] Vision Engine loaded successfully.")
     except Exception as e:
         print(f"[SYSTEM ERROR] Vision Engine failed: {e}")
         
