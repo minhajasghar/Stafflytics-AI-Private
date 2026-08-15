@@ -1,7 +1,7 @@
 import threading
 import os
 # Suppress FFmpeg/HEVC decoder noise before any OpenCV/FFmpeg init
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport=tcp|max_delay=2000000"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|max_delay;2000000"
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["FFREPORT"] = "level=quiet"
 from dotenv import load_dotenv
@@ -225,6 +225,25 @@ class CameraStream:
         import stream_manager
         # Use override URL if specified (display_stream uses cam, camera_stream uses cam_ai)
         active_url = self.rtsp_override if self.rtsp_override else RTSP_URL
+        
+        # [Fallback logic]: If trying to open cam_ai (ffmpeg relay) but it's offline
+        # (e.g. ffmpeg not installed), fallback to the direct camera URL so YOLO still works.
+        if active_url == RTSP_URL:
+            # Give it a quick ping, if it fails, grab the real URL
+            import database
+            try:
+                cfg = database.get_camera_config()
+                if cfg and cfg.get("url"):
+                    # Probe localhost quickly
+                    cap = cv2.VideoCapture(active_url, cv2.CAP_FFMPEG)
+                    if cap and cap.isOpened():
+                        cap.release()
+                    else:
+                        print(f"[STREAM] cam_ai is offline. Falling back to direct camera URL for AI.")
+                        active_url = cfg["url"]
+            except Exception:
+                pass
+
         print(f"[SYSTEM] Starting Camera Synchronization Loop... (URL='{active_url}')")
         if self.stream is not None:
             try: self.stream.release()
