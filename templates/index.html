@@ -6,7 +6,7 @@
     <title>Stafflytics AI | Business Intelligence Suite</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <!-- Cache buster to ensure mobile layout fixes are loaded -->
-    <link rel="stylesheet" href="/static/css/style.css?v=14">
+    <link rel="stylesheet" href="/static/css/style.css?v=15">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -73,18 +73,7 @@
             <div class="nav-item" title="Logout" onclick="handleLogout()" style="color: #ef4444;"><i class="fas fa-sign-out-alt"></i></div>
         </nav>
 
-        <!-- Mobile Bottom Nav -->
-        <nav class="mobile-bottom-nav" id="mobile-nav-scroll">
-            <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
-            <div class="nav-item" title="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i></div>
-            <div class="nav-item" title="Staff List" onclick="handleNavClick(this)"><i class="fas fa-user-friends"></i></div>
-            <div class="nav-item" title="Reporting" onclick="handleNavClick(this)"><i class="fas fa-file-invoice"></i></div>
-            <div class="nav-item" title="Performance" onclick="handleNavClick(this)"><i class="fas fa-bolt"></i></div>
-            <div class="nav-item" title="ROI Analysis" onclick="handleNavClick(this)"><i class="fas fa-hand-holding-dollar"></i></div>
-            <div class="nav-item" title="Shift Optimizer" onclick="handleNavClick(this)"><i class="fas fa-calendar-check"></i></div>
-            <div class="nav-item" title="Settings" onclick="handleNavClick(this)"><i class="fas fa-cog"></i></div>
-            <div class="nav-item" title="Toggle Theme" onclick="toggleTheme()" style="color: var(--accent);"><i class="fas fa-moon"></i></div>
-        </nav>
+
 
         <main class="main-content">
             <div id="section-monitor" class="view-section">
@@ -1078,28 +1067,47 @@
             <i class="fas fa-chart-pie"></i>
             <span>Analytics</span>
         </div>
-        <div class="nav-item" title="Staff" id="mob-nav-2" onclick="mobileNav(2)">
+        <div class="nav-item" title="Staff List" id="mob-nav-2" onclick="mobileNav(2)">
             <i class="fas fa-user-friends"></i>
             <span>Staff</span>
         </div>
-        <div class="nav-item" title="Reports" id="mob-nav-3" onclick="mobileNav(3)">
+        <div class="nav-item" title="Reporting" id="mob-nav-3" onclick="mobileNav(3)">
             <i class="fas fa-file-invoice"></i>
             <span>Reports</span>
+        </div>
+        <div class="nav-item" title="Performance" id="mob-nav-4" onclick="mobileNav(4)">
+            <i class="fas fa-bolt"></i>
+            <span>Perf</span>
+        </div>
+        <div class="nav-item" title="ROI Analysis" id="mob-nav-5" onclick="mobileNav(5)">
+            <i class="fas fa-hand-holding-dollar"></i>
+            <span>ROI</span>
+        </div>
+        <div class="nav-item" title="Shift Optimizer" id="mob-nav-6" onclick="mobileNav(6)">
+            <i class="fas fa-calendar-check"></i>
+            <span>Shifts</span>
         </div>
         <div class="nav-item" title="Settings" id="mob-nav-7" onclick="mobileNav(7)">
             <i class="fas fa-cog"></i>
             <span>Settings</span>
         </div>
+        <div class="nav-item" title="Toggle Theme" id="mob-nav-8" onclick="toggleTheme()" style="color: var(--accent);">
+            <i class="fas fa-moon"></i>
+            <span>Theme</span>
+        </div>
     </nav>
 
     <script>
     // Mobile navigation: mirrors handleNavClick from main.js
-    // Maps simplified 5-tab bottom nav to the full 8-section navigation
+    // Maps simplified bottom nav to the full 8-section navigation
     const MOB_NAV_MAP = {
         0: 0, // Monitor
         1: 1, // Analytics
         2: 2, // Staff List
         3: 3, // Reporting
+        4: 4, // Performance
+        5: 5, // ROI Analysis
+        6: 6, // Shift Optimizer
         7: 7  // Settings
     };
 
@@ -1123,7 +1131,7 @@
         // Sync bottom nav active state if on mobile
         const desktopNavItems = Array.from(document.querySelectorAll('.sidebar-nav .nav-item'));
         const idx = desktopNavItems.indexOf(el);
-        const mobMap = { 0: 0, 1: 1, 2: 2, 3: 3, 7: 7 };
+        const mobMap = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7 };
         document.querySelectorAll('.mobile-bottom-nav .nav-item').forEach(e => e.classList.remove('active'));
         if (mobMap[idx] !== undefined) {
             const mobEl = document.getElementById('mob-nav-' + idx);
