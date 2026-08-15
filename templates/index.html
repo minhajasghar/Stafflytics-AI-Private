@@ -6,7 +6,7 @@
     <title>Stafflytics AI | Business Intelligence Suite</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <!-- Cache buster to ensure mobile layout fixes are loaded -->
-    <link rel="stylesheet" href="/static/css/style.css?v=12">
+    <link rel="stylesheet" href="/static/css/style.css?v=13">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -74,17 +74,30 @@
         </nav>
 
         <!-- Mobile Bottom Nav -->
-        <nav class="mobile-bottom-nav" id="mobile-nav-scroll">
+        <nav class="mobile-bottom-nav">
             <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
             <div class="nav-item" title="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i></div>
             <div class="nav-item" title="Staff List" onclick="handleNavClick(this)"><i class="fas fa-user-friends"></i></div>
             <div class="nav-item" title="Reporting" onclick="handleNavClick(this)"><i class="fas fa-file-invoice"></i></div>
-            <div class="nav-item" title="Performance" onclick="handleNavClick(this)"><i class="fas fa-bolt"></i></div>
-            <div class="nav-item" title="ROI Analysis" onclick="handleNavClick(this)"><i class="fas fa-hand-holding-dollar"></i></div>
-            <div class="nav-item" title="Shift Optimizer" onclick="handleNavClick(this)"><i class="fas fa-calendar-check"></i></div>
-            <div class="nav-item" title="Settings" onclick="handleNavClick(this)"><i class="fas fa-cog"></i></div>
-            <div class="nav-item" title="Toggle Theme" onclick="toggleTheme()" style="color: var(--accent);"><i class="fas fa-moon"></i></div>
+            <div class="nav-item" title="More Options" onclick="toggleMobileMenu()"><i class="fas fa-bars"></i></div>
         </nav>
+
+        <!-- Mobile More Menu -->
+        <div class="mobile-menu-overlay hidden" id="mobile-menu-overlay" onclick="toggleMobileMenu()"></div>
+        <div class="mobile-menu-sheet hidden" id="mobile-menu-sheet">
+            <div class="mobile-menu-header" style="display:flex; justify-content:space-between; padding:15px; border-bottom:1px solid var(--border); font-weight:800; font-size:1.1rem; align-items:center;">
+                <span>More Options</span>
+                <i class="fas fa-times" onclick="toggleMobileMenu()" style="cursor:pointer; color:var(--text-muted); font-size:1.2rem;"></i>
+            </div>
+            <div class="mobile-menu-items" style="display:flex; flex-direction:column; padding:10px;">
+                <div class="mobile-menu-item" title="Performance" onclick="handleNavClick(this); toggleMobileMenu();"><i class="fas fa-bolt"></i> Performance</div>
+                <div class="mobile-menu-item" title="ROI Analysis" onclick="handleNavClick(this); toggleMobileMenu();"><i class="fas fa-hand-holding-dollar"></i> Salary Admin</div>
+                <div class="mobile-menu-item" title="Shift Optimizer" onclick="handleNavClick(this); toggleMobileMenu();"><i class="fas fa-calendar-check"></i> Shift Optimizer</div>
+                <div class="mobile-menu-item" title="Settings" onclick="handleNavClick(this); toggleMobileMenu();"><i class="fas fa-cog"></i> Settings</div>
+                <div class="mobile-menu-item" title="Toggle Theme" onclick="toggleTheme(); toggleMobileMenu();" style="color:var(--accent);"><i class="fas fa-moon"></i> Toggle Theme</div>
+                <div class="mobile-menu-item" title="Logout" onclick="handleLogout()" style="color:var(--red);"><i class="fas fa-sign-out-alt"></i> Logout</div>
+            </div>
+        </div>
 
         <main class="main-content">
             <div id="section-monitor" class="view-section">
@@ -534,7 +547,7 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/hls.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/main.js', v=6) }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js', v=7) }}"></script>
     
     <script>
         let webrtcPeerConnection = null;

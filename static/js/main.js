@@ -17,6 +17,19 @@ function toggleTheme() {
     applyTheme(current === 'dark' ? 'light' : 'dark');
 }
 
+function toggleMobileMenu() {
+    const sheet = document.getElementById('mobile-menu-sheet');
+    const overlay = document.getElementById('mobile-menu-overlay');
+    if (!sheet || !overlay) return;
+    if (sheet.classList.contains('hidden')) {
+        sheet.classList.remove('hidden');
+        overlay.classList.remove('hidden');
+    } else {
+        sheet.classList.add('hidden');
+        overlay.classList.add('hidden');
+    }
+}
+
 function loadSavedTheme() {
     const saved = localStorage.getItem('stafflytics-theme');
     if (saved) applyTheme(saved);
