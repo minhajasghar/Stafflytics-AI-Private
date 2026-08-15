@@ -73,6 +73,15 @@
             <div class="nav-item" title="Logout" onclick="handleLogout()" style="color: #ef4444;"><i class="fas fa-sign-out-alt"></i></div>
         </nav>
 
+        <!-- Mobile Bottom Nav -->
+        <nav class="mobile-bottom-nav">
+            <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
+            <div class="nav-item" title="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i></div>
+            <div class="nav-item" title="Staff List" onclick="handleNavClick(this)"><i class="fas fa-user-friends"></i></div>
+            <div class="nav-item" title="Reporting" onclick="handleNavClick(this)"><i class="fas fa-file-invoice"></i></div>
+            <div class="nav-item" title="Toggle Theme" onclick="toggleTheme()" style="color: var(--accent);"><i class="fas fa-moon"></i></div>
+        </nav>
+
         <main class="main-content">
             <div id="section-monitor" class="view-section">
                 <header class="top-bar">
@@ -904,10 +913,10 @@
                     clearInterval(window._videoFreezeWatchdog);
                 }
 
-                // If connecting locally, omit stun servers to prevent NAT hairpinning loops
+                // If connecting locally or via Tailscale, omit stun servers to prevent NAT hairpinning loops
                 let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
                 const host = window.location.hostname;
-                const isLocal = host === 'localhost' || host === '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.');
+                const isLocal = host === 'localhost' || host === '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.') || host.startsWith('100.');
                 if (isLocal) {
                     iceServers = [];
                 }

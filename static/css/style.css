@@ -427,8 +427,8 @@ body {
 /* Enrollment FAB */
 .fab {
     position: fixed;
-    bottom: 2rem;
-    right: 6.5rem; /* Separated from chatbot bubble */
+    bottom: 30px;
+    right: 100px; /* Separated from chatbot bubble */
     background: var(--primary);
     color: white;
     width: 60px;
@@ -1008,8 +1008,8 @@ html { overflow-x: hidden; }
 
     /* --- Chat / FAB positioning --- */
     .chat-container { width: calc(100vw - 2rem); right: 1rem; bottom: calc(64px + 16px + 52px + 10px); }
-    .chat-bubble { right: 1rem; bottom: calc(64px + 16px); width: 52px; height: 52px; margin: 0 !important; }
-    .fab { right: calc(1rem + 52px + 12px); bottom: calc(64px + 16px); width: 52px; height: 52px; margin: 0 !important; }
+    .chat-bubble { right: 1rem !important; bottom: 80px !important; width: 52px; height: 52px; margin: 0 !important; }
+    .fab { right: calc(1rem + 52px + 12px) !important; bottom: 80px !important; width: 52px; height: 52px; margin: 0 !important; }
 
     /* --- Modal: full width on mobile --- */
     .modal-content {
