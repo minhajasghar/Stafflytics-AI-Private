@@ -977,15 +977,16 @@ html { overflow-x: hidden; }
 
     /* --- All analytics/settings grids collapse to 1 column --- */
     #analytics-grid,
-    .metrics-grid,
-    .analytics-cols,
     .optimization-grid,
     .settings-grid,
-    #daily-report-summary,
-    .analytics-cols > * {
+    #daily-report-summary {
         grid-template-columns: 1fr !important;
         min-width: 0;
     }
+
+    /* Analytics cols: 2 columns to save vertical space (50/50 side by side) */
+    .analytics-cols { grid-template-columns: repeat(2, 1fr) !important; min-width: 0; }
+    .analytics-cols > div:last-child { grid-column: span 2; } /* Customer loyalty takes full width at bottom */
 
     /* Metrics grid: 2 columns to save vertical space */
     .metrics-grid { grid-template-columns: repeat(2, 1fr) !important; }
@@ -1006,9 +1007,9 @@ html { overflow-x: hidden; }
     .data-table th, .data-table td { padding: 0.4rem 0.5rem; }
 
     /* --- Chat / FAB positioning --- */
-    .chat-container { width: calc(100vw - 2rem); right: 1rem; bottom: 76px; }
-    .chat-bubble { right: 1rem; bottom: 72px; width: 52px; height: 52px; }
-    .fab { right: 5.5rem; bottom: 72px; width: 52px; height: 52px; }
+    .chat-container { width: calc(100vw - 2rem); right: 1rem; bottom: calc(64px + 16px + 52px + 10px); }
+    .chat-bubble { right: 1rem; bottom: calc(64px + 16px); width: 52px; height: 52px; margin: 0 !important; }
+    .fab { right: calc(1rem + 52px + 12px); bottom: calc(64px + 16px); width: 52px; height: 52px; margin: 0 !important; }
 
     /* --- Modal: full width on mobile --- */
     .modal-content {
