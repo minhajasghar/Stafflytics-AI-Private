@@ -189,7 +189,7 @@ body {
     display: flex;
     flex-direction: column;
     width: 100%;
-    max-height: calc(100vh - 100px);
+    aspect-ratio: 16 / 9;
     margin-bottom: 1rem;
 }
 
@@ -815,9 +815,8 @@ input:focus {
     .analytics-cols, #daily-report-summary { grid-template-columns: repeat(2, 1fr) !important; }
     .analytics-cols > div:last-child { grid-column: span 2; }
     .camera-canvas {
-        max-height: 45vh;
-        min-height: 0;
         flex: 1;
+        aspect-ratio: 16 / 9;
     }
 }
 
@@ -864,7 +863,7 @@ html { overflow-x: hidden; }
     .right-monitor { border-left: none; border-top: 1px solid var(--border); height: auto; padding: 1rem; }
     .top-bar { flex-wrap: wrap; gap: 0.75rem; align-items: flex-start; }
     .top-bar h1 { font-size: 1.2rem; }
-    .camera-canvas { height: 46vh; max-height: 50vh; flex: 0 0 auto; margin-bottom: 0.75rem; border-width: 2px; }
+    .camera-canvas { height: auto; aspect-ratio: 16 / 9; max-height: none; flex: 0 0 auto; margin-bottom: 0.75rem; border-width: 2px; }
     .camera-canvas:fullscreen { height: 100vh; max-height: none; flex: 1 1 auto; }
     .camera-canvas:fullscreen .video-wrapper { height: calc(100vh - 52px); }
     .camera-canvas .video-header { flex-wrap: wrap; gap: 6px; padding: 10px 12px; }
@@ -913,7 +912,7 @@ html { overflow-x: hidden; }
     .stat-info span { font-size: 0.65rem; letter-spacing: 0; }
     .stat-info div { font-size: 1.1rem; }
     .stat-pill i { width: 32px; height: 32px; font-size: 0.85rem; flex-shrink: 0; }
-    .camera-canvas { height: 42vh; }
+    .camera-canvas { height: auto; aspect-ratio: 16 / 9; }
     .btn-zone { padding: 4px 8px; }
     .btn-zone i { margin-right: 0; }
     .video-header .btn-zone { font-size: 0.6rem; }
@@ -950,7 +949,7 @@ html { overflow-x: hidden; }
     .chat-container { width: calc(100vw - 1rem); right: 0.5rem; bottom: 76px; }
     .chat-bubble { right: 0.75rem; bottom: 0.75rem; }
     .fab { right: 5.25rem; bottom: 0.75rem; }
-    .camera-canvas { height: 40vh; }
+    .camera-canvas { height: auto; aspect-ratio: 16 / 9; }
     .cam-url-row > div:last-child { display: none; }
     .report-actions .btn-primary { font-size: 0.8rem; }
     .top-bar p { font-size: 0.72rem; }
