@@ -184,8 +184,6 @@ body {
     box-shadow: var(--shadow-lg);
     overflow: hidden;
     border: 4px solid var(--border);
-    flex: 1;
-    min-height: 0;
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -815,7 +813,6 @@ input:focus {
     .analytics-cols, #daily-report-summary { grid-template-columns: repeat(2, 1fr) !important; }
     .analytics-cols > div:last-child { grid-column: span 2; }
     .camera-canvas {
-        flex: 1;
         aspect-ratio: 16 / 9;
     }
 }
@@ -823,7 +820,6 @@ input:focus {
 @media (max-width: 1024px) {
     .dashboard { grid-template-columns: 80px 1fr; }
     .right-monitor { display: none; }
-    .camera-canvas { min-height: 350px; }
 }
 
 /* ===========================================================================
