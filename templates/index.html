@@ -470,6 +470,8 @@
 
                 <div style="display:flex; gap:10px;">
                     <button onclick="goToStep(1)" style="flex:1; background:var(--border); color:var(--text); border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Back</button>
+                    <button onclick="document.getElementById('enroll-image-upload').click()" class="btn-primary" style="flex:1; background:var(--accent);"><i class="fas fa-upload"></i> Upload</button>
+                    <input type="file" id="enroll-image-upload" accept="image/*" style="display:none;" onchange="handleImageUpload(event)">
                     <button onclick="captureFace()" id="btn-capture-face" class="btn-primary" style="flex:2;">Capture</button>
                     <button onclick="goToStep(3)" id="btn-capture-done" style="display:none; flex:1; background:var(--green); color:white; border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Done</button>
                 </div>

@@ -27,16 +27,21 @@ def _start_model_load():
         global model, model_loading_active
         try:
             from ultralytics import YOLO
+            import torch
             base_dir = os.path.abspath(os.path.dirname(__file__))
             model_path = os.path.join(base_dir, 'models', 'yolov8n-pose.pt')
             print(f"[AI] Attempting to load YOLO model from: {model_path}")
             if os.path.exists(model_path):
+                device = 'cpu' if not torch.cuda.is_available() else 0
                 model = YOLO(model_path)
-                print("[AI] Background Model Load Complete.")
+                model.to(device)
+                print(f"[AI] Background Model Load Complete. Running on {device}")
             else:
                 print(f"[AI ERROR] YOLO model file does not exist at {model_path}!")
         except Exception as e:
-            print(f"[AI ERROR] Lazy load failed: {e}")
+            import traceback
+            print(f"[AI CRITICAL ERROR] Lazy load failed: {e}")
+            traceback.print_exc()
         finally:
             model_loading_active = False
 

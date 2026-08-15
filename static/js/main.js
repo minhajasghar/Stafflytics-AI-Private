@@ -885,6 +885,17 @@ function showEnrollModal() {
     goToStep(1);
 }
 
+function handleImageUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        enrollmentCaptures = [e.target.result];
+        goToStep(3); // skip straight to review
+    };
+    reader.readAsDataURL(file);
+}
+
 function hideEnrollModal() {
     stopCaptureStream();
     document.getElementById('enroll-modal').style.display = 'none';
@@ -1090,8 +1101,8 @@ async function submitEnrollment() {
         alert("ID and Name are mandatory.");
         return;
     }
-    if (enrollmentCaptures.length < 2) {
-        alert("Please capture at least 2 face images.");
+    if (enrollmentCaptures.length < 1) {
+        alert("Please capture at least 1 face image.");
         return;
     }
 

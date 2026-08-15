@@ -1307,8 +1307,8 @@ def enroll_staff_with_faces():
     try:
         from vision_engine import face_rec_lock, _encode_face, _detect_face_box
         images = data.get('images', [])
-        if len(images) < 2:
-            return jsonify({"status": "error", "message": "Need at least 2 face captures"}), 400
+        if len(images) < 1:
+            return jsonify({"status": "error", "message": "Need at least 1 face capture"}), 400
         
         encodings = []
         first_photo = None
