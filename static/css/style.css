@@ -188,6 +188,7 @@ body {
     flex-direction: column;
     width: 100%;
     aspect-ratio: 16 / 9;
+    flex-shrink: 0;
     margin-bottom: 1rem;
 }
 
