@@ -6,8 +6,10 @@ const ctx = canvas ? canvas.getContext('2d') : null;
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('stafflytics-theme', theme);
-    const btn = document.getElementById('theme-toggle');
-    if (btn) btn.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    const btns = document.querySelectorAll('[title="Toggle Theme"]');
+    btns.forEach(btn => {
+        btn.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    });
 }
 
 function toggleTheme() {
