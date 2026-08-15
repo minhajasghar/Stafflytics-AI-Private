@@ -89,7 +89,7 @@ def _load_face_models():
 
 
 def _detect_face_box(bgr):
-    """Return the largest detected face box (x, y, w, h) in a BGR image, or None."""
+    """Return the largest detected face (all 15 elements including landmarks) in a BGR image, or None."""
     if bgr is None or bgr.size == 0:
         return None
     if not _load_face_models():
@@ -98,11 +98,14 @@ def _detect_face_box(bgr):
     det = _face_detector
     try:
         det.setInputSize((w, h))
-        faces, _ = det.detect(bgr)
+        result = det.detect(bgr)
+        # result is a tuple: (retval, faces) where faces is ndarray
+        faces = result[1] if isinstance(result, tuple) else result
         if faces is None or getattr(faces, 'ndim', 0) != 2 or len(faces) == 0:
             return None
+        # Maximize width * height (f[2] * f[3])
         best = max(faces, key=lambda f: f[2] * f[3])
-        return best[:4].copy()
+        return best.copy()
     except Exception as e:
         print(f"[AI ERROR] YuNet detect failed: {e}")
         return None
