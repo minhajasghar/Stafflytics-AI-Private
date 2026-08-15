@@ -882,12 +882,21 @@ html { overflow-x: hidden; }
         background: var(--surface);
         border-top: 1px solid var(--border);
         z-index: 1000;
-        align-items: stretch;
         box-shadow: 0 -4px 20px rgba(0,0,0,0.08);
+        overflow-x: auto;
+        overflow-y: hidden;
+        flex-wrap: nowrap;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+    
+    .mobile-bottom-nav::-webkit-scrollbar {
+        display: none;
     }
 
     .mobile-bottom-nav .nav-item {
-        flex: 1;
+        flex: 0 0 20vw;
+        width: 20vw;
         height: 100%;
         display: flex;
         flex-direction: column;
@@ -899,53 +908,6 @@ html { overflow-x: hidden; }
         transition: 0.2s;
         cursor: pointer;
         color: var(--text-muted);
-        width: auto;
-    }
-    
-    .mobile-menu-overlay {
-        position: fixed;
-        inset: 0;
-        background: rgba(0,0,0,0.5);
-        z-index: 1500;
-        backdrop-filter: blur(2px);
-    }
-    .mobile-menu-sheet {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        background: var(--surface);
-        z-index: 2000;
-        border-radius: 20px 20px 0 0;
-        box-shadow: 0 -10px 25px rgba(0,0,0,0.1);
-        padding-bottom: 20px;
-        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .mobile-menu-sheet.hidden {
-        transform: translateY(100%);
-        display: block !important;
-    }
-    .mobile-menu-overlay.hidden {
-        display: none !important;
-    }
-    .mobile-menu-item {
-        padding: 15px 20px;
-        font-size: 1rem;
-        font-weight: 700;
-        color: var(--text);
-        display: flex;
-        align-items: center;
-        gap: 15px;
-        border-radius: 12px;
-        cursor: pointer;
-    }
-    .mobile-menu-item:hover, .mobile-menu-item:active {
-        background: var(--nav-hover);
-    }
-    .mobile-menu-item i {
-        font-size: 1.2rem;
-        width: 25px;
-        text-align: center;
     }
 
     .mobile-bottom-nav .nav-item span {
