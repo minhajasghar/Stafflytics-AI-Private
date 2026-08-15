@@ -22,9 +22,10 @@ logger = logging.getLogger('PTZ-Relay')
 # Default hardcoded camera settings
 # Change these if the local camera IP or credentials change
 CAMERA_IP = "192.168.50.251"
-CAMERA_PORT = "8080"
+CAMERA_PORT = "80"
 CAMERA_USER = "admin"
 CAMERA_PASS = "L2DD2594"
+
 
 @app.route('/ptz', methods=['POST', 'GET'])
 def ptz_relay():
