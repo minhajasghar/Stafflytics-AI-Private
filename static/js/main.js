@@ -354,30 +354,43 @@ async function loadCameraSettings() {
         const res = await fetch('/api/settings/emails');
         const data = await res.json();
         const urlEl = document.getElementById('cam-rtsp-url');
-        if (urlEl) urlEl.value = data.rtsp_url || 'rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=1';
+        if (urlEl) urlEl.value = data.rtsp_url || '';
+        if (urlEl && !urlEl.value) urlEl.placeholder = 'rtsp://100.x.x.x:8554/cam (Tailscale IP)';
         const qualityEl = document.getElementById('cam-quality');
         if (qualityEl) {
-            qualityEl.value = data.camera_preset || '480p';
+            qualityEl.value = data.camera_preset || '720p';
         }
     } catch (e) { console.error("Error loading camera settings", e); }
 }
 
 async function saveCameraSettings() {
-    const data = {
-        rtsp_url: document.getElementById('cam-rtsp-url').value,
-        camera_preset: document.getElementById('cam-quality').value
-    };
+    const url = document.getElementById('cam-rtsp-url').value.trim();
+    const preset = document.getElementById('cam-quality').value;
+    if (!url) { alert('Please enter a valid RTSP URL before saving.'); return; }
+    const btn = event && event.target ? event.target : document.querySelector('[onclick="saveCameraSettings()"]');
+    const origText = btn ? btn.innerHTML : '';
+    if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...'; btn.disabled = true; }
+    const data = { rtsp_url: url, camera_preset: preset };
     try {
-        const res = await fetch('/api/settings/emails', {
+        // Use dedicated camera endpoint (not emails) so it also restarts MediaMTX
+        const res = await fetch('/api/settings/camera', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
         if (res.ok) {
-            alert("✅ Camera settings saved! Reconnecting...");
-            await refreshCamera();
+            if (btn) { btn.innerHTML = '<i class="fas fa-check"></i> Saved!'; }
+            setTimeout(() => { if (btn) { btn.innerHTML = origText; btn.disabled = false; } }, 2500);
+            setTimeout(() => refreshCamera(), 3000);
+        } else {
+            const err = await res.text();
+            alert('Error saving: ' + err);
+            if (btn) { btn.innerHTML = origText; btn.disabled = false; }
         }
-    } catch (e) { alert("❌ Error saving camera settings."); }
+    } catch (e) {
+        alert('Network error saving camera settings.');
+        if (btn) { btn.innerHTML = origText; btn.disabled = false; }
+    }
 }
 
 // --- PTZ CONTROLS ---

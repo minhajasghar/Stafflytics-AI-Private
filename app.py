@@ -114,15 +114,21 @@ def sync_camera_config():
     # is used. Must be checked BEFORE the legacy local-RTSP block so that
     # set_stream_mode("rtsp") and setup_mediamtx() are never called in this mode.
     if stream_manager.CAMERA_SOURCE_MODE == "remote_rtsp":
-        stream_manager.setup_remote_rtsp_stream()
+        # Always read from the database first — this is what the user saved in Settings.
+        conf = database.get_system_settings()
+        saved_url = conf.get('rtsp_url', '').strip()
+        if saved_url:
+            # Pass it explicitly so the stream manager uses the latest saved URL.
+            stream_manager.setup_remote_rtsp_stream(remote_url=saved_url)
+            PHYSICAL_RTSP_URL = saved_url
+        else:
+            stream_manager.setup_remote_rtsp_stream()
+            if stream_manager.REMOTE_RTSP_URL:
+                PHYSICAL_RTSP_URL = stream_manager.REMOTE_RTSP_URL
         RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"  # H.264 transcoded AI stream
-        # Point the PTZ/ONVIF target at the host we actually stream from, so
-        # camera movement works from the VPS (the local 192.168.x.x default is
-        # not reachable there).
-        if stream_manager.REMOTE_RTSP_URL:
-            PHYSICAL_RTSP_URL = stream_manager.REMOTE_RTSP_URL
         print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {stream_manager.REMOTE_RTSP_URL}")
         return
+
 
     # --- LEGACY LOCAL-RTSP MODE (deactivated when Imou is configured). ---
     stream_manager.set_stream_mode("rtsp")
@@ -1410,16 +1416,25 @@ def update_zones():
 @login_required
 def email_settings():
     if request.method == 'POST':
+        # This endpoint historically received BOTH email and camera settings payload
+        # I'll let it keep the database.update_system_settings() logic because
+        # we will extract camera specific settings into a dedicated endpoint.
         database.update_system_settings(request.json)
         sync_mailer_config()
-        sync_camera_config()
-        sync_camera_preset()
-        global camera_stream
-        if camera_stream:
-            print("[SYSTEM] Reconnecting camera to apply new settings...")
-            camera_stream.online = False
         return jsonify({"status": "success"})
     return jsonify(database.get_system_settings())
+
+@app.route('/api/settings/camera', methods=['POST'])
+@login_required
+def camera_settings():
+    database.update_system_settings(request.json)
+    sync_camera_config()
+    sync_camera_preset()
+    global camera_stream
+    if camera_stream:
+        print("[SYSTEM] Reconnecting camera to apply new settings...")
+        camera_stream.online = False
+    return jsonify({"status": "success"})
 
 @app.route('/api/analytics/customers/history')
 @login_required

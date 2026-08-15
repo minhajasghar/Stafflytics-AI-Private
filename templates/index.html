@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stafflytics AI | Business Intelligence Suite</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=8) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=9) }}">
+
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         .chat-bubble { position: fixed; bottom: 30px; right: 30px; width: 60px; height: 60px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; cursor: pointer; box-shadow: 0 10px 25px rgba(217,119,6,0.4); z-index: 2000; transition: 0.3s; }
@@ -1014,5 +1015,70 @@
             }, 1500);
         });
     </script>
+
+    <!-- Mobile Bottom Navigation Bar (only visible on phones ≤768px) -->
+    <nav class="mobile-bottom-nav" id="mobile-bottom-nav">
+        <div class="nav-item active" title="Monitor" id="mob-nav-0" onclick="mobileNav(0)">
+            <i class="fas fa-desktop"></i>
+            <span>Monitor</span>
+        </div>
+        <div class="nav-item" title="Analytics" id="mob-nav-1" onclick="mobileNav(1)">
+            <i class="fas fa-chart-pie"></i>
+            <span>Analytics</span>
+        </div>
+        <div class="nav-item" title="Staff" id="mob-nav-2" onclick="mobileNav(2)">
+            <i class="fas fa-user-friends"></i>
+            <span>Staff</span>
+        </div>
+        <div class="nav-item" title="Reports" id="mob-nav-3" onclick="mobileNav(3)">
+            <i class="fas fa-file-invoice"></i>
+            <span>Reports</span>
+        </div>
+        <div class="nav-item" title="Settings" id="mob-nav-7" onclick="mobileNav(7)">
+            <i class="fas fa-cog"></i>
+            <span>Settings</span>
+        </div>
+    </nav>
+
+    <script>
+    // Mobile navigation: mirrors handleNavClick from main.js
+    // Maps simplified 5-tab bottom nav to the full 8-section navigation
+    const MOB_NAV_MAP = {
+        0: 0, // Monitor
+        1: 1, // Analytics
+        2: 2, // Staff List
+        3: 3, // Reporting
+        7: 7  // Settings
+    };
+
+    function mobileNav(idx) {
+        // Find the corresponding desktop nav item and simulate a click
+        const desktopNavItems = document.querySelectorAll('.sidebar-nav .nav-item');
+        if (desktopNavItems[idx]) {
+            handleNavClick(desktopNavItems[idx]);
+        }
+
+        // Update mobile nav active state
+        document.querySelectorAll('.mobile-bottom-nav .nav-item').forEach(el => el.classList.remove('active'));
+        const mobEl = document.getElementById('mob-nav-' + idx);
+        if (mobEl) mobEl.classList.add('active');
+    }
+
+    // Sync mobile nav when desktop nav is clicked
+    const _origHandleNavClick = window.handleNavClick;
+    window.handleNavClick = function(el) {
+        _origHandleNavClick && _origHandleNavClick(el);
+        // Sync bottom nav active state if on mobile
+        const desktopNavItems = Array.from(document.querySelectorAll('.sidebar-nav .nav-item'));
+        const idx = desktopNavItems.indexOf(el);
+        const mobMap = { 0: 0, 1: 1, 2: 2, 3: 3, 7: 7 };
+        document.querySelectorAll('.mobile-bottom-nav .nav-item').forEach(e => e.classList.remove('active'));
+        if (mobMap[idx] !== undefined) {
+            const mobEl = document.getElementById('mob-nav-' + idx);
+            if (mobEl) mobEl.classList.add('active');
+        }
+    };
+    </script>
 </body>
 </html>
+
