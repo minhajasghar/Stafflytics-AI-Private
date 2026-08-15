@@ -149,7 +149,7 @@ paths:
     # at 640x480 for lightweight, error-free AI reads. ultrafast+zerolatency keeps
     # latency under 200ms while eliminating all HEVC decode failures that caused
     # frame drops and bounding box disappearances.
-    runOnInit: '"{ffmpeg_path}" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    runOnInit: '"{ffmpeg_path}" -loglevel quiet -stimeout 15000000 -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
     runOnInitRestart: yes
 
   mystream:
@@ -249,7 +249,7 @@ paths:
 
   cam_ai:
     # H.264 transcoded stream for OpenCV / YOLO AI processing (unchanged).
-    runOnInit: '"{ffmpeg_path}" -loglevel quiet -stimeout 5000000 -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    runOnInit: '"{ffmpeg_path}" -loglevel quiet -stimeout 15000000 -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
     runOnInitRestart: yes
 
   mystream:
