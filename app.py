@@ -602,7 +602,6 @@ def generate_frames():
             if not any(s.online for s in streams):
                 err = np.zeros((camera_height or 480, camera_width or 640, 3), np.uint8)
                 cv2.putText(err, "CAMERA OFFLINE", (140, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50, 50, 255), 3)
-                err = cv2.flip(err, -1)
                 ret, buf = cv2.imencode('.jpg', err)
                 yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
                 time.sleep(1); continue
