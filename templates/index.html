@@ -92,29 +92,29 @@
                             <button class="btn-zone" onclick="toggleFullscreen()" style="background:rgba(255,255,255,0.25); color:white;"><i class="fas fa-expand" id="fullscreen-icon"></i></button>
                         </div>
                     </div>
-                    <div class="video-wrapper">
+                    <div class="video-wrapper" style="transform: rotate(180deg);">
                         <!-- Imou Open Platform HLS Video Feed (primary) -->
-                        <video id="hls-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none; transform: rotate(180deg);"></video>
+                        <video id="hls-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none;"></video>
                         <!-- WebRTC Video Feed (legacy local-RTSP deployment; disabled in Imou mode) -->
-                        <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none; transform: rotate(180deg);"></video>
+                        <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none;"></video>
                         <!-- Fallback MJPEG Image Feed -->
-                        <img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed" style="width:100%; height:100%; object-fit:contain; display:block; transform: rotate(180deg);">
+                        <img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed" style="width:100%; height:100%; object-fit:contain; display:block;">
                         
                         <!-- Stream Status Overlay -->
-                        <div id="webrtc-status-overlay" style="position:absolute; top:15px; left:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s;">
+                        <div id="webrtc-status-overlay" style="position:absolute; top:15px; left:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s; transform: rotate(180deg);">
                             <span class="webrtc-pulse-dot" id="webrtc-status-dot" style="width:8px; height:8px; background:#94a3b8; border-radius:50%; display:inline-block;"></span>
                             <span id="webrtc-status-text">Checking...</span>
                         </div>
                         <!-- AI Detection Canvas Overlay (Z-index high but click-through) -->
-                        <canvas id="detection-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:5; transform: rotate(180deg);"></canvas>
-                        <canvas id="zone-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none; transform: rotate(180deg);"></canvas>
+                        <canvas id="detection-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:5;"></canvas>
+                        <canvas id="zone-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none;"></canvas>
                         <div class="ptz-controls" id="ptz-controls">
                             <button class="ptz-btn ptz-up" data-dir="Up" onmousedown="ptzStart('Up')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Up')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-up"></i></button>
                             <button class="ptz-btn ptz-left" data-dir="Left" onmousedown="ptzStart('Left')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Left')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-left"></i></button>
                             <button class="ptz-btn ptz-right" data-dir="Right" onmousedown="ptzStart('Right')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Right')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-right"></i></button>
                             <button class="ptz-btn ptz-down" data-dir="Down" onmousedown="ptzStart('Down')" onmouseup="ptzStop()" onmouseleave="ptzStop()" ontouchstart="ptzStartTouch(event, 'Down')" ontouchend="ptzStop()" ontouchcancel="ptzStop()"><i class="fas fa-chevron-down"></i></button>
                         </div>
-                        <div id="ptz-status" style="position:absolute; left:15px; bottom:15px; z-index:10; display:none; background:rgba(239,68,68,0.9); color:white; padding:6px 12px; border-radius:30px; font-size:0.72rem; font-weight:700; box-shadow:0 4px 12px rgba(0,0,0,0.2);"></div>
+                        <div id="ptz-status" style="position:absolute; left:15px; bottom:15px; z-index:10; display:none; background:rgba(239,68,68,0.9); color:white; padding:6px 12px; border-radius:30px; font-size:0.72rem; font-weight:700; box-shadow:0 4px 12px rgba(0,0,0,0.2); transform: rotate(180deg);"></div>
                     </div>
                 </section>
                 <section class="stats-bar">
