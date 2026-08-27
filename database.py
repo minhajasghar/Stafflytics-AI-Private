@@ -484,29 +484,40 @@ def get_comprehensive_summary(date_str=None):
         
         if not date_str:
             date_clause = "date(entry_time, 'localtime') = date('now', 'localtime')"
-            cust_date_clause = "date(entry_time, 'localtime') = date('now', 'localtime')"
+            cust_date_clause = "date(exit_time, 'localtime') = date('now', 'localtime') OR date(entry_time, 'localtime') = date('now', 'localtime')"
         else:
             date_clause = f"date(entry_time, 'localtime') = '{date_str}'"
-            cust_date_clause = f"date(entry_time, 'localtime') = '{date_str}'"
+            cust_date_clause = f"date(exit_time, 'localtime') = '{date_str}' OR date(entry_time, 'localtime') = '{date_str}'"
         
         # 1. Staff Stats
         cursor.execute(f"""
-            SELECT COUNT(DISTINCT staff_id), SUM(is_late) 
+            SELECT COUNT(DISTINCT staff_id), COALESCE(SUM(is_late), 0)
             FROM attendance WHERE {date_clause}
         """)
         s_stats = cursor.fetchone()
         
-        # 2. Customer Stats
+        # 2. Staff Efficiency
+        cursor.execute(f"""
+            SELECT AVG(CAST(active_seconds AS REAL) / 
+                       CASE WHEN exit_time IS NOT NULL 
+                            THEN MAX(1, (strftime('%s', exit_time, 'localtime') - strftime('%s', entry_time, 'localtime'))) 
+                            ELSE MAX(1, (strftime('%s', 'now', 'localtime') - strftime('%s', entry_time, 'localtime'))) END) * 100
+            FROM attendance WHERE {date_clause}
+        """)
+        eff_row = cursor.fetchone()
+        efficiency = eff_row[0] or 0.0 if eff_row else 0.0
+        
+        # 3. Customer Stats
         cursor.execute(f"SELECT COUNT(*), AVG(duration_minutes) FROM customers WHERE {cust_date_clause}")
         c_stats = cursor.fetchone()
         
         conn.close()
         return {
-            "staff_present": s_stats[0] or 0,
-            "late_count": s_stats[1] or 0,
-            "customers": c_stats[0] or 0,
-            "avg_stay": round(float(c_stats[1] or 0), 1)
-
+            "staff_present": s_stats[0] or 0 if s_stats else 0,
+            "late_count": s_stats[1] or 0 if s_stats else 0,
+            "avg_efficiency": round(float(efficiency), 1),
+            "customers": c_stats[0] or 0 if c_stats else 0,
+            "avg_stay": round(float(c_stats[1] or 0), 1) if c_stats and c_stats[1] is not None else 0.0
         }
 
 # --- CORE LOGIC ---
@@ -722,37 +733,7 @@ def get_synergy_metrics():
             ]
         }
 
-def get_comprehensive_summary():
-    """Returns a full summary for PDF/Excel reporting"""
-    with db_lock:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Staff Present Today
-        cursor.execute("SELECT COUNT(DISTINCT staff_id) FROM attendance WHERE date(entry_time, 'localtime') = date('now', 'localtime')")
-        present = cursor.fetchone()[0] or 0
-        
-        # Average Efficiency Today
-        cursor.execute("""
-            SELECT AVG(CAST(active_seconds AS REAL) / 
-                       CASE WHEN exit_time IS NOT NULL 
-                            THEN MAX(1, (strftime('%s', exit_time, 'localtime') - strftime('%s', entry_time, 'localtime'))) 
-                            ELSE MAX(1, (strftime('%s', 'now', 'localtime') - strftime('%s', entry_time, 'localtime'))) END) * 100
-            FROM attendance WHERE date(entry_time, 'localtime') = date('now', 'localtime')
-        """)
-        efficiency = cursor.fetchone()[0] or 0
-        
-        # Customer Stats Today
-        cursor.execute("SELECT COUNT(*), AVG(duration_minutes) FROM customers WHERE date(exit_time, 'localtime') = date('now', 'localtime')")
-        c_stats = cursor.fetchone()
-        
-        conn.close()
-        return {
-            "staff_present": present,
-            "avg_efficiency": round(efficiency, 1),
-            "customers": c_stats[0] or 0,
-            "avg_stay": round(c_stats[1] or 0, 1)
-        }
+
 
 def get_performance_rankings():
     """Calculates efficiency score: (Active Seconds / Total Worked Seconds) * 100"""

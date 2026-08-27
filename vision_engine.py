@@ -530,23 +530,34 @@ class VisionEngine:
                                             state["photo"] = b64_photo
                                             state["last_sync"] = current_time
                             if not fallback_match:
-                                # Convert face_crop to base64 photo
-                                import base64
-                                _, buffer = cv2.imencode('.jpg', face_crop)
-                                b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+                                # Only auto-register a new customer if track has been consistently tracked
+                                # and face is clear (prevents spamming customer records on sitting staff)
+                                track_s = self.person_states.get(track_id, {})
+                                track_age = current_time - track_s.get("last_sync", current_time)
+                                consensus_count = len(self.recognition_consensus.get(track_id, []))
                                 
-                                new_c_id = database.register_customer(pickle.dumps(face_encodings[0]), photo=b64_photo)
-                                print(f"[AI] Auto-registered as NEW customer (ID {new_c_id})")
-                                self.load_known_faces()
-                                with self.lock:
-                                    if track_id in self.person_states:
-                                        state = self.person_states[track_id]
-                                        state["db_id"] = f"C_{new_c_id}"
-                                        state["id"] = f"GUEST #{new_c_id}"
-                                        state["name"] = "New Guest"
-                                        state["last_sync"] = current_time
-                                        state["visits"] = 1
-                                        state["photo"] = b64_photo
+                                if consensus_count >= 3 and face_crop.shape[0] >= 40 and face_crop.shape[1] >= 40:
+                                    # Convert face_crop to base64 photo
+                                    import base64
+                                    _, buffer = cv2.imencode('.jpg', face_crop)
+                                    b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+                                    
+                                    new_c_id = database.register_customer(pickle.dumps(face_encodings[0]), photo=b64_photo)
+                                    print(f"[AI] Auto-registered as NEW customer (ID {new_c_id})")
+                                    self.load_known_faces()
+                                    with self.lock:
+                                        if track_id in self.person_states:
+                                            state = self.person_states[track_id]
+                                            state["db_id"] = f"C_{new_c_id}"
+                                            state["id"] = f"GUEST #{new_c_id}"
+                                            state["name"] = f"Guest #{new_c_id}"
+                                            state["last_sync"] = current_time
+                                            state["visits"] = 1
+                                            state["photo"] = b64_photo
+                                else:
+                                    with self.lock:
+                                        if track_id in self.recognition_consensus:
+                                            self.recognition_consensus[track_id].append("Unknown")
                             else:
                                 self.load_known_faces()
                                 

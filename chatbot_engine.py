@@ -23,40 +23,58 @@ class StafflyticsIntelligenceAgent:
     def _get_db_context(self):
         try:
             stats = database.get_comprehensive_summary()
+        except Exception:
+            stats = {}
+        try:
             metrics = database.get_detailed_performance_metrics()
+        except Exception:
+            metrics = []
+        try:
             roster = database.get_todays_shift_roster()
+        except Exception:
+            roster = []
+        try:
             cstats = database.get_monthly_customer_stats()
+        except Exception:
+            cstats = {}
+        try:
             wellbeing = database.get_wellbeing_data()
+        except Exception:
+            wellbeing = []
 
-            context = f"""You are Stafflytics AI, a restaurant business intelligence assistant. Answer concisely using the data below.
+        context = f"""You are Stafflytics AI, an expert business intelligence assistant. Answer concisely and accurately using the live business data below:
 
 Today: {datetime.now().strftime('%d %b %Y, %A')}
 
-STAFF: {stats.get('staff_present', 0)} present, {stats.get('late_count', 0)} late, {stats.get('avg_efficiency', 0)}% avg efficiency.
+STAFF ATTENDANCE & PERFORMANCE:
+- Present Today: {stats.get('staff_present', 0)}
+- Late Arrivals: {stats.get('late_count', 0)}
+- Average Team Efficiency: {stats.get('avg_efficiency', 0)}%
 
-CUSTOMERS: {cstats.get('monthly_total', 0)} monthly, {cstats.get('repeat_customers', 0)} returning. Avg stay {cstats.get('avg_visit', 0)} min.
+CUSTOMERS & VISITOR METRICS:
+- Total Customers Today: {stats.get('customers', 0)}
+- Monthly Visitors: {cstats.get('monthly_total', 0)}
+- Repeat/Loyal Customers: {cstats.get('repeat_customers', 0)}
+- Average Visit Duration: {stats.get('avg_stay', cstats.get('avg_visit', 0))} mins
 
-WELLBEING: {len([w for w in wellbeing if w.get('needs_break')]) if wellbeing else 0} staff need breaks.
-
-ROSTER ({len(roster)} staff): {', '.join([f"{r['name']} ({r['role']}, {r['shift']})" for r in roster[:5]])}
-
-TOP PERFORMERS: {', '.join([f"{m['name']} ({m['role']}, {m['days']}d, {m['late']} late)" for m in sorted(metrics, key=lambda x: x['days'] - x['late']*2, reverse=True)[:3]]) if metrics else 'No data'}
+WELLBEING & SHIFTS:
+- Staff needing breaks: {len([w for w in wellbeing if w.get('needs_break')]) if wellbeing else 0}
+- Shift Roster ({len(roster)} scheduled): {', '.join([f"{r['name']} ({r['role']}, {r['shift']})" for r in roster[:5]]) if roster else 'None scheduled yet'}
+- Top Performers: {', '.join([f"{m['name']} ({m['role']}, {m['days']}d worked, {m['late']} late)" for m in sorted(metrics, key=lambda x: x.get('days', 0) - x.get('late', 0)*2, reverse=True)[:3]]) if metrics else 'No active data yet'}
 """
-            return context
-        except Exception as e:
-            return f"Stafflytics AI active. Error fetching context: {e}"
+        return context
 
     def _query_gemini(self, query):
         if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
             return "⚠️ Gemini API not configured. Set a valid GEMINI_API_KEY in the .env file.\n\n*Get a free key at https://aistudio.google.com/apikey*"
-        models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash']
+        models_to_try = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash']
         for model_name in models_to_try:
             for attempt in range(2):
                 try:
                     model = genai.GenerativeModel(model_name)
                     context = self._get_db_context()
-                    prompt = f"{context}\n\nAnswer this business query concisely using ONLY the data above. If the query is a greeting like 'hi' or 'thanks', just greet back briefly — do not include raw data. Never repeat the database context in your response.\n\nUser: {query}"
-                    resp = model.generate_content(prompt, generation_config={'max_output_tokens': 500, 'temperature': 0.3})
+                    prompt = f"{context}\n\nAnswer this user query accurately, professionally, and concisely using the live business data above. If the query asks for analytics or metrics, provide the exact numbers from the data. If the query is a greeting like 'hi', greet back warmly.\n\nUser: {query}"
+                    resp = model.generate_content(prompt, generation_config={'max_output_tokens': 500, 'temperature': 0.2})
                     return resp.text.strip() if resp and resp.text else None
                 except Exception as e:
                     err = str(e)
