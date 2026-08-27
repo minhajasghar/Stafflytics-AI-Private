@@ -197,7 +197,7 @@ class VisionEngine:
         self.dwell_buffer = [] # (detection, timestamp) for persistence when YOLO briefly misses
         
         self.frame_count = 0
-        self.rec_throttle_frames = 5
+        self.rec_throttle_frames = 2
         self.heartbeat_interval = 60
         
         self.role_work_zones = {
@@ -456,10 +456,8 @@ class VisionEngine:
                             winner = max(counts, key=counts.get) if counts else "Unknown"
                             known_staff_count = len(self.known_face_encodings)
                         
-                        # CRITICAL FIX: Only auto-register as customer after 15 consecutive Unknown votes
-                        # This gives face recognition enough time to properly identify enrolled staff.
-                        # If staff encodings exist, be even more conservative (wait longer).
-                        min_unknown_votes = 15 if known_staff_count > 0 else 8
+                        # Rapid Guest Recognition: recognize non-staff in 2 checks (~200ms)
+                        min_unknown_votes = 2
                         
                         if consensus_len >= min_unknown_votes and winner == "Unknown":
                             # Double-check with relaxed threshold before creating new customer
@@ -537,7 +535,7 @@ class VisionEngine:
                                 track_age = current_time - track_s.get("last_sync", current_time)
                                 consensus_count = len(self.recognition_consensus.get(track_id, []))
                                 
-                                if consensus_count >= 3 and face_crop.shape[0] >= 40 and face_crop.shape[1] >= 40:
+                                if consensus_count >= 1 and face_crop.shape[0] >= 30 and face_crop.shape[1] >= 30:
                                     # Convert face_crop to base64 photo
                                     import base64
                                     _, buffer = cv2.imencode('.jpg', face_crop)
