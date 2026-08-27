@@ -3,6 +3,11 @@ rtspAddress: :8554
 rtpAddress: :8556
 rtcpAddress: :8557
 
+# Remote VPN/Tailscale transmission buffer (prevents 'reader is too slow' packet drops)
+writeQueueSize: 8192
+writeTimeout: 15s
+readTimeout: 30s
+
 webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigins: ['*']
@@ -10,12 +15,8 @@ webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s
 
-# Increase read timeout to prevent disconnects during brief background AI processing spikes
-readTimeout: 30s
-
-# Disable unused protocols to prevent port conflicts with Node/Express/Next.js
-rtmp: yes
-rtmpAddress: :1935
+# Disable unused protocols
+rtmp: no
 hls: no
 srt: no
 
@@ -25,5 +26,5 @@ paths:
     rtspTransport: tcp
 
   cam:
-    runOnInit: '"C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\bin\ffmpeg.exe" -loglevel warning -rtsp_transport tcp -i rtsp://localhost:8554/cam_raw -vf "scale=1920:1080" -c:v libx264 -preset ultrafast -tune zerolatency -g 20 -keyint_min 20 -sc_threshold 0 -b:v 3000k -maxrate 3500k -bufsize 6000k -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam'
+    runOnInit: '"C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\bin\ffmpeg.exe" -loglevel warning -rtsp_transport tcp -i rtsp://localhost:8554/cam_raw -vf "scale=1920:1080" -c:v libx264 -preset ultrafast -tune zerolatency -r 20 -g 20 -keyint_min 20 -sc_threshold 0 -b:v 2200k -maxrate 2800k -bufsize 5000k -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam'
     runOnInitRestart: yes
