@@ -770,12 +770,21 @@
             setStatus('HLS Connecting...', '#3b82f6');
 
             function hlsConnected() {
-                video.style.display = 'block';
-                fallbackImg.style.display = 'none';
-                setStatus('HLS Live', '#22c55e', false);
-                updateVideoAspect(); resizeCanvas();
-                setTimeout(() => { if (label.innerText === 'HLS Live') overlay.style.opacity = '0'; }, 3000);
-                startHlsWatchdog();
+                function onHlsRendered() {
+                    if (video.currentTime > 0 || video.readyState >= 2) {
+                        video.style.display = 'block';
+                        fallbackImg.style.display = 'none';
+                        setStatus('HLS Live', '#22c55e', false);
+                        updateVideoAspect(); resizeCanvas();
+                        video.removeEventListener('playing', onHlsRendered);
+                        video.removeEventListener('timeupdate', onHlsRendered);
+                        setTimeout(() => { if (label.innerText === 'HLS Live') overlay.style.opacity = '0'; }, 2500);
+                        startHlsWatchdog();
+                    }
+                }
+                video.addEventListener('playing', onHlsRendered);
+                video.addEventListener('timeupdate', onHlsRendered);
+                video.play().catch(e => console.warn("[HLS] play() failed:", e));
             }
 
             function hlsFallback(msg) {
@@ -918,21 +927,33 @@
 
                 pc.ontrack = (event) => {
                     if (event.streams && event.streams[0]) {
-                    video.srcObject = event.streams[0];
-                    video.style.display = 'block';
-                    updateVideoAspect(); resizeCanvas();
-                        fallbackImg.style.display = 'none';
-                        setStatus('WebRTC Live', '#22c55e', false);
+                        video.srcObject = event.streams[0];
                         window._webrtcRetryCount = 0; // Reset backoff on success
                         
                         // Force browser video tag to play
                         video.play().catch(e => console.warn("[WebRTC] play() failed:", e));
                         
-                        setTimeout(() => {
-                            if (label.innerText === 'WebRTC Live') {
-                                overlay.style.opacity = '0';
+                        // Seamless Zero-Black-Screen Handover:
+                        // Only show WebRTC video after actual video frames are actively playing
+                        function onFirstFrameRendered() {
+                            if (video.currentTime > 0 || video.readyState >= 2) {
+                                video.style.display = 'block';
+                                fallbackImg.style.display = 'none';
+                                updateVideoAspect(); 
+                                resizeCanvas();
+                                setStatus('WebRTC Live', '#22c55e', false);
+                                video.removeEventListener('playing', onFirstFrameRendered);
+                                video.removeEventListener('timeupdate', onFirstFrameRendered);
+                                setTimeout(() => {
+                                    if (label.innerText === 'WebRTC Live') {
+                                        overlay.style.opacity = '0';
+                                    }
+                                }, 2500);
                             }
-                        }, 3000);
+                        }
+
+                        video.addEventListener('playing', onFirstFrameRendered);
+                        video.addEventListener('timeupdate', onFirstFrameRendered);
 
                         // Watchdog to check if video froze silently
                         let lastTime = -1;
