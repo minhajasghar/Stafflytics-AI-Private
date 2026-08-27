@@ -896,44 +896,44 @@ class VisionEngine:
                     if not is_processing and (current_time - last_attempt > check_interval):
                         self.last_rec_attempt[track_id] = current_time
 
-                            face_img = None
+                        face_img = None
 
-                            # Compute scale from DETECTION (640x480) to face_source (native camera res)
-                            fs_scale_x = fw / DETECTION_WIDTH
-                            fs_scale_y = fh / DETECTION_HEIGHT
+                        # Compute scale from DETECTION (640x480) to face_source (native camera res)
+                        fs_scale_x = fw / DETECTION_WIDTH
+                        fs_scale_y = fh / DETECTION_HEIGHT
 
-                            # Try precise face crop using YOLO keypoints (nose)
-                            if all_kps is not None and i < len(all_kps):
-                                kp = all_kps[i]
-                                nose = kp[0]
-                                if nose[0] > 0 and nose[1] > 0:
-                                    nose_x = int(nose[0] * fs_scale_x)
-                                    nose_y = int(nose[1] * fs_scale_y)
-                                    det_box_h = y2 - y1
-                                    face_size = max(int(det_box_h * fs_scale_y * 0.35), 80)
-                                    # Shift crop upward so more area is above the nose
-                                    # to consistently capture eyes and forehead
-                                    shift_up = int(face_size * 0.15)
-                                    x1f = max(0, nose_x - face_size)
-                                    y1f = max(0, nose_y - face_size - shift_up)
-                                    x2f = min(fw, nose_x + face_size)
-                                    y2f = min(fh, nose_y + face_size - shift_up)
-                                    if x2f > x1f and y2f > y1f:
-                                        face_img = face_source[y1f:y2f, x1f:x2f]
-
-                            if face_img is None:
-                                y1f = int(y1 * fs_scale_y)
-                                y2f = int(y1f + (y2 - y1) * fs_scale_y * 0.30)
-                                x_margin = int((x2 - x1) * fs_scale_x * 0.10)
-                                x1f = max(0, int(x1 * fs_scale_x) - x_margin)
-                                x2f = min(fw, int(x2 * fs_scale_x) + x_margin)
+                        # Try precise face crop using YOLO keypoints (nose)
+                        if all_kps is not None and i < len(all_kps):
+                            kp = all_kps[i]
+                            nose = kp[0]
+                            if nose[0] > 0 and nose[1] > 0:
+                                nose_x = int(nose[0] * fs_scale_x)
+                                nose_y = int(nose[1] * fs_scale_y)
+                                det_box_h = y2 - y1
+                                face_size = max(int(det_box_h * fs_scale_y * 0.35), 80)
+                                # Shift crop upward so more area is above the nose
+                                # to consistently capture eyes and forehead
+                                shift_up = int(face_size * 0.15)
+                                x1f = max(0, nose_x - face_size)
+                                y1f = max(0, nose_y - face_size - shift_up)
+                                x2f = min(fw, nose_x + face_size)
+                                y2f = min(fh, nose_y + face_size - shift_up)
                                 if x2f > x1f and y2f > y1f:
                                     face_img = face_source[y1f:y2f, x1f:x2f]
 
-                            if face_img is not None and face_img.shape[0] >= 64 and face_img.shape[1] >= 64:
-                                with self.lock:
-                                    self.processing_tracks.add(track_id)
-                                self.recognition_queue.put((track_id, face_img.copy(), current_zone, current_time))
+                        if face_img is None:
+                            y1f = int(y1 * fs_scale_y)
+                            y2f = int(y1f + (y2 - y1) * fs_scale_y * 0.30)
+                            x_margin = int((x2 - x1) * fs_scale_x * 0.10)
+                            x1f = max(0, int(x1 * fs_scale_x) - x_margin)
+                            x2f = min(fw, int(x2 * fs_scale_x) + x_margin)
+                            if x2f > x1f and y2f > y1f:
+                                face_img = face_source[y1f:y2f, x1f:x2f]
+
+                        if face_img is not None and face_img.shape[0] >= 64 and face_img.shape[1] >= 64:
+                            with self.lock:
+                                self.processing_tracks.add(track_id)
+                            self.recognition_queue.put((track_id, face_img.copy(), current_zone, current_time))
                     else:
                         # Sync presence heartbeat (only for confirmed staff, not customers)
                         with self.lock:
