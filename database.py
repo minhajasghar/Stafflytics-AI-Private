@@ -418,6 +418,14 @@ def update_staff(staff_id, name, role, shift_time, shift_name, rate, salary_type
         conn.commit()
         conn.close()
 
+def update_staff_encodings(staff_id, encoding_blob):
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE staff SET face_encoding = ? WHERE id = ?", (encoding_blob, staff_id))
+        conn.commit()
+        conn.close()
+
 def get_all_staff():
     with db_lock:
         conn = get_db_connection()

@@ -233,12 +233,12 @@ class VisionEngine:
                     except: raw = np.frombuffer(encoding_blob, dtype=np.float64)
                     # Support both single encoding (legacy) and multi-encoding list
                     if isinstance(raw, list):
-                        enc_list = raw
+                        enc_list = [np.array(e, dtype=np.float32) for e in raw if e is not None]
                     else:
-                        enc_list = [raw]
+                        enc_list = [np.array(raw, dtype=np.float32)]
                     for enc in enc_list:
                         new_encodings.append(enc)
-                        new_metadata.append({"id": s_id, "name": name, "role": role})
+                        new_metadata.append({"id": s_id, "name": name, "role": role, "all_encs": enc_list})
             
             # Load Customers
             cust_data = database.get_known_customers()
@@ -246,10 +246,15 @@ class VisionEngine:
             c_metadata = []
             for row in cust_data:
                 c_id, name, encoding_blob, visit_count, photo = row[:5]
-                try: encoding = pickle.loads(encoding_blob)
-                except: encoding = np.frombuffer(encoding_blob, dtype=np.float64)
-                c_encodings.append(encoding)
-                c_metadata.append({"id": c_id, "name": name, "visits": visit_count, "photo": photo})
+                try: raw_c = pickle.loads(encoding_blob)
+                except: raw_c = np.frombuffer(encoding_blob, dtype=np.float64)
+                if isinstance(raw_c, list):
+                    c_enc_list = [np.array(e, dtype=np.float32) for e in raw_c if e is not None]
+                else:
+                    c_enc_list = [np.array(raw_c, dtype=np.float32)]
+                for enc in c_enc_list:
+                    c_encodings.append(enc)
+                    c_metadata.append({"id": c_id, "name": name, "visits": visit_count, "photo": photo, "all_encs": c_enc_list})
             
             with self.lock:
                 self.known_face_encodings = new_encodings
@@ -371,6 +376,28 @@ class VisionEngine:
                             
                             if can_assign_staff:
                                 print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — sim={best_staff_sim:.4f}")
+                                
+                                # MULTI-ANGLE LEARNING: Store new distinct face angles over time (up to 5)
+                                s_meta_matched = known_staff_meta[best_staff_idx]
+                                stored_list = s_meta_matched.get("all_encs", [])
+                                if stored_list and best_staff_sim >= 0.38:
+                                    sims_to_self = _cos_sims(stored_list, face_encodings[0])
+                                    if float(np.max(sims_to_self)) < 0.85:
+                                        stored_list.append(face_encodings[0])
+                                        if len(stored_list) > 5:
+                                            # Prune closest pair to maintain maximal angle diversity
+                                            pair_sims = []
+                                            for i in range(len(stored_list)):
+                                                for j in range(i + 1, len(stored_list)):
+                                                    sim_ij = float(np.dot(stored_list[i], stored_list[j]) / (np.linalg.norm(stored_list[i]) * np.linalg.norm(stored_list[j]) + 1e-6))
+                                                    pair_sims.append((sim_ij, i, j))
+                                            if pair_sims:
+                                                pair_sims.sort(key=lambda x: x[0], reverse=True)
+                                                stored_list.pop(pair_sims[0][2])
+                                        database.update_staff_encodings(match_id, pickle.dumps(stored_list))
+                                        s_meta_matched["all_encs"] = stored_list
+                                        print(f"[AI MULTI-ANGLE] Learned new distinct face angle for Staff {s_meta_matched['name']} (total stored: {len(stored_list)}/5)")
+                                
                                 with self.lock:
                                     if track_id in self.person_states:
                                         s = self.person_states[track_id]
@@ -401,8 +428,30 @@ class VisionEngine:
                             match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
                             match_source = "customer"
                             matched_cust_idx = best_cust_idx
-                            database.update_customer_encoding(known_cust_meta[matched_cust_idx]['id'], pickle.dumps(face_encodings[0]))
-                            print(f"[AI] Customer match: {known_cust_meta[best_cust_idx]['name']} (ID {known_cust_meta[best_cust_idx]['id']}) — sim={best_cust_sim:.4f}")
+                            c_id_matched = known_cust_meta[matched_cust_idx]['id']
+                            
+                            # MULTI-ANGLE LEARNING: Store new distinct face angles for customer (up to 5)
+                            c_stored_list = known_cust_meta[matched_cust_idx].get("all_encs", [])
+                            if c_stored_list and best_cust_sim >= 0.38:
+                                c_sims_to_self = _cos_sims(c_stored_list, face_encodings[0])
+                                if float(np.max(c_sims_to_self)) < 0.85:
+                                    c_stored_list.append(face_encodings[0])
+                                    if len(c_stored_list) > 5:
+                                        pair_sims = []
+                                        for i in range(len(c_stored_list)):
+                                            for j in range(i + 1, len(c_stored_list)):
+                                                sim_ij = float(np.dot(c_stored_list[i], c_stored_list[j]) / (np.linalg.norm(c_stored_list[i]) * np.linalg.norm(c_stored_list[j]) + 1e-6))
+                                                pair_sims.append((sim_ij, i, j))
+                                        if pair_sims:
+                                            pair_sims.sort(key=lambda x: x[0], reverse=True)
+                                            c_stored_list.pop(pair_sims[0][2])
+                                    import base64
+                                    _, buffer = cv2.imencode('.jpg', face_crop)
+                                    b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+                                    database.update_customer_encoding(c_id_matched, pickle.dumps(c_stored_list), photo=b64_photo)
+                                    known_cust_meta[matched_cust_idx]["all_encs"] = c_stored_list
+                                    print(f"[AI MULTI-ANGLE] Learned new distinct face angle for Customer #{c_id_matched} (total stored: {len(c_stored_list)}/5)")
+                            print(f"[AI] Customer match: {known_cust_meta[best_cust_idx]['name']} (ID {c_id_matched}) — sim={best_cust_sim:.4f}")
 
                     if match_id == "Unknown":
                         print(f"[AI] No match found — best staff sim={best_staff_sim:.4f}, best cust sim={best_cust_sim:.4f}")
@@ -554,7 +603,25 @@ class VisionEngine:
                                     _, buffer = cv2.imencode('.jpg', face_crop)
                                     b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
                                     
-                                    database.update_customer_encoding(known_cust_meta[best_cust_idx]['id'], pickle.dumps(face_encodings[0]), photo=b64_photo)
+                                    c_id_matched = known_cust_meta[best_cust_idx]['id']
+                                    c_stored_list = known_cust_meta[best_cust_idx].get("all_encs", [])
+                                    if c_stored_list and best_cust_sim >= 0.38:
+                                        c_sims_to_self = _cos_sims(c_stored_list, face_encodings[0])
+                                        if float(np.max(c_sims_to_self)) < 0.85:
+                                            c_stored_list.append(face_encodings[0])
+                                            if len(c_stored_list) > 5:
+                                                pair_sims = []
+                                                for i in range(len(c_stored_list)):
+                                                    for j in range(i + 1, len(c_stored_list)):
+                                                        sim_ij = float(np.dot(c_stored_list[i], c_stored_list[j]) / (np.linalg.norm(c_stored_list[i]) * np.linalg.norm(c_stored_list[j]) + 1e-6))
+                                                        pair_sims.append((sim_ij, i, j))
+                                                if pair_sims:
+                                                    pair_sims.sort(key=lambda x: x[0], reverse=True)
+                                                    c_stored_list.pop(pair_sims[0][2])
+                                    else:
+                                        c_stored_list = [face_encodings[0]]
+                                    database.update_customer_encoding(c_id_matched, pickle.dumps(c_stored_list), photo=b64_photo)
+                                    known_cust_meta[best_cust_idx]["all_encs"] = c_stored_list
                                     fallback_match = True
                                     print(f"[AI] Auto-registered as RETURNING customer: {known_cust_meta[best_cust_idx]['name']} (sim={best_cust_sim:.4f})")
                                     with self.lock:
@@ -588,7 +655,7 @@ class VisionEngine:
                                     _, buffer = cv2.imencode('.jpg', face_crop)
                                     b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
                                     
-                                    new_c_id = database.register_customer(pickle.dumps(face_encodings[0]), photo=b64_photo)
+                                    new_c_id = database.register_customer(pickle.dumps([face_encodings[0]]), photo=b64_photo)
                                     print(f"[AI] Auto-registered as NEW customer (ID {new_c_id})")
                                     self.load_known_faces()
                                     with self.lock:
