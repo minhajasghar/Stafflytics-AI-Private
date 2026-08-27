@@ -770,6 +770,7 @@ class VisionEngine:
                         if track_id not in self.person_states:
                             self.person_states[track_id] = {
                                 "id": "Unknown", "db_id": None, "zone": "Main Hall", 
+                                "first_seen": current_time,
                                 "last_active": current_time, "last_sync": 0, "role": "None"
                             }
                         state = self.person_states[track_id]
@@ -957,30 +958,11 @@ class VisionEngine:
 
                     # CUSTOMER INTELLIGENCE (Track every non-staff person as a customer)
                     if not is_staff:
-                        # Only start customer timer once we have a confirmed customer identity (C_xxx)
-                        # or after they've been unidentified for a while (avoid tracking enrolled staff
-                        # as customers during the recognition warm-up period)
-                        if db_id and str(db_id).startswith("C_"):
-                            # Confirmed customer identity — track them
-                            if track_id not in self.customer_timers:
-                                c_id = int(str(db_id).split("_")[1])
-                                self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": c_id}
-                            else:
-                                # Update c_id in case it was set before identity was confirmed
-                                self.customer_timers[track_id]["c_id"] = int(str(db_id).split("_")[1])
-                        elif db_id is None:
-                            # Unknown face — only track as anonymous if YOLO face keypoints confirm
-                            # a face is present AND the person has been visible for a sustained period.
-                            # This prevents briefly-seen people (walk-bys) from inflating visit counts.
-                            with self.lock:
-                                unknown_votes = len([v for v in self.recognition_consensus.get(track_id, []) if v == "Unknown"])
-                                first_seen = self.person_states.get(track_id, {}).get("last_active", current_time)
-                            track_age = current_time - self.person_states.get(track_id, {}).get("last_sync", current_time - 999)
-                            # Require at least 20 "Unknown" votes (≈40s at 0.5fps recognition) AND
-                            # that the track has been alive for at least 8 seconds before counting.
-                            if unknown_votes >= 20 and track_id not in self.customer_timers:
-                                # Has been consistently unidentified — track as anonymous visitor
-                                self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": None}
+                        if track_id not in self.customer_timers:
+                            c_id = int(str(db_id).split("_")[1]) if db_id and str(db_id).startswith("C_") else None
+                            self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": c_id}
+                        elif db_id and str(db_id).startswith("C_") and self.customer_timers[track_id].get("c_id") is None:
+                            self.customer_timers[track_id]["c_id"] = int(str(db_id).split("_")[1])
                     elif track_id in self.customer_timers:
                         # Person confirmed as staff — remove any stale customer timer
                         del self.customer_timers[track_id]
@@ -992,27 +974,27 @@ class VisionEngine:
                         state_name = state.get("name", "Unknown")
                         state_role = state.get("role", "None")
                         status = state.get("pose_label", "NEUTRAL")
+                        track_age = current_time - state.get("first_seen", current_time)
                         
                     if not db_id:
-                        color_hex = "#f97316"  # Orange for Unknown/Unidentified Face
-                        label = "Detecting..."
-                        print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> Detecting")
+                        color_hex = "#f97316"  # Orange for Guest / Customer
+                        if track_age < 1.0:
+                            label = "Detecting..."
+                        else:
+                            label = f"Guest #{track_id}"
                     elif str(db_id).startswith("C_"):
                         visits = state.get("visits", 1)
                         if visits <= 1:
                             color_hex = "#f97316"  # Orange for New Customer (first visit)
                             label = "New Customer (1st visit)"
-                            print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> New Customer")
                         else:
                             color_hex = "#eab308"  # Yellow for Regular Guest (2+ visits on different days)
                             suffix = "th" if visits >= 4 else ({1:"st",2:"nd",3:"rd"}.get(visits, "th"))
                             label = f"Regular Customer ({visits}{suffix} visit)"
-                            print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> Regular Customer (visits={visits})")
                     else:
                         color_hex = "#3b82f6"  # Blue for Enrolled Staff (Type 3)
                         role_tag = f" ({state_role})" if state_role and state_role != "None" else ""
                         label = f"STAFF: {state_name}{role_tag}"
-                        print(f"[AI LABEL] track {track_id}: db_id={db_id!r} -> STAFF: {state_name}")
                     
                     # Store last box in state for carry-forward during brief YOLO misses
                     state["last_box"] = [float(x1), float(y1), float(x2), float(y2)]

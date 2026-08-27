@@ -1108,15 +1108,11 @@ def update_customer_encoding(customer_id, encoding_blob, photo=None):
         conn.close()
 
 def get_customer_history():
-    """Returns customer visit history - only regular customers who visited on more than 1 day
-    and have a face photo on record. Any new face regular customer is someone who came in front
-    of camera more than a single day and is not a staff member."""
+    """Returns customer visit history log for all visits (with photo)."""
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get sessions for customers with a known profile (linked via customer_id)
-        # Only include regular customers (visited on 2+ distinct days) with a face photo
         cursor.execute("""
             SELECT cp.name, cp.id, c.entry_time, c.duration_minutes, c.table_id, cp.photo,
                    cp.visit_count,
@@ -1124,9 +1120,6 @@ def get_customer_history():
                     FROM customers c2 WHERE c2.customer_id = cp.id) as distinct_days
             FROM customers c
             JOIN customer_profiles cp ON c.customer_id = cp.id
-            WHERE cp.photo IS NOT NULL AND cp.photo != ''
-              AND (SELECT COUNT(DISTINCT date(c2.entry_time, 'localtime'))
-                   FROM customers c2 WHERE c2.customer_id = cp.id) >= 2
             ORDER BY c.entry_time DESC LIMIT 200
         """)
         rows = cursor.fetchall()
@@ -1143,19 +1136,19 @@ def get_customer_history():
             visit_count = r[6] or 1
             distinct_days = r[7] or 1
             
-            display_name = name if name != 'New Guest' else f'Regular Customer #{c_id}'
-            visit_label = f"{distinct_days} day visits"
+            display_name = name if name and name != 'New Guest' else f'Customer #{c_id}'
+            visit_label = f"{distinct_days} day visit{'s' if distinct_days > 1 else ''}"
             
             history.append({
                 "name": display_name,
                 "id": c_id,
                 "time": str(entry_time),
-                "duration": f"{round(duration, 1)} min" if duration else "N/A",
-                "zone": table_id,
-                "photo": photo,
+                "duration": f"{round(duration, 1)} min" if duration else "Active",
+                "zone": table_id or "Dining Area",
+                "photo": photo or "",
                 "visits": visit_count,
                 "distinct_days": distinct_days,
-                "is_regular": True,
+                "is_regular": distinct_days >= 2,
                 "visit_label": visit_label
             })
         return history
