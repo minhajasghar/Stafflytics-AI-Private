@@ -1016,9 +1016,9 @@ def record_customer_session(table_id, duration, customer_id=None):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Deduplication: check if there was a session in the last few minutes in the same area
-        # 5 minutes for recognized customers, 3 minutes for anonymous ones
-        limit_minutes = 5 if customer_id else 3
+        # 5-minute Visit Deduplication Window:
+        # If the same customer/guest reappears within 5 minutes, merge into the SAME session
+        limit_minutes = 5
         limit_time = (datetime.now() - timedelta(minutes=limit_minutes)).strftime('%Y-%m-%d %H:%M:%S')
         
         if customer_id:
@@ -1038,11 +1038,11 @@ def record_customer_session(table_id, duration, customer_id=None):
         if existing:
             new_duration = existing[1] + round(duration / 60.0, 2)
             cursor.execute("UPDATE customers SET duration_minutes = ?, exit_time = CURRENT_TIMESTAMP WHERE id = ?", (new_duration, existing[0]))
-            print(f"[DB] Merged customer session for {'cust_'+str(customer_id) if customer_id else 'anonymous'}: +{round(duration/60,1)}min")
+            print(f"[DB VISIT DEDUP] Merged into existing visit session for {'Customer #'+str(customer_id) if customer_id else 'Anonymous Guest'}: +{round(duration/60,1)}min (reappeared within {limit_minutes}m)")
         else:
             cursor.execute("INSERT INTO customers (table_id, duration_minutes, exit_time, customer_id) VALUES (?, ?, CURRENT_TIMESTAMP, ?)", 
                            (table_id, round(duration / 60.0, 2), customer_id))
-            print(f"[DB] New customer session for {'cust_'+str(customer_id) if customer_id else 'anonymous'}: {round(duration/60,1)}min")
+            print(f"[DB VISIT] Started new visit session for {'Customer #'+str(customer_id) if customer_id else 'Anonymous Guest'}: {round(duration/60,1)}min")
         
         if customer_id:
             # Only increment visit_count if this is a NEW day visit (not the same day)
