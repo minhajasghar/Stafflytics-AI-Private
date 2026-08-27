@@ -60,11 +60,11 @@ _face_detector = None
 _face_recognizer = None
 _face_models_loaded = False
 
-# SFace cosine-similarity thresholds (tuned strictly to prevent merging distinct identities)
-FACE_STAFF_THRESHOLD = 0.40      # Staff match threshold
-FACE_CUSTOMER_THRESHOLD = 0.42   # Known customer match threshold
-FACE_STAFF_RELAXED = 0.40        # Backward-compatibility alias
-FACE_CUSTOMER = 0.42             # Backward-compatibility alias
+# SFace cosine-similarity thresholds (Staff Priority Architecture)
+FACE_STAFF_THRESHOLD = 0.38      # Lenient staff threshold for reliable recognition
+FACE_CUSTOMER_THRESHOLD = 0.43   # Strict customer threshold to prevent false merges
+FACE_STAFF_RELAXED = 0.38        # Backward-compatibility alias
+FACE_CUSTOMER = 0.43             # Backward-compatibility alias
 
 
 def _load_face_models():
