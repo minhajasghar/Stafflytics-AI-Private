@@ -640,7 +640,7 @@
 
             const now = Date.now();
             if (!detections || detections.length === 0) {
-                detectionDwellBuffer = detectionDwellBuffer.filter(d => now - d.ts < 400);
+                detectionDwellBuffer = detectionDwellBuffer.filter(d => now - d.ts < 1200);
                 if (detectionDwellBuffer.length > 0) {
                     const last = detectionDwellBuffer[detectionDwellBuffer.length - 1];
                     detections = last.dets;
