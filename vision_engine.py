@@ -60,10 +60,10 @@ _face_detector = None
 _face_recognizer = None
 _face_models_loaded = False
 
-# SFace cosine-similarity thresholds (same person is typically > 0.5).
-FACE_STAFF_STRONG = 0.45   # immediate staff match
-FACE_STAFF_RELAXED = 0.35  # quick / last-chance staff check
-FACE_CUSTOMER = 0.45       # known customer match
+# SFace cosine-similarity thresholds optimized for ceiling-mounted CCTV cameras.
+FACE_STAFF_STRONG = 0.32   # immediate staff match
+FACE_STAFF_RELAXED = 0.25  # relaxed / CCTV angle staff check
+FACE_CUSTOMER = 0.38       # known customer match
 
 
 def _load_face_models():
@@ -325,17 +325,18 @@ class VisionEngine:
                             match_id = known_staff_meta[best_staff_idx]["id"]
                             match_source = "staff"
                             print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — sim={best_staff_sim:.4f} (threshold={FACE_STAFF_RELAXED})")
-                            # Immediately set db_id when the match is strong
+                            # Immediately set db_id when staff is matched
                             with self.lock:
-                                if best_staff_sim >= FACE_STAFF_STRONG and track_id in self.person_states:
+                                if track_id in self.person_states:
                                     s = self.person_states[track_id]
-                                    if s.get("db_id") is None:
-                                        s["db_id"] = match_id
-                                        s["id"] = f"ID: {match_id}"
-                                        s["name"] = known_staff_meta[best_staff_idx]["name"]
-                                        s["role"] = known_staff_meta[best_staff_idx]["role"]
-                                        s["last_sync"] = current_time
-                                        print(f"[AI] IMMEDIATE STAFF SET: track {track_id} -> {match_id}")
+                                    s["db_id"] = match_id
+                                    s["id"] = f"ID: {match_id}"
+                                    s["name"] = known_staff_meta[best_staff_idx]["name"]
+                                    s["role"] = known_staff_meta[best_staff_idx]["role"]
+                                    s["last_sync"] = current_time
+                                    if track_id in self.customer_timers:
+                                        del self.customer_timers[track_id]
+                                    print(f"[AI] IMMEDIATE STAFF SET: track {track_id} -> {match_id} ({known_staff_meta[best_staff_idx]['name']})")
                             # Record attendance outside lock to avoid deadlock
                             try:
                                 database.record_attendance(match_id)
