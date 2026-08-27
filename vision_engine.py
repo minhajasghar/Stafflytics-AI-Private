@@ -662,20 +662,28 @@ class VisionEngine:
                                             state["photo"] = b64_photo
                                             state["last_sync"] = current_time
                             if not fallback_match:
-                                # Only auto-register a new customer if track has been consistently tracked
-                                # and face is clear (prevents spamming customer records on sitting staff)
-                                track_s = self.person_states.get(track_id, {})
-                                track_age = current_time - track_s.get("last_sync", current_time)
-                                consensus_count = len(self.recognition_consensus.get(track_id, []))
+                                # Robust New Identity Gate:
+                                # Require persistence (>=6 consensus samples), minimum face size (>=75px),
+                                # natural face aspect ratio, and blur check to prevent spurious registrations from motion blur.
+                                face_h, face_w = face_crop.shape[:2]
+                                aspect_ratio = face_h / float(max(1, face_w))
                                 
-                                if consensus_count >= 1 and face_crop.shape[0] >= 30 and face_crop.shape[1] >= 30:
+                                is_sharp = True
+                                try:
+                                    gray_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+                                    lap_var = cv2.Laplacian(gray_face, cv2.CV_64F).var()
+                                    if lap_var < 20.0:  # Below 20 is blurry/motion-blurred
+                                        is_sharp = False
+                                except: pass
+                                
+                                if consensus_count >= 6 and face_h >= 75 and face_w >= 75 and (0.75 <= aspect_ratio <= 1.45) and is_sharp:
                                     # Convert face_crop to base64 photo
                                     import base64
                                     _, buffer = cv2.imencode('.jpg', face_crop)
                                     b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
                                     
                                     new_c_id = database.register_customer(pickle.dumps([face_encodings[0]]), photo=b64_photo)
-                                    print(f"[AI] Auto-registered as NEW customer (ID {new_c_id})")
+                                    print(f"[AI NEW FACE] Confirmed stable new customer profile created: ID {new_c_id} (samples={consensus_count}, size={face_w}x{face_h}, sharpness={lap_var:.1f})")
                                     self.load_known_faces()
                                     with self.lock:
                                         if track_id in self.person_states:
@@ -690,6 +698,7 @@ class VisionEngine:
                                     with self.lock:
                                         if track_id in self.recognition_consensus:
                                             self.recognition_consensus[track_id].append("Unknown")
+                                    print(f"[AI STABILITY GATE] Holding off new identity for track {track_id} (samples={consensus_count}/6, size={face_w}x{face_h}, sharp={is_sharp})")
                             else:
                                 self.load_known_faces()
                                 
