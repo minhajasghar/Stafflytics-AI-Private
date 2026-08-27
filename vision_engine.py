@@ -140,6 +140,20 @@ def _cos_sims(known_encodings, enc):
     return arr @ enc
 
 
+def _box_iou(boxA, boxB):
+    """Compute Intersection over Union (IoU) of two bounding boxes [x1, y1, x2, y2]."""
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    union = boxAArea + boxBArea - interArea
+    return interArea / float(union + 1e-6) if union > 0 else 0.0
+
+
 class Zone:
     def __init__(self, name, points, unauthorized_roles=[]):
         self.name = name
@@ -191,6 +205,7 @@ class VisionEngine:
         self.customer_timers = {} # track_id -> {"start": time, "zone": name}
         self.alerted_tracks = set() # (track_id, zone_name)
         self.last_positions = {} # track_id -> (x, y)
+        self.last_boxes = {} # track_id -> [x1, y1, x2, y2]
         self.activity_buffer = {} # track_id -> seconds_active
         self.last_activity_sync = time.time()
         self.visitor_logged = set() # track_ids that have been logged to visitor_log
@@ -724,102 +739,69 @@ class VisionEngine:
             
             if results and results[0].boxes:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
-                if results[0].boxes.id is not None:
-                    track_ids = results[0].boxes.id.int().cpu().numpy()
-                else:
-                    # Spatial proximity-based fallback tracker when results[0].boxes.id is None
-                    track_ids = []
-                    with self.lock:
-                        used_tids = set()
-                        for box in boxes:
-                            x1, y1, x2, y2 = map(int, box)
-                            center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-                            
-                            best_tid = None
-                            best_dist = 100  # Association distance threshold (pixels)
-                            
-                            for tid, pos in self.last_positions.items():
-                                if tid not in used_tids:
-                                    dist = np.sqrt((center[0] - pos[0])**2 + (center[1] - pos[1])**2)
-                                    if dist < best_dist:
-                                        best_dist = dist
-                                        best_tid = tid
-                                        
-                            if best_tid is not None:
-                                track_ids.append(best_tid)
-                                used_tids.add(best_tid)
-                            else:
-                                # Generate a new unique track ID
-                                new_tid = 1
-                                while new_tid in self.person_states or new_tid in self.last_positions or new_tid in used_tids:
-                                    new_tid += 1
-                                track_ids.append(new_tid)
-                                used_tids.add(new_tid)
-                    track_ids = np.array(track_ids, dtype=np.int32)
+                yolo_track_ids = results[0].boxes.id.int().cpu().numpy() if results[0].boxes.id is not None else None
                 
-                # Check for tracks to stitch / merge
+                track_ids = []
                 with self.lock:
-                    for box, track_id in zip(boxes, track_ids):
+                    used_tids = set()
+                    for b_idx, box in enumerate(boxes):
                         x1, y1, x2, y2 = map(int, box)
                         center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
                         
-                        if track_id not in self.person_states:
-                            merged = False
-                            candidates = []
-                            for old_tid, old_state in list(self.person_states.items()):
-                                time_since_last_active = current_time - old_state["last_active"]
-                                if old_tid != track_id and old_tid not in track_ids and time_since_last_active < 3.0:
-                                    old_pos = self.last_positions.get(old_tid)
-                                    if old_pos:
-                                        dist = np.sqrt((center[0] - old_pos[0])**2 + (center[1] - old_pos[1])**2)
-                                        if dist < 100:
-                                            candidates.append((dist, old_tid, old_state))
+                        best_tid = None
+                        best_iou = 0.0
+                        
+                        # 1. First Priority: Check IoU overlap (>30% IoU) with recently tracked boxes (<3s)
+                        for tid, prev_box in list(self.last_boxes.items()):
+                            if tid not in used_tids:
+                                prev_state = self.person_states.get(tid, {})
+                                time_since = current_time - prev_state.get("last_active", current_time)
+                                if time_since <= 3.0:
+                                    iou = _box_iou(box, prev_box)
+                                    if iou >= 0.30 and iou > best_iou:
+                                        best_iou = iou
+                                        best_tid = tid
+                        
+                        # 2. Second Priority: Spatial proximity for fast-moving persons
+                        if best_tid is None:
+                            best_dist = 120.0
+                            for tid, pos in list(self.last_positions.items()):
+                                if tid not in used_tids:
+                                    prev_state = self.person_states.get(tid, {})
+                                    time_since = current_time - prev_state.get("last_active", current_time)
+                                    if time_since <= 3.0:
+                                        dist = np.sqrt((center[0] - pos[0])**2 + (center[1] - pos[1])**2)
+                                        if dist < best_dist:
+                                            best_dist = dist
+                                            best_tid = tid
+                                            
+                        # 3. Third Priority: Native YOLO tracker ID
+                        if best_tid is None and yolo_track_ids is not None and b_idx < len(yolo_track_ids):
+                            y_tid = int(yolo_track_ids[b_idx])
+                            if y_tid not in used_tids:
+                                best_tid = y_tid
+                        
+                        # 4. Truly New Person: Only assign new identity if no reasonable overlap/continuity exists
+                        if best_tid is None:
+                            new_tid = 1
+                            while new_tid in self.person_states or new_tid in self.last_positions or new_tid in used_tids:
+                                new_tid += 1
+                            best_tid = new_tid
                             
-                            if candidates:
-                                candidates.sort(key=lambda x: x[0])
-                                best_dist, old_tid, old_state = candidates[0]
-                                self.person_states[track_id] = {
-                                    "id": old_state["id"],
-                                    "db_id": old_state["db_id"],
-                                    "zone": "Main Hall",
-                                    "last_active": current_time,
-                                    "last_sync": old_state.get("last_sync", 0),
-                                    "role": old_state.get("role", "None"),
-                                    "name": old_state.get("name", "")
-                                }
-                                if "pose_multiplier" in old_state:
-                                    self.person_states[track_id]["pose_multiplier"] = old_state["pose_multiplier"]
-                                if "pose_label" in old_state:
-                                    self.person_states[track_id]["pose_label"] = old_state["pose_label"]
-                                    
-                                if old_tid in self.recognition_consensus:
-                                    self.recognition_consensus[track_id] = self.recognition_consensus[old_tid].copy()
+                        track_ids.append(best_tid)
+                        used_tids.add(best_tid)
+                        self.last_boxes[best_tid] = [x1, y1, x2, y2]
+                        self.last_positions[best_tid] = center
+                        
+                    # Clean up old position and box records older than 10 seconds
+                    for tid in list(self.last_boxes.keys()):
+                        if tid not in used_tids:
+                            prev_st = self.person_states.get(tid, {})
+                            if current_time - prev_st.get("last_active", 0) > 10.0:
+                                self.last_boxes.pop(tid, None)
+                                self.last_positions.pop(tid, None)
                                 
-                                if old_tid in self.customer_timers:
-                                    self.customer_timers[track_id] = self.customer_timers[old_tid]
-                                    del self.customer_timers[old_tid]
-                                    
-                                to_add = []
-                                for tid, zname in list(self.alerted_tracks):
-                                    if tid == old_tid:
-                                        to_add.append((track_id, zname))
-                                self.alerted_tracks = {(tid, zname) for tid, zname in self.alerted_tracks if tid != old_tid}
-                                for item in to_add:
-                                    self.alerted_tracks.add(item)
-                                    
-                                if old_tid in self.person_states:
-                                    del self.person_states[old_tid]
-                                if old_tid in self.last_positions:
-                                    del self.last_positions[old_tid]
-                                
-                                print(f"[AI] Merged track {old_tid} into new track {track_id} (dist={best_dist:.1f})")
-                                merged = True
-                                
-                            if not merged:
-                                self.person_states[track_id] = {
-                                    "id": "Unknown", "db_id": None, "zone": "Main Hall", 
-                                    "last_active": current_time, "last_sync": 0, "role": "None"
-                                }
+                track_ids = np.array(track_ids, dtype=np.int32)
                 
                 # Process active tracks
                 all_kps = results[0].keypoints.xy.cpu().numpy() if results[0].keypoints is not None else None
@@ -888,16 +870,18 @@ class VisionEngine:
 
                     # Identification Logic (Offloaded to background queue)
                     with self.lock:
-                        db_id = state["db_id"]
+                        db_id = state.get("db_id")
+                        is_identified = (db_id is not None and db_id != "Unknown")
+                        is_processing = track_id in self.processing_tracks
                     
-                    if db_id is None:
-                        with self.lock:
-                            is_processing = track_id in self.processing_tracks
-                        
-                        last_attempt = self.last_rec_attempt.get(track_id, 0)
-                        # Retry recognition every 2 seconds for unidentified faces
-                        if not is_processing and (current_time - last_attempt > 2.0):
-                            self.last_rec_attempt[track_id] = current_time
+                    last_attempt = self.last_rec_attempt.get(track_id, 0)
+                    
+                    # Temporal Optimization:
+                    # - Already-identified tracks: periodic re-verification/learning every 2.5s (15-20 frames)
+                    # - Unidentified tracks: rapid sub-second verification every 0.35s
+                    check_interval = 2.5 if is_identified else 0.35
+                    if not is_processing and (current_time - last_attempt > check_interval):
+                        self.last_rec_attempt[track_id] = current_time
 
                             face_img = None
 
