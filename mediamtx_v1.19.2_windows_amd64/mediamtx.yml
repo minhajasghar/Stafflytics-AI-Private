@@ -20,11 +20,10 @@ hls: no
 srt: no
 
 paths:
-  cam:
+  cam_raw:
     source: rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0
     rtspTransport: tcp
 
-
-  mystream:
-    runOnDemand: '"C:\Users\Sultan Mahmood\Desktop\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=1280:720" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
-    runOnDemandRestart: yes
+  cam:
+    runOnInit: '"C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\bin\ffmpeg.exe" -loglevel warning -rtsp_transport tcp -i rtsp://localhost:8554/cam_raw -c:v libx264 -preset ultrafast -tune zerolatency -r 20 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam'
+    runOnInitRestart: yes
