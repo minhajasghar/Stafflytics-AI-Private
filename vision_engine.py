@@ -906,25 +906,33 @@ class VisionEngine:
                         
                     self.last_positions[track_id] = center
                     
-                    # RESTRICTED ZONE MONITORING
-                    if db_id:
-                        in_unauth_zone = False
-                        for zone in self.zones:
-                            if zone.is_inside(center) and role in zone.unauthorized_roles:
+                    # RESTRICTED / SAFE ZONE MONITORING
+                    in_unauth_zone = False
+                    is_staff = db_id and not str(db_id).startswith("C_")
+                    for zone in self.zones:
+                        if zone.unauthorized_roles and zone.is_inside(center):
+                            is_unauth = False
+                            if role and role in zone.unauthorized_roles:
+                                is_unauth = True
+                            elif not is_staff and ("Customer" in zone.unauthorized_roles or "Guest" in zone.unauthorized_roles or "None" in zone.unauthorized_roles or "Unknown" in zone.unauthorized_roles or "All" in zone.unauthorized_roles or len(zone.unauthorized_roles) > 0):
+                                is_unauth = True
+                                
+                            if is_unauth:
                                 in_unauth_zone = True
                                 if (track_id, zone.name) not in self.alerted_tracks:
-                                    database.log_activity(db_id, zone.name, "Security Alert", f"Unauthorized role ({role}) detected in restricted zone.")
+                                    person_label = state.get("name", "Unknown Person")
+                                    database.log_activity(db_id or f"Track_{track_id}", zone.name, "Security Alert", f"Unauthorized entry ({person_label}) detected in {zone.name}.")
                                     with self.lock:
                                         state["needs_security_email"] = zone.name
                                     self.alerted_tracks.add((track_id, zone.name))
+                                    print(f"[SECURITY ALERT] Unauthorized entry by {person_label} in {zone.name}!")
                                 break
-                        
-                        if not in_unauth_zone:
-                            # Clear alerts for zones this track is no longer in
-                            self.alerted_tracks = {(tid, zname) for tid, zname in self.alerted_tracks if tid != track_id}
+                    
+                    if not in_unauth_zone:
+                        # Clear alerts for zones this track is no longer in
+                        self.alerted_tracks = {(tid, zname) for tid, zname in self.alerted_tracks if tid != track_id}
 
                     # CUSTOMER INTELLIGENCE (Track every non-staff person as a customer)
-                    is_staff = db_id and not str(db_id).startswith("C_")
                     if not is_staff:
                         # Only start customer timer once we have a confirmed customer identity (C_xxx)
                         # or after they've been unidentified for a while (avoid tracking enrolled staff
