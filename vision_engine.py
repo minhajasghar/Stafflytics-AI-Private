@@ -256,9 +256,32 @@ class VisionEngine:
                 self.known_face_metadata = new_metadata
                 self.known_customer_encodings = c_encodings
                 self.known_customer_metadata = c_metadata
+                
+                # Purge deleted staff or customers from active live tracks immediately
+                known_staff_ids = {m["id"] for m in new_metadata}
+                known_cust_ids = {f"C_{m['id']}" for m in c_metadata}
+                for tid, state in list(self.person_states.items()):
+                    curr_db_id = state.get("db_id")
+                    if curr_db_id:
+                        if not str(curr_db_id).startswith("C_") and curr_db_id not in known_staff_ids:
+                            # Staff was deleted! Reset live track immediately
+                            print(f"[AI] Purging deleted staff {curr_db_id} from active track {tid}")
+                            state["db_id"] = None
+                            state["id"] = f"Track #{tid}"
+                            state["name"] = "Guest"
+                            state["role"] = "None"
+                            state["last_label"] = "New Customer (1st visit)"
+                            state["last_color"] = "#f97316"
+                            state["best_staff_sim"] = 0.0
+                        elif str(curr_db_id).startswith("C_") and curr_db_id not in known_cust_ids:
+                            state["db_id"] = None
+                            state["id"] = f"Track #{tid}"
+                            state["name"] = "Guest"
+                
                 # Flush recognition consensus so existing tracks get re-evaluated
                 self.recognition_consensus.clear()
                 self.last_rec_attempt.clear()
+                self.processing_tracks.clear()
             
             print(f"[AI] System Ready: {len(new_encodings)} Staff, {len(c_encodings)} Customers loaded.")
         except Exception as e: print(f"[AI Initialization Error] {e}")
