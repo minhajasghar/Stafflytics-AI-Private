@@ -274,6 +274,17 @@ function toggleChat() {
     chat.style.display = chat.style.display === 'flex' ? 'none' : 'flex';
 }
 
+function formatChatMessage(text) {
+    if (!text) return '';
+    let formatted = text
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/(?:^|\n)\s*[\*•-]\s+(.+)/g, '<br>• $1')
+        .replace(/\n/g, '<br>');
+    if (formatted.startsWith('<br>')) formatted = formatted.substring(4);
+    return formatted;
+}
+
 async function sendChatMessage() {
     const input = document.getElementById('chat-input-text');
     const box = document.getElementById('chat-box');
@@ -287,7 +298,7 @@ async function sendChatMessage() {
     try {
         const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
         const data = await res.json();
-        box.innerHTML += `<div class="msg ai">${data.response}</div>`;
+        box.innerHTML += `<div class="msg ai">${formatChatMessage(data.response)}</div>`;
     } catch (e) { box.innerHTML += `<div class="msg ai">Connection error.</div>`; }
     box.scrollTop = box.scrollHeight;
 }

@@ -73,7 +73,15 @@ WELLBEING & SHIFTS:
                 try:
                     model = genai.GenerativeModel(model_name)
                     context = self._get_db_context()
-                    prompt = f"{context}\n\nAnswer this user query accurately, professionally, and concisely using the live business data above. If the query asks for analytics or metrics, provide the exact numbers from the data. If the query is a greeting like 'hi', greet back warmly.\n\nUser: {query}"
+                    prompt = f"""{context}
+Instructions:
+- Speak naturally, warmly, and concisely like a smart human executive assistant.
+- Use clean, readable formatting with clear line breaks.
+- Present numbers in an easy-to-read conversational style.
+- If asked about today's analytics, summarize key stats (staff present, attendance/late status, efficiency, and customer traffic) clearly and humanely.
+- If the user simply greets you, respond with a short friendly greeting.
+
+User Query: {query}"""
                     resp = model.generate_content(prompt, generation_config={'max_output_tokens': 500, 'temperature': 0.2})
                     return resp.text.strip() if resp and resp.text else None
                 except Exception as e:
