@@ -141,9 +141,9 @@
 </head>
 <body>
     <div class="login-card">
-        <div class="logo">
-            <i class="fas fa-chart-line"></i>
-            <span>Stafflytics</span>
+        <div class="logo" style="margin-bottom: 1.5rem; flex-direction: column; gap: 8px;">
+            <img src="/static/img/logo.svg" alt="Stafflytics Logo" style="width: 72px; height: 72px; filter: drop-shadow(0 6px 12px rgba(0,0,0,0.4));">
+            <div style="font-size: 1.8rem; font-weight: 800; background: linear-gradient(135deg, #fff 0%, #cbd5e1 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Stafflytics AI</div>
         </div>
         <h2>Enterprise Intelligence Login</h2>
         
@@ -153,7 +153,10 @@
         </div>
         <div class="form-group">
             <label>Master Security Password</label>
-            <input type="password" id="password" placeholder="••••••••" autocomplete="off">
+            <div style="position: relative; display: flex; align-items: center;">
+                <input type="password" id="password" placeholder="••••••••" autocomplete="off" style="padding-right: 45px;">
+                <i class="fas fa-eye" id="toggle-password" onclick="togglePasswordVisibility()" style="position: absolute; right: 15px; cursor: pointer; color: #94a3b8; font-size: 1.1rem; transition: color 0.2s;" title="Toggle Password"></i>
+            </div>
         </div>
 
         <button class="btn-login" onclick="handleLogin()">Authorize Access</button>
@@ -166,6 +169,21 @@
     </div>
 
     <script>
+        function togglePasswordVisibility() {
+            const passInput = document.getElementById('password');
+            const icon = document.getElementById('toggle-password');
+            if (passInput.type === 'password') {
+                passInput.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+                icon.style.color = 'var(--accent)';
+            } else {
+                passInput.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+                icon.style.color = '#94a3b8';
+            }
+        }
         async function handleLogin() {
             const user = document.getElementById('username').value;
             const pass = document.getElementById('password').value;
