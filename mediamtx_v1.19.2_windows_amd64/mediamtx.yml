@@ -25,5 +25,5 @@ paths:
     rtspTransport: tcp
 
   cam:
-    runOnInit: '"C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\bin\ffmpeg.exe" -loglevel warning -rtsp_transport tcp -i rtsp://localhost:8554/cam_raw -c:v libx264 -preset ultrafast -tune zerolatency -r 20 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam'
+    runOnInit: '"C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\bin\ffmpeg.exe" -loglevel warning -rtsp_transport tcp -i rtsp://localhost:8554/cam_raw -vf "scale=1920:1080" -c:v libx264 -preset ultrafast -tune zerolatency -g 20 -keyint_min 20 -sc_threshold 0 -b:v 3000k -maxrate 3500k -bufsize 6000k -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam'
     runOnInitRestart: yes
