@@ -60,10 +60,11 @@ _face_detector = None
 _face_recognizer = None
 _face_models_loaded = False
 
-# SFace cosine-similarity thresholds (prevents false positives while matching true faces)
-FACE_STAFF_STRONG = 0.42   # strong staff match
-FACE_STAFF_RELAXED = 0.35  # relaxed staff threshold
-FACE_CUSTOMER = 0.38       # known customer match
+# SFace cosine-similarity thresholds (tuned strictly to prevent merging distinct identities)
+FACE_STAFF_THRESHOLD = 0.40      # Staff match threshold
+FACE_CUSTOMER_THRESHOLD = 0.42   # Known customer match threshold
+FACE_STAFF_RELAXED = 0.40        # Backward-compatibility alias
+FACE_CUSTOMER = 0.42             # Backward-compatibility alias
 
 
 def _load_face_models():
@@ -356,16 +357,18 @@ class VisionEngine:
                         known_cust_enc = list(self.known_customer_encodings)
                         known_cust_meta = list(self.known_customer_metadata)
                     
-                    # LOG: confirm which tables are being checked
-                    print(f"[AI] Matching track {track_id} against {len(known_staff_enc)} staff emb, {len(known_cust_enc)} customer emb")
-                    
+                    # LOG: confirm matching attempt
                     best_staff_sim = -1.0
                     if known_staff_enc:
                         staff_sims = _cos_sims(known_staff_enc, face_encodings[0])
                         best_staff_idx = int(np.argmax(staff_sims))
                         best_staff_sim = float(staff_sims[best_staff_idx])
-                        if best_staff_sim >= FACE_STAFF_RELAXED:
-                            match_id = known_staff_meta[best_staff_idx]["id"]
+                        s_name = known_staff_meta[best_staff_idx]['name']
+                        s_id = known_staff_meta[best_staff_idx]['id']
+                        
+                        if best_staff_sim >= FACE_STAFF_THRESHOLD:
+                            print(f"[FACE SCORE] Track #{track_id} -> Staff '{s_name}' (ID {s_id}) Score={best_staff_sim:.4f} (Threshold={FACE_STAFF_THRESHOLD}) -> MATCH ACCEPTED")
+                            match_id = s_id
                             match_source = "staff"
                             
                             # CRITICAL: Prevent 2 people from claiming the same staff member simultaneously
@@ -377,7 +380,7 @@ class VisionEngine:
                                         other_sim = other_st.get("best_staff_sim", 0.0)
                                         if best_staff_sim > other_sim:
                                             # Current track is a better match — demote the other track
-                                            print(f"[AI] Reassigning {known_staff_meta[best_staff_idx]['name']} from track {other_tid} (sim={other_sim:.3f}) to track {track_id} (sim={best_staff_sim:.3f})")
+                                            print(f"[AI] Reassigning {s_name} from track {other_tid} (sim={other_sim:.3f}) to track {track_id} (sim={best_staff_sim:.3f})")
                                             other_st["db_id"] = None
                                             other_st["id"] = f"Track #{other_tid}"
                                             other_st["name"] = "Guest"
@@ -385,13 +388,11 @@ class VisionEngine:
                                             other_st["best_staff_sim"] = 0.0
                                         else:
                                             # Other track is a better match — current track cannot be this staff
-                                            print(f"[AI] Track {track_id} matched {known_staff_meta[best_staff_idx]['name']} (sim={best_staff_sim:.3f}), but track {other_tid} has higher sim ({other_sim:.3f}) — rejecting duplicate")
+                                            print(f"[AI] Track {track_id} matched {s_name} (sim={best_staff_sim:.3f}), but track {other_tid} has higher sim ({other_sim:.3f}) — rejecting duplicate")
                                             can_assign_staff = False
                                             break
                             
                             if can_assign_staff:
-                                print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — sim={best_staff_sim:.4f}")
-                                
                                 # MULTI-ANGLE LEARNING: Store new distinct face angles over time (up to 5)
                                 s_meta_matched = known_staff_meta[best_staff_idx]
                                 stored_list = s_meta_matched.get("all_encs", [])
@@ -400,7 +401,6 @@ class VisionEngine:
                                     if float(np.max(sims_to_self)) < 0.85:
                                         stored_list.append(face_encodings[0])
                                         if len(stored_list) > 5:
-                                            # Prune closest pair to maintain maximal angle diversity
                                             pair_sims = []
                                             for i in range(len(stored_list)):
                                                 for j in range(i + 1, len(stored_list)):
@@ -432,18 +432,21 @@ class VisionEngine:
                                 match_id = "Unknown"
                                 match_source = None
                         else:
-                            print(f"[AI] Staff check — best sim={best_staff_sim:.4f} for {known_staff_meta[best_staff_idx]['name']} (below {FACE_STAFF_RELAXED} threshold)")
+                            print(f"[FACE SCORE] Track #{track_id} -> Best Staff '{s_name}' Score={best_staff_sim:.4f} (Threshold={FACE_STAFF_THRESHOLD}) -> REJECTED")
 
                     best_cust_sim = -1.0
                     if match_id == "Unknown" and known_cust_enc:
                         c_sims = _cos_sims(known_cust_enc, face_encodings[0])
                         best_cust_idx = int(np.argmax(c_sims))
                         best_cust_sim = float(c_sims[best_cust_idx])
-                        if best_cust_sim >= FACE_CUSTOMER:
-                            match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
+                        c_name = known_cust_meta[best_cust_idx]['name']
+                        c_id_matched = known_cust_meta[best_cust_idx]['id']
+                        
+                        if best_cust_sim >= FACE_CUSTOMER_THRESHOLD:
+                            print(f"[FACE SCORE] Track #{track_id} -> Customer '{c_name}' (ID {c_id_matched}) Score={best_cust_sim:.4f} (Threshold={FACE_CUSTOMER_THRESHOLD}) -> MATCH ACCEPTED")
+                            match_id = f"CUST:{c_id_matched}"
                             match_source = "customer"
                             matched_cust_idx = best_cust_idx
-                            c_id_matched = known_cust_meta[matched_cust_idx]['id']
                             
                             # MULTI-ANGLE LEARNING: Store new distinct face angles for customer (up to 5)
                             c_stored_list = known_cust_meta[matched_cust_idx].get("all_encs", [])
@@ -466,7 +469,8 @@ class VisionEngine:
                                     database.update_customer_encoding(c_id_matched, pickle.dumps(c_stored_list), photo=b64_photo)
                                     known_cust_meta[matched_cust_idx]["all_encs"] = c_stored_list
                                     print(f"[AI MULTI-ANGLE] Learned new distinct face angle for Customer #{c_id_matched} (total stored: {len(c_stored_list)}/5)")
-                            print(f"[AI] Customer match: {known_cust_meta[best_cust_idx]['name']} (ID {c_id_matched}) — sim={best_cust_sim:.4f}")
+                        else:
+                            print(f"[FACE SCORE] Track #{track_id} -> Best Cust '{c_name}' (ID {c_id_matched}) Score={best_cust_sim:.4f} (Threshold={FACE_CUSTOMER_THRESHOLD}) -> REJECTED (New visitor candidate)")
 
                     if match_id == "Unknown":
                         print(f"[AI] No match found — best staff sim={best_staff_sim:.4f}, best cust sim={best_cust_sim:.4f}")
