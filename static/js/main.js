@@ -914,14 +914,28 @@ function showEnrollModal() {
 }
 
 function handleImageUpload(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        enrollmentCaptures = [e.target.result];
-        goToStep(3); // skip straight to review
-    };
-    reader.readAsDataURL(file);
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+    
+    if (files.length < 4) {
+        alert("Please upload at least 4 pictures.");
+        return;
+    }
+
+    enrollmentCaptures = [];
+    let loadedCount = 0;
+
+    for (let i = 0; i < files.length; i++) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            enrollmentCaptures.push(e.target.result);
+            loadedCount++;
+            if (loadedCount === files.length) {
+                goToStep(3); // skip straight to review
+            }
+        };
+        reader.readAsDataURL(files[i]);
+    }
 }
 
 function hideEnrollModal() {
@@ -1129,8 +1143,8 @@ async function submitEnrollment() {
         alert("ID and Name are mandatory.");
         return;
     }
-    if (enrollmentCaptures.length < 1) {
-        alert("Please capture at least 1 face image.");
+    if (enrollmentCaptures.length < 4) {
+        alert("Please capture or upload at least 4 face images.");
         return;
     }
 

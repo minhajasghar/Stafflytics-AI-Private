@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stafflytics AI | Business Intelligence Suite</title>
+    <title>Stafflytics AI</title>
+    <link rel="icon" href="/static/img/logo.svg" type="image/svg+xml">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <!-- Cache buster to ensure mobile layout fixes are loaded -->
     <link rel="stylesheet" href="/static/css/style.css?v=15">
@@ -58,7 +59,9 @@
     <div class="dashboard">
     <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
         <nav class="sidebar">
-            <div class="logo-icon"><i class="fas fa-utensils"></i></div>
+            <div class="logo-icon" style="background: none; box-shadow: none;">
+                <img src="/static/img/logo.svg" alt="Stafflytics Logo" style="width: 50px; height: 50px; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">
+            </div>
             <div class="sidebar-nav">
                 <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
                 <div class="nav-item" title="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i></div>
@@ -475,7 +478,7 @@
                 <div style="display:flex; gap:10px;">
                     <button onclick="goToStep(1)" style="flex:1; background:var(--border); color:var(--text); border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Back</button>
                     <button onclick="document.getElementById('enroll-image-upload').click()" class="btn-primary" style="flex:1; background:var(--accent);"><i class="fas fa-upload"></i> Upload</button>
-                    <input type="file" id="enroll-image-upload" accept="image/*" style="display:none;" onchange="handleImageUpload(event)">
+                    <input type="file" id="enroll-image-upload" accept="image/*" multiple style="display:none;" onchange="handleImageUpload(event)">
                     <button onclick="captureFace()" id="btn-capture-face" class="btn-primary" style="flex:2;">Capture</button>
                     <button onclick="goToStep(3)" id="btn-capture-done" style="display:none; flex:1; background:var(--green); color:white; border:none; padding:12px; border-radius:12px; font-weight:800; cursor:pointer;">Done</button>
                 </div>
@@ -906,13 +909,8 @@
                     clearInterval(window._videoFreezeWatchdog);
                 }
 
-                // If connecting locally or via Tailscale, omit stun servers to prevent NAT hairpinning loops
+                // Always use STUN servers to bypass mDNS local IP obfuscation on strict browsers (Safari/iOS)
                 let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
-                const host = window.location.hostname;
-                const isLocal = host === 'localhost' || host === '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.') || host.startsWith('100.');
-                if (isLocal) {
-                    iceServers = [];
-                }
 
                 const pc = new RTCPeerConnection({ iceServers });
                 webrtcPeerConnection = pc;
