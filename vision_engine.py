@@ -60,9 +60,9 @@ _face_detector = None
 _face_recognizer = None
 _face_models_loaded = False
 
-# SFace cosine-similarity thresholds optimized for ceiling-mounted CCTV cameras.
-FACE_STAFF_STRONG = 0.32   # immediate staff match
-FACE_STAFF_RELAXED = 0.25  # relaxed / CCTV angle staff check
+# SFace cosine-similarity thresholds (prevents false positives while matching true faces)
+FACE_STAFF_STRONG = 0.42   # strong staff match
+FACE_STAFF_RELAXED = 0.35  # relaxed staff threshold
 FACE_CUSTOMER = 0.38       # known customer match
 
 
@@ -324,24 +324,48 @@ class VisionEngine:
                         if best_staff_sim >= FACE_STAFF_RELAXED:
                             match_id = known_staff_meta[best_staff_idx]["id"]
                             match_source = "staff"
-                            print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — sim={best_staff_sim:.4f} (threshold={FACE_STAFF_RELAXED})")
-                            # Immediately set db_id when staff is matched
+                            
+                            # CRITICAL: Prevent 2 people from claiming the same staff member simultaneously
+                            can_assign_staff = True
                             with self.lock:
-                                if track_id in self.person_states:
-                                    s = self.person_states[track_id]
-                                    s["db_id"] = match_id
-                                    s["id"] = f"ID: {match_id}"
-                                    s["name"] = known_staff_meta[best_staff_idx]["name"]
-                                    s["role"] = known_staff_meta[best_staff_idx]["role"]
-                                    s["last_sync"] = current_time
-                                    if track_id in self.customer_timers:
-                                        del self.customer_timers[track_id]
-                                    print(f"[AI] IMMEDIATE STAFF SET: track {track_id} -> {match_id} ({known_staff_meta[best_staff_idx]['name']})")
-                            # Record attendance outside lock to avoid deadlock
-                            try:
-                                database.record_attendance(match_id)
-                            except Exception as eat:
-                                print(f"[AI] Attendance record error: {eat}")
+                                for other_tid, other_st in list(self.person_states.items()):
+                                    if other_tid != track_id and other_st.get("db_id") == match_id and (current_time - other_st.get("last_active", 0)) < 8:
+                                        # Another track already has this staff name
+                                        other_sim = other_st.get("best_staff_sim", 0.0)
+                                        if best_staff_sim > other_sim:
+                                            # Current track is a better match — demote the other track
+                                            print(f"[AI] Reassigning {known_staff_meta[best_staff_idx]['name']} from track {other_tid} (sim={other_sim:.3f}) to track {track_id} (sim={best_staff_sim:.3f})")
+                                            other_st["db_id"] = None
+                                            other_st["id"] = f"Track #{other_tid}"
+                                            other_st["name"] = "Guest"
+                                            other_st["role"] = "None"
+                                            other_st["best_staff_sim"] = 0.0
+                                        else:
+                                            # Other track is a better match — current track cannot be this staff
+                                            print(f"[AI] Track {track_id} matched {known_staff_meta[best_staff_idx]['name']} (sim={best_staff_sim:.3f}), but track {other_tid} has higher sim ({other_sim:.3f}) — rejecting duplicate")
+                                            can_assign_staff = False
+                                            break
+                            
+                            if can_assign_staff:
+                                print(f"[AI] Staff match: {known_staff_meta[best_staff_idx]['name']} ({match_id}) — sim={best_staff_sim:.4f}")
+                                with self.lock:
+                                    if track_id in self.person_states:
+                                        s = self.person_states[track_id]
+                                        s["db_id"] = match_id
+                                        s["id"] = f"ID: {match_id}"
+                                        s["name"] = known_staff_meta[best_staff_idx]["name"]
+                                        s["role"] = known_staff_meta[best_staff_idx]["role"]
+                                        s["best_staff_sim"] = best_staff_sim
+                                        s["last_sync"] = current_time
+                                        if track_id in self.customer_timers:
+                                            del self.customer_timers[track_id]
+                                try:
+                                    database.record_attendance(match_id)
+                                except Exception as eat:
+                                    print(f"[AI] Attendance record error: {eat}")
+                            else:
+                                match_id = "Unknown"
+                                match_source = None
                         else:
                             print(f"[AI] Staff check — best sim={best_staff_sim:.4f} for {known_staff_meta[best_staff_idx]['name']} (below {FACE_STAFF_RELAXED} threshold)")
 
