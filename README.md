@@ -7,7 +7,7 @@ Stafflytics AI is a professional-grade, AI-powered business intelligence system 
 [Demo Recording
 ](https://github.com/user-attachments/assets/ccab98cb-2e7e-4e12-beb4-0377e3162b58
 )
-*A walkthrough of live staff tracking, automated attendance, and the reporting dashboard in action.*
+* A walkthrough of live staff tracking, automated attendance, and the reporting dashboard in action.*
 
 ##  Key Features
 - **Intelligence Monitor**: Real-time video stream with AI-driven bounding boxes and activity labeling.
