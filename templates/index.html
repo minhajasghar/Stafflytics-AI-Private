@@ -87,7 +87,16 @@
                     </div>
                 </header>
                 <section class="camera-canvas" id="camera-canvas">
-                    <div class="video-header"><h3><i class="fas fa-video"></i> Intelligence Stream</h3>
+                    <div class="video-header">
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            <h3><i class="fas fa-video"></i> Intelligence Stream</h3>
+                            <!-- Corridor Passage Counter Badges -->
+                            <div style="display:flex; gap:10px; align-items:center; background:rgba(15,23,42,0.6); padding:4px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); font-size:0.75rem; font-weight:800;">
+                                <span style="color:#38bdf8;" title="Left to Right Corridor Movement"><i class="fas fa-arrow-right"></i> L ➔ R: <span id="hud-ltr" style="font-size:0.85rem; color:#fff;">0</span></span>
+                                <span style="color:rgba(255,255,255,0.3);">|</span>
+                                <span style="color:#c084fc;" title="Right to Left Corridor Movement"><i class="fas fa-arrow-left"></i> R ➔ L: <span id="hud-rtl" style="font-size:0.85rem; color:#fff;">0</span></span>
+                            </div>
+                        </div>
                         <div style="display:flex; gap:10px;">
                             <button class="btn-zone" style="background:var(--primary); color:white;" onclick="refreshCamera()"><i class="fas fa-sync"></i> Refresh Camera</button>
                             <button class="btn-zone" onclick="toggleZoneEditor()">Edit Zones</button>
@@ -640,6 +649,12 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             let detections = data && data.detections ? data.detections : null;
+            if (data && data.passage) {
+                const hudLtr = document.getElementById('hud-ltr');
+                const hudRtl = document.getElementById('hud-rtl');
+                if (hudLtr && data.passage.l_to_r !== undefined) hudLtr.innerText = data.passage.l_to_r;
+                if (hudRtl && data.passage.r_to_l !== undefined) hudRtl.innerText = data.passage.r_to_l;
+            }
             // Detection frame space from the backend (native cam_ai res, 16:9).
             let frameW = (data && data.frame_w) || 640;
             let frameH = (data && data.frame_h) || 360;

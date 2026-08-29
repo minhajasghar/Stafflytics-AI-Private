@@ -1,11 +1,14 @@
 @echo off
-title Stafflytics Streaming & PTZ Relay Services
+title Stafflytics AI - Streaming, Recording & PTZ Services
 cd /d "%~dp0"
 echo =========================================================
-echo   Stafflytics AI - Unified Streaming & PTZ Relay Runner
+echo   Stafflytics AI - Unified Streaming, Recording & PTZ
 echo =========================================================
-echo Starting MediaMTX, FFmpeg HD Transcoder & PTZ Relay concurrently...
-echo Keep this window minimized while running.
+echo [1/2] Starting 24/7 Hourly Video Recorder (E:\Stafflytics Recording, Max 850GB)...
+start /b python recorder_service.py
+
+echo [2/2] Starting MediaMTX, FFmpeg & PTZ Relay Services...
+echo Keep this window open / minimized while streaming.
 echo.
 cd mediamtx_v1.19.2_windows_amd64
 mediamtx.exe

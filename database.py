@@ -381,6 +381,7 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS zones_config (name TEXT PRIMARY KEY, points_json TEXT NOT NULL, unauthorized_roles TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS sales (id INTEGER PRIMARY KEY AUTOINCREMENT, staff_id TEXT, amount REAL NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS visitor_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, customer_id INTEGER, is_new_face BOOLEAN DEFAULT 1, staff_id TEXT, zone TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS passage_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, direction TEXT NOT NULL, track_id INTEGER)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
 
         defaults = [('owner_email', 'admin@stafflytics.ai'), ('sender_email', ''), ('sender_password', ''), ('rtsp_url', ''), ('late_grace_minutes', '10'), ('wellness_threshold', '4')]
@@ -910,6 +911,38 @@ def log_visitor_detection(customer_id, is_new_face, staff_id=None, zone=None):
         )
         conn.commit()
         conn.close()
+
+
+def log_passage(direction, track_id=None):
+    """Log a left-to-right or right-to-left corridor crossing."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO passage_log (direction, track_id) VALUES (?, ?)", (direction, track_id))
+        conn.commit()
+        conn.close()
+
+
+def get_passage_stats(date_str=None):
+    """Get corridor crossing stats for today or a specific date."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if date_str:
+            date_filter = "date(timestamp, 'localtime') = ?"
+            params = (date_str,)
+        else:
+            date_filter = "date(timestamp, 'localtime') = date('now', 'localtime')"
+            params = ()
+            
+        cursor.execute(f"SELECT COUNT(*) FROM passage_log WHERE direction = 'L_TO_R' AND {date_filter}", params)
+        l_to_r = cursor.fetchone()[0] or 0
+        
+        cursor.execute(f"SELECT COUNT(*) FROM passage_log WHERE direction = 'R_TO_L' AND {date_filter}", params)
+        r_to_l = cursor.fetchone()[0] or 0
+        
+        conn.close()
+        return {"l_to_r": l_to_r, "r_to_l": r_to_l, "total": l_to_r + r_to_l}
 
 
 def get_visitor_analytics(scope="day"):

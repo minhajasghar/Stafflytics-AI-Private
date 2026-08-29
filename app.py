@@ -55,11 +55,19 @@ _wz_logger.setLevel(_logging.INFO)
 websocket_clients = set()
 websocket_lock = threading.Lock()
 
-last_detection_payload = "{}"
-
-def broadcast_detections(detections, frame_w=640, frame_h=360):
+def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None):
     global last_detection_payload
-    payload = json.dumps({"detections": detections, "frame_w": frame_w, "frame_h": frame_h})
+    if passage is None and engine is not None:
+        try:
+            passage = engine.get_passage_counts()
+        except:
+            passage = {"l_to_r": 0, "r_to_l": 0}
+    payload = json.dumps({
+        "detections": detections, 
+        "frame_w": frame_w, 
+        "frame_h": frame_h,
+        "passage": passage or {"l_to_r": 0, "r_to_l": 0}
+    })
     last_detection_payload = payload
     with websocket_lock:
         inactive = set()
@@ -1215,7 +1223,19 @@ def camera_ptz_diagnose():
                 except Exception as e:
                     entry["cgi_auth"][name] = f"err: {str(e)[:50]}"
         report["targets"].append(entry)
-    return jsonify(report)
+@app.route('/api/passage/stats')
+@login_required
+def passage_stats():
+    """Returns today's bidirectional passage statistics (Left-to-Right and Right-to-Left)."""
+    stats = database.get_passage_stats()
+    if engine:
+        try:
+            live = engine.get_passage_counts()
+            stats["l_to_r"] = max(stats.get("l_to_r", 0), live.get("l_to_r", 0))
+            stats["r_to_l"] = max(stats.get("r_to_l", 0), live.get("r_to_l", 0))
+            stats["total"] = stats["l_to_r"] + stats["r_to_l"]
+        except: pass
+    return jsonify(stats)
 
 @app.route('/api/export/attendance/<format>')
 @login_required

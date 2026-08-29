@@ -275,6 +275,16 @@ class VisionEngine:
         self.visitor_logged = set() # track_ids that have been logged to visitor_log
         self.dwell_buffer = [] # (detection, timestamp) for persistence when YOLO briefly misses
         
+        # Corridor Passage Counters (Left-to-Right and Right-to-Left)
+        self.passage_counts = {"l_to_r": 0, "r_to_l": 0}
+        self.track_trajectories = {} # track_id -> deque([(x, y, time)], maxlen=40)
+        self.counted_passages = set() # track_ids already counted for their current crossing
+        try:
+            p_stats = database.get_passage_stats()
+            self.passage_counts["l_to_r"] = p_stats.get("l_to_r", 0)
+            self.passage_counts["r_to_l"] = p_stats.get("r_to_l", 0)
+        except: pass
+        
         self.frame_count = 0
         self.rec_throttle_frames = 2
         self.heartbeat_interval = 60
@@ -962,6 +972,30 @@ class VisionEngine:
                             break
                     with self.lock:
                         state["zone"] = current_zone
+
+                    # Bidirectional Corridor Passage Counting (Top Glass Hallway)
+                    from collections import deque
+                    if track_id not in self.track_trajectories:
+                        self.track_trajectories[track_id] = deque(maxlen=40)
+                    self.track_trajectories[track_id].append((center[0], center[1], current_time))
+
+                    # Check if movement is in the upper corridor area (Y <= 50% of frame height)
+                    if center[1] <= int(h_orig * 0.50):
+                        pts = list(self.track_trajectories[track_id])
+                        if len(pts) >= 8 and track_id not in self.counted_passages:
+                            x_start, x_end = pts[0][0], pts[-1][0]
+                            delta_x = x_end - x_start
+                            # 65px horizontal displacement indicates clear deliberate passage
+                            if delta_x >= 65:
+                                self.passage_counts["l_to_r"] += 1
+                                self.counted_passages.add(track_id)
+                                database.log_passage("L_TO_R", track_id)
+                                print(f"[CORRIDOR PASSAGE] Track #{track_id} moved LEFT ➔ RIGHT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
+                            elif delta_x <= -65:
+                                self.passage_counts["r_to_l"] += 1
+                                self.counted_passages.add(track_id)
+                                database.log_passage("R_TO_L", track_id)
+                                print(f"[CORRIDOR PASSAGE] Track #{track_id} moved RIGHT ➔ LEFT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
                     
                     # Pose & Action Analysis
                     keypoints = results[0].keypoints.xy.cpu().numpy()[0] if results[0].keypoints is not None else None
@@ -1304,3 +1338,7 @@ class VisionEngine:
                         "zone": state["zone"]
                     }
         return list(active_dict.values())
+
+    def get_passage_counts(self):
+        """Returns today's cumulative Left-to-Right and Right-to-Left passage counts."""
+        return dict(self.passage_counts)
