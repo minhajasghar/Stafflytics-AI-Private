@@ -88,7 +88,7 @@ def storage_supervisor_loop():
 
 
 def ensure_date_folders():
-    """Ensures today's and tomorrow's date directory exist in E:\Stafflytics Recording."""
+    r"""Ensures today's and tomorrow's date directory exist in E:\Stafflytics Recording."""
     from datetime import timedelta
     today = datetime.now()
     for offset in range(3): # Today, Tomorrow, Day after
