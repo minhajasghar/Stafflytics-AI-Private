@@ -777,7 +777,7 @@ class VisionEngine:
             # Run YOLO with ByteTrack on the native camera frame.
             # - tracker="bytetrack.yaml": Activates ByteTrack Kalman filter motion tracker
             # - classes=[0]: STRICTLY tracks humans (class 0: person) to prevent boxing non-living objects
-            # - conf=0.35: Rejects low-confidence noise/ghost boxes
+            # - conf=0.50: Conservative confidence threshold eliminating false positives on chairs/screens
             DETECTION_WIDTH = w_orig
             DETECTION_HEIGHT = h_orig
             small_frame = frame
@@ -786,7 +786,7 @@ class VisionEngine:
                 persist=True, 
                 tracker="bytetrack.yaml", 
                 classes=[0], 
-                conf=0.35, 
+                conf=0.50, 
                 iou=0.50, 
                 verbose=False
             )
