@@ -217,12 +217,18 @@ class VisionEngine:
         self.heartbeat_interval = 60
         
         self.role_work_zones = {
+            "Co-Founder / AI Solutions Architect": ["Office", "Lab", "Workstation", "Main Hall", "Dining Area", "Kitchen"],
+            "Co-Founder / Web Solutions Architect": ["Office", "Lab", "Workstation", "Main Hall", "Dining Area", "Kitchen"],
+            "Head of Business Development": ["Office", "Workstation", "Main Hall", "Dining Area"],
+            "Head of Quality Assurance": ["Office", "Lab", "Workstation", "Main Hall"],
+            "AI Intern": ["Office", "Lab", "Workstation", "Main Hall"],
+            "Electronics Engineer": ["Lab", "Workstation", "Office", "Main Hall"],
+            "Manager": ["Office", "Lab", "Workstation", "Main Hall", "Kitchen", "Dining Area"],
             "Chef": ["Kitchen"],
             "Cook": ["Kitchen"],
             "Waitstaff": ["Dining Area", "Kitchen", "Main Hall"],
             "Server": ["Dining Area", "Kitchen", "Main Hall"],
-            "Manager": ["Kitchen", "Dining Area", "Main Hall"],
-            "Owner": ["Kitchen", "Dining Area", "Main Hall"]
+            "Owner": ["Office", "Lab", "Workstation", "Main Hall", "Kitchen", "Dining Area"]
         }
         
         self.load_known_faces()

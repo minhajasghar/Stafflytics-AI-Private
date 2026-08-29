@@ -1266,7 +1266,7 @@ if (canvas) {
         ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim() || '#4f46e5'; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
         if (zonePoints.length === 4) {
             const name = prompt("Zone Name:");
-            const unauthorized = prompt("Unauthorized Roles (comma separated, e.g. Waitstaff,Chef) or leave empty:");
+            const unauthorized = prompt("Unauthorized Roles (comma separated, e.g. AI Intern,Electronics Engineer) or leave empty:");
             if (name) {
                 const unauthList = unauthorized ? unauthorized.split(',').map(s => s.trim()) : [];
                 fetch('/api/zones/update', { 
