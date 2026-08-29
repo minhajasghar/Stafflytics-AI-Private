@@ -996,6 +996,14 @@ def get_status():
     # Get active staff AFTER processing alerts so the list is up-to-date
     stf = engine.get_active_staff() if engine else []
 
+    p_stats = database.get_passage_stats()
+    if engine:
+        try:
+            live = engine.get_passage_counts()
+            p_stats["l_to_r"] = max(p_stats.get("l_to_r", 0), live.get("l_to_r", 0))
+            p_stats["r_to_l"] = max(p_stats.get("r_to_l", 0), live.get("r_to_l", 0))
+        except: pass
+
     return jsonify({
         "initializing": False,
         "count": len(stf), "camera_online": camera_online,
@@ -1008,7 +1016,8 @@ def get_status():
         "alert_details": {"name": alert_name, "zone": alert_zone} if new_alert else None,
         "monthly_customers": cst.get("monthly_total", 0),
         "today_customers": today_cst.get("today_count", 0),
-        "today_customer_minutes": today_cst.get("today_minutes", 0)
+        "today_customer_minutes": today_cst.get("today_minutes", 0),
+        "passage": p_stats
     })
 
 
