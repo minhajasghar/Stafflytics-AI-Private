@@ -207,6 +207,7 @@ class VisionEngine:
         self.alerted_tracks = set() # (track_id, zone_name)
         self.last_positions = {} # track_id -> (x, y)
         self.last_boxes = {} # track_id -> [x1, y1, x2, y2]
+        self.recent_guest_embeddings = [] # Short-term memory for returning guests: [{"name": name, "db_id": db_id, "encs": list, "last_seen": timestamp}]
         self.activity_buffer = {} # track_id -> seconds_active
         self.last_activity_sync = time.time()
         self.visitor_logged = set() # track_ids that have been logged to visitor_log
@@ -476,7 +477,27 @@ class VisionEngine:
                                     known_cust_meta[matched_cust_idx]["all_encs"] = c_stored_list
                                     print(f"[AI MULTI-ANGLE] Learned new distinct face angle for Customer #{c_id_matched} (total stored: {len(c_stored_list)}/5)")
                         else:
-                            print(f"[FACE SCORE] Track #{track_id} -> Best Cust '{c_name}' (ID {c_id_matched}) Score={best_cust_sim:.4f} (Threshold={FACE_CUSTOMER_THRESHOLD}) -> REJECTED (New visitor candidate)")
+                            # TIER 3: Check short-term recent guest memory (guests seen in the last 15 minutes)
+                            recent_matched = False
+                            with self.lock:
+                                # Purge guests older than 15 minutes (900s)
+                                self.recent_guest_embeddings = [g for g in self.recent_guest_embeddings if current_time - g.get("last_seen", 0) < 900]
+                                for g_info in self.recent_guest_embeddings:
+                                    g_encs = g_info.get("encs", [])
+                                    if g_encs:
+                                        r_sims = _cos_sims(g_encs, face_encodings[0])
+                                        if float(np.max(r_sims)) >= 0.40:
+                                            match_id = g_info["db_id"] if g_info.get("db_id") else f"GUEST_REMEM:{g_info['name']}"
+                                            match_source = "recent_guest"
+                                            g_info["last_seen"] = current_time
+                                            # Learn new angle for recent guest
+                                            if float(np.max(r_sims)) < 0.85 and len(g_encs) < 5:
+                                                g_encs.append(face_encodings[0])
+                                            recent_matched = True
+                                            print(f"[AI GUEST RE-LINK] Track #{track_id} matched returning guest '{g_info['name']}' (sim={float(np.max(r_sims)):.4f})")
+                                            break
+                            if not recent_matched:
+                                print(f"[FACE SCORE] Track #{track_id} -> Best Cust '{c_name}' (ID {c_id_matched}) Score={best_cust_sim:.4f} (Threshold={FACE_CUSTOMER_THRESHOLD}) -> REJECTED (New visitor candidate)")
 
                     if match_id == "Unknown":
                         print(f"[AI] No match found — best staff sim={best_staff_sim:.4f}, best cust sim={best_cust_sim:.4f}")
@@ -514,8 +535,11 @@ class VisionEngine:
                                     except:
                                         state["visits"] = meta.get("visits", 1)
                                     state["photo"] = meta.get("photo")
-                                    state["last_sync"] = current_time
-                                    refresh_faces = True
+                            elif winner.startswith("GUEST_REMEM:"):
+                                g_name = winner.split(":", 1)[1]
+                                state["id"] = g_name
+                                state["name"] = g_name
+                                state["last_sync"] = current_time
                             elif winner != "Unknown":
                                 meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
                                 if meta:
@@ -700,6 +724,12 @@ class VisionEngine:
                                             state["last_sync"] = current_time
                                             state["visits"] = 1
                                             state["photo"] = b64_photo
+                                            self.recent_guest_embeddings.append({
+                                                "name": f"Guest #{new_c_id}",
+                                                "db_id": f"C_{new_c_id}",
+                                                "encs": [face_encodings[0]],
+                                                "last_seen": current_time
+                                            })
                                 else:
                                     with self.lock:
                                         if track_id in self.recognition_consensus:
@@ -744,83 +774,65 @@ class VisionEngine:
             face_source = original_frame if original_frame is not None else output_frame
             fh, fw = face_source.shape[:2]
             
-            # Run YOLO on the native camera frame directly (cam_ai is already
-            # small — 640x360 16:9), keeping boxes in the SAME native coordinate
-            # space as the video the browser displays. No scaling, no distortion.
+            # Run YOLO with ByteTrack on the native camera frame.
+            # - tracker="bytetrack.yaml": Activates ByteTrack Kalman filter motion tracker
+            # - classes=[0]: STRICTLY tracks humans (class 0: person) to prevent boxing non-living objects
+            # - conf=0.35: Rejects low-confidence noise/ghost boxes
             DETECTION_WIDTH = w_orig
             DETECTION_HEIGHT = h_orig
             small_frame = frame
-            results = model.track(small_frame, persist=True, verbose=False, conf=0.25, iou=0.45)
+            results = model.track(
+                small_frame, 
+                persist=True, 
+                tracker="bytetrack.yaml", 
+                classes=[0], 
+                conf=0.35, 
+                iou=0.50, 
+                verbose=False
+            )
             
             # Detection boxes stay in native pixel space (scale = 1.0).
             scale_x = 1.0
             scale_y = 1.0
             
-            if results and results[0].boxes:
-                boxes = results[0].boxes.xyxy.cpu().numpy()
-                yolo_track_ids = results[0].boxes.id.int().cpu().numpy() if results[0].boxes.id is not None else None
+            if results and results[0].boxes is not None and len(results[0].boxes) > 0:
+                raw_boxes = results[0].boxes.xyxy.cpu().numpy()
+                raw_track_ids = results[0].boxes.id.int().cpu().numpy() if results[0].boxes.id is not None else None
+                raw_kps = results[0].keypoints.xy.cpu().numpy() if results[0].keypoints is not None else None
                 
+                boxes = []
+                valid_kps = []
                 track_ids = []
+                
+                # LIVING PERSON VALIDATION: Ensure detected box contains valid human keypoints
                 with self.lock:
-                    used_tids = set()
-                    for b_idx, box in enumerate(boxes):
-                        x1, y1, x2, y2 = map(int, box)
-                        center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+                    for b_idx, r_box in enumerate(raw_boxes):
+                        # Verify human pose keypoints if available
+                        if raw_kps is not None and b_idx < len(raw_kps):
+                            kp = raw_kps[b_idx]
+                            # Count keypoints with valid non-zero coordinates
+                            valid_count = np.sum((kp[:, 0] > 0) & (kp[:, 1] > 0))
+                            if valid_count < 3: # Must have at least 3 detected body joints
+                                continue
                         
-                        best_tid = None
-                        best_iou = 0.0
-                        
-                        # 1. First Priority: Check IoU overlap (>30% IoU) with recently tracked boxes (<3s)
-                        for tid, prev_box in list(self.last_boxes.items()):
-                            if tid not in used_tids:
-                                prev_state = self.person_states.get(tid, {})
-                                time_since = current_time - prev_state.get("last_active", current_time)
-                                if time_since <= 3.0:
-                                    iou = _box_iou(box, prev_box)
-                                    if iou >= 0.30 and iou > best_iou:
-                                        best_iou = iou
-                                        best_tid = tid
-                        
-                        # 2. Second Priority: Spatial proximity for fast-moving persons
-                        if best_tid is None:
-                            best_dist = 120.0
-                            for tid, pos in list(self.last_positions.items()):
-                                if tid not in used_tids:
-                                    prev_state = self.person_states.get(tid, {})
-                                    time_since = current_time - prev_state.get("last_active", current_time)
-                                    if time_since <= 3.0:
-                                        dist = np.sqrt((center[0] - pos[0])**2 + (center[1] - pos[1])**2)
-                                        if dist < best_dist:
-                                            best_dist = dist
-                                            best_tid = tid
-                                            
-                        # 3. Third Priority: Native YOLO tracker ID
-                        if best_tid is None and yolo_track_ids is not None and b_idx < len(yolo_track_ids):
-                            y_tid = int(yolo_track_ids[b_idx])
-                            if y_tid not in used_tids:
-                                best_tid = y_tid
-                        
-                        # 4. Truly New Person: Only assign new identity if no reasonable overlap/continuity exists
-                        if best_tid is None:
-                            new_tid = 1
-                            while new_tid in self.person_states or new_tid in self.last_positions or new_tid in used_tids:
-                                new_tid += 1
-                            best_tid = new_tid
+                        boxes.append(r_box)
+                        if raw_kps is not None and b_idx < len(raw_kps):
+                            valid_kps.append(raw_kps[b_idx])
                             
-                        track_ids.append(best_tid)
-                        used_tids.add(best_tid)
-                        self.last_boxes[best_tid] = [x1, y1, x2, y2]
-                        self.last_positions[best_tid] = center
-                        
-                    # Clean up old position and box records older than 10 seconds
-                    for tid in list(self.last_boxes.keys()):
-                        if tid not in used_tids:
-                            prev_st = self.person_states.get(tid, {})
-                            if current_time - prev_st.get("last_active", 0) > 10.0:
-                                self.last_boxes.pop(tid, None)
-                                self.last_positions.pop(tid, None)
-                                
-                track_ids = np.array(track_ids, dtype=np.int32)
+                        # Use ByteTrack ID directly for continuous motion tracking
+                        if raw_track_ids is not None and b_idx < len(raw_track_ids):
+                            t_id = int(raw_track_ids[b_idx])
+                        else:
+                            t_id = b_idx + 1
+                            
+                        track_ids.append(t_id)
+                        x1, y1, x2, y2 = map(int, r_box)
+                        self.last_boxes[t_id] = [x1, y1, x2, y2]
+                        self.last_positions[t_id] = (int((x1+x2)/2), int((y1+y2)/2))
+                
+                boxes = np.array(boxes, dtype=np.float32) if boxes else np.empty((0, 4), dtype=np.float32)
+                track_ids = np.array(track_ids, dtype=np.int32) if track_ids else np.empty((0,), dtype=np.int32)
+                all_kps = valid_kps if valid_kps else None
                 
                 # Process active tracks
                 all_kps = results[0].keypoints.xy.cpu().numpy() if results[0].keypoints is not None else None
