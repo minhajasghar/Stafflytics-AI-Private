@@ -155,6 +155,67 @@ def _box_iou(boxA, boxB):
     return interArea / float(union + 1e-6) if union > 0 else 0.0
 
 
+def _extract_appearance_embedding(body_crop):
+    """
+    Extracts a 128-dimensional spatial-color and texture appearance embedding (Person Re-ID)
+    from a full person body bounding box crop.
+    Works robustly even when the face is occluded, turned away, or camera is at a steep ceiling angle.
+    """
+    if body_crop is None or body_crop.size == 0:
+        return None
+    try:
+        # Standardize size for consistent feature representation (128w x 256h)
+        img = cv2.resize(body_crop, (128, 256))
+        h, w = img.shape[:2]
+        
+        # 3 Vertical Body Zones:
+        # 1. Head / Shoulders (0 - 25% height)
+        # 2. Upper Torso / Shirt (25% - 65% height)
+        # 3. Lower Body / Pants (65% - 100% height)
+        zones = [
+            img[0:int(h*0.25), :],
+            img[int(h*0.25):int(h*0.65), :],
+            img[int(h*0.65):h, :]
+        ]
+        
+        features = []
+        for zone in zones:
+            if zone.size == 0:
+                features.extend([0.0]*38)
+                continue
+            hsv = cv2.cvtColor(zone, cv2.COLOR_BGR2HSV)
+            lab = cv2.cvtColor(zone, cv2.COLOR_BGR2LAB)
+            
+            # HSV Histograms: H(16), S(8), V(8) = 32 bins
+            h_hist = cv2.calcHist([hsv], [0], None, [16], [0, 180]).flatten()
+            s_hist = cv2.calcHist([hsv], [1], None, [8], [0, 256]).flatten()
+            v_hist = cv2.calcHist([hsv], [2], None, [8], [0, 256]).flatten()
+            
+            # Lab Histograms: a(3), b(3) = 6 bins for illumination invariance
+            a_hist = cv2.calcHist([lab], [1], None, [3], [0, 256]).flatten()
+            b_hist = cv2.calcHist([lab], [2], None, [3], [0, 256]).flatten()
+            
+            zone_feat = np.concatenate([h_hist, s_hist, v_hist, a_hist, b_hist])
+            zone_feat = zone_feat / (np.linalg.norm(zone_feat) + 1e-6)
+            features.extend(zone_feat)
+            
+        # Global texture gradient energy (Sobel on grayscale) = 14 bins
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        mag, _ = cv2.cartToPolar(gx, gy)
+        mag_hist = cv2.calcHist([mag.astype(np.uint8)], [0], None, [14], [0, 256]).flatten()
+        mag_hist = mag_hist / (np.linalg.norm(mag_hist) + 1e-6)
+        features.extend(mag_hist)
+        
+        vec = np.array(features, dtype=np.float32)
+        # L2 normalize entire 128D feature vector
+        vec = vec / (np.linalg.norm(vec) + 1e-6)
+        return vec
+    except Exception as e:
+        return None
+
+
 class Zone:
     def __init__(self, name, points, unauthorized_roles=[]):
         self.name = name
@@ -208,6 +269,7 @@ class VisionEngine:
         self.last_positions = {} # track_id -> (x, y)
         self.last_boxes = {} # track_id -> [x1, y1, x2, y2]
         self.recent_guest_embeddings = [] # Short-term memory for returning guests: [{"name": name, "db_id": db_id, "encs": list, "last_seen": timestamp}]
+        self.reid_appearance_cache = {} # Person Re-ID Appearance Cache: identity_id -> {"name": name, "role": role, "reid_vec": vec, "last_seen": timestamp}
         self.activity_buffer = {} # track_id -> seconds_active
         self.last_activity_sync = time.time()
         self.visitor_logged = set() # track_ids that have been logged to visitor_log
@@ -317,46 +379,50 @@ class VisionEngine:
     def _recognition_worker(self):
         while True:
             try:
-                track_id, face_crop, current_zone, current_time = self.recognition_queue.get()
-                if face_crop is None or face_crop.size == 0:
+                track_id, face_crop, body_crop, current_zone, current_time = self.recognition_queue.get()
+                if (face_crop is None or face_crop.size == 0) and (body_crop is None or body_crop.size == 0):
                     self.recognition_queue.task_done()
                     with self.lock:
                         self.processing_tracks.discard(track_id)
                     continue
 
-                # Ensure the face crop is a valid 8-bit uint8 BGR array
-                if not isinstance(face_crop, np.ndarray):
-                    raise ValueError("face_crop must be a numpy array")
-                if face_crop.dtype != np.uint8:
-                    face_crop = face_crop.astype(np.uint8)
+                face_encodings = []
+                if face_crop is not None and face_crop.size > 0:
+                    # Ensure the face crop is a valid 8-bit uint8 BGR array
+                    if not isinstance(face_crop, np.ndarray):
+                        face_crop = np.array(face_crop)
+                    if face_crop.dtype != np.uint8:
+                        face_crop = face_crop.astype(np.uint8)
 
-                # Standardize channel layout (must be 3-channel BGR)
-                if len(face_crop.shape) == 2:
-                    face_crop = cv2.cvtColor(face_crop, cv2.COLOR_GRAY2BGR)
-                elif len(face_crop.shape) == 3 and face_crop.shape[2] == 4:
-                    face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGRA2BGR)
-                elif len(face_crop.shape) == 3 and face_crop.shape[2] == 3:
-                    pass
-                else:
-                    raise ValueError(f"Unexpected image shape for face recognition: {face_crop.shape}")
+                    if len(face_crop.shape) == 2:
+                        face_crop = cv2.cvtColor(face_crop, cv2.COLOR_GRAY2BGR)
+                    elif len(face_crop.shape) == 3 and face_crop.shape[2] == 4:
+                        face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGRA2BGR)
 
-                h_f, w_f = face_crop.shape[:2]
-
-                # Encode the face (YuNet detect + SFace embed).
-                with face_rec_lock:
-                    enc = _encode_face(face_crop)
-
-                # Try upscaling for small crops
-                if enc is None and (h_f < 160 or w_f < 160):
-                    scale = min(4.0, max(160.0 / max(h_f, 1), 160.0 / max(w_f, 1), 1.0))
-                    enlarged = cv2.resize(face_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                    h_f, w_f = face_crop.shape[:2]
+                    # Encode the face (YuNet detect + SFace embed)
                     with face_rec_lock:
-                        enc = _encode_face(enlarged)
+                        enc = _encode_face(face_crop)
 
-                face_encodings = [enc] if enc is not None else []
+                    # Try upscaling for small crops
+                    if enc is None and (h_f < 160 or w_f < 160):
+                        scale = min(4.0, max(160.0 / max(h_f, 1), 160.0 / max(w_f, 1), 1.0))
+                        enlarged = cv2.resize(face_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                        with face_rec_lock:
+                            enc = _encode_face(enlarged)
+
+                    if enc is not None:
+                        face_encodings = [enc]
+
+                # Extract Person Re-ID Appearance Embedding (Full Body)
+                body_reid_vec = _extract_appearance_embedding(body_crop) if body_crop is not None else None
 
                 match_id = "Unknown"
                 match_source = None
+                matched_staff_meta = None
+                matched_cust_meta = None
+
+                # TIER 1: Match by Face Recognition (Highest Confidence)
                 if face_encodings:
                     with self.lock:
                         known_staff_enc = list(self.known_face_encodings)
@@ -364,7 +430,6 @@ class VisionEngine:
                         known_cust_enc = list(self.known_customer_encodings)
                         known_cust_meta = list(self.known_customer_metadata)
                     
-                    # LOG: confirm matching attempt
                     best_staff_sim = -1.0
                     if known_staff_enc:
                         staff_sims = _cos_sims(known_staff_enc, face_encodings[0])
@@ -377,16 +442,23 @@ class VisionEngine:
                             print(f"[FACE SCORE] Track #{track_id} -> Staff '{s_name}' (ID {s_id}) Score={best_staff_sim:.4f} (Threshold={FACE_STAFF_THRESHOLD}) -> MATCH ACCEPTED")
                             match_id = s_id
                             match_source = "staff"
+                            matched_staff_meta = known_staff_meta[best_staff_idx]
+                            
+                            # Update Re-ID appearance cache for this staff member
+                            if body_reid_vec is not None:
+                                with self.lock:
+                                    self.reid_appearance_cache[s_id] = {
+                                        "name": s_name, "db_id": s_id, "role": matched_staff_meta.get("role", "None"),
+                                        "reid_vec": body_reid_vec, "last_seen": current_time, "is_staff": True
+                                    }
                             
                             # CRITICAL: Prevent 2 people from claiming the same staff member simultaneously
                             can_assign_staff = True
                             with self.lock:
                                 for other_tid, other_st in list(self.person_states.items()):
                                     if other_tid != track_id and other_st.get("db_id") == match_id and (current_time - other_st.get("last_active", 0)) < 8:
-                                        # Another track already has this staff name
                                         other_sim = other_st.get("best_staff_sim", 0.0)
                                         if best_staff_sim > other_sim:
-                                            # Current track is a better match — demote the other track
                                             print(f"[AI] Reassigning {s_name} from track {other_tid} (sim={other_sim:.3f}) to track {track_id} (sim={best_staff_sim:.3f})")
                                             other_st["db_id"] = None
                                             other_st["id"] = f"Track #{other_tid}"
@@ -394,7 +466,6 @@ class VisionEngine:
                                             other_st["role"] = "None"
                                             other_st["best_staff_sim"] = 0.0
                                         else:
-                                            # Other track is a better match — current track cannot be this staff
                                             print(f"[AI] Track {track_id} matched {s_name} (sim={best_staff_sim:.3f}), but track {other_tid} has higher sim ({other_sim:.3f}) — rejecting duplicate")
                                             can_assign_staff = False
                                             break
@@ -455,6 +526,14 @@ class VisionEngine:
                             match_source = "customer"
                             matched_cust_idx = best_cust_idx
                             
+                            # Update Re-ID appearance cache for this returning guest
+                            if body_reid_vec is not None:
+                                with self.lock:
+                                    self.reid_appearance_cache[f"C_{c_id_matched}"] = {
+                                        "name": c_name, "db_id": f"C_{c_id_matched}", "role": "None",
+                                        "reid_vec": body_reid_vec, "last_seen": current_time, "is_staff": False
+                                    }
+                            
                             # MULTI-ANGLE LEARNING: Store new distinct face angles for customer (up to 5)
                             c_stored_list = known_cust_meta[matched_cust_idx].get("all_encs", [])
                             if c_stored_list and best_cust_sim >= 0.38:
@@ -476,28 +555,47 @@ class VisionEngine:
                                     database.update_customer_encoding(c_id_matched, pickle.dumps(c_stored_list), photo=b64_photo)
                                     known_cust_meta[matched_cust_idx]["all_encs"] = c_stored_list
                                     print(f"[AI MULTI-ANGLE] Learned new distinct face angle for Customer #{c_id_matched} (total stored: {len(c_stored_list)}/5)")
-                        else:
-                            # TIER 3: Check short-term recent guest memory (guests seen in the last 15 minutes)
-                            recent_matched = False
-                            with self.lock:
-                                # Purge guests older than 15 minutes (900s)
-                                self.recent_guest_embeddings = [g for g in self.recent_guest_embeddings if current_time - g.get("last_seen", 0) < 900]
-                                for g_info in self.recent_guest_embeddings:
-                                    g_encs = g_info.get("encs", [])
-                                    if g_encs:
-                                        r_sims = _cos_sims(g_encs, face_encodings[0])
-                                        if float(np.max(r_sims)) >= 0.40:
-                                            match_id = g_info["db_id"] if g_info.get("db_id") else f"GUEST_REMEM:{g_info['name']}"
-                                            match_source = "recent_guest"
-                                            g_info["last_seen"] = current_time
-                                            # Learn new angle for recent guest
-                                            if float(np.max(r_sims)) < 0.85 and len(g_encs) < 5:
-                                                g_encs.append(face_encodings[0])
-                                            recent_matched = True
-                                            print(f"[AI GUEST RE-LINK] Track #{track_id} matched returning guest '{g_info['name']}' (sim={float(np.max(r_sims)):.4f})")
-                                            break
-                            if not recent_matched:
-                                print(f"[FACE SCORE] Track #{track_id} -> Best Cust '{c_name}' (ID {c_id_matched}) Score={best_cust_sim:.4f} (Threshold={FACE_CUSTOMER_THRESHOLD}) -> REJECTED (New visitor candidate)")
+
+                # TIER 2: Person Re-ID Appearance Matching (When Face is Occluded / Steep Ceiling Angle)
+                if match_id == "Unknown" and body_reid_vec is not None:
+                    with self.lock:
+                        # Purge Re-ID cache entries older than 15 minutes (900s)
+                        self.reid_appearance_cache = {k: v for k, v in self.reid_appearance_cache.items() if current_time - v.get("last_seen", 0) < 900}
+                        best_reid_match = None
+                        best_reid_score = -1.0
+                        for k, v in self.reid_appearance_cache.items():
+                            cached_vec = v.get("reid_vec")
+                            if cached_vec is not None:
+                                sim = float(np.dot(cached_vec, body_reid_vec))
+                                if sim > best_reid_score:
+                                    best_reid_score = sim
+                                    best_reid_match = v
+                        
+                        if best_reid_match is not None and best_reid_score >= 0.76:
+                            match_id = best_reid_match["db_id"]
+                            match_source = "reid_appearance"
+                            best_reid_match["last_seen"] = current_time
+                            best_reid_match["reid_vec"] = body_reid_vec # Update appearance with latest lighting/angle
+                            print(f"[RE-ID MATCH] Track #{track_id} -> Re-identified as '{best_reid_match['name']}' via Person Appearance (Score={best_reid_score:.4f}, Face Occluded/Ceiling Angle)")
+
+                # TIER 3: Check short-term recent guest face memory (15-min rolling window)
+                if match_id == "Unknown" and face_encodings:
+                    recent_matched = False
+                    with self.lock:
+                        self.recent_guest_embeddings = [g for g in self.recent_guest_embeddings if current_time - g.get("last_seen", 0) < 900]
+                        for g_info in self.recent_guest_embeddings:
+                            g_encs = g_info.get("encs", [])
+                            if g_encs:
+                                r_sims = _cos_sims(g_encs, face_encodings[0])
+                                if float(np.max(r_sims)) >= 0.40:
+                                    match_id = g_info["db_id"] if g_info.get("db_id") else f"GUEST_REMEM:{g_info['name']}"
+                                    match_source = "recent_guest"
+                                    g_info["last_seen"] = current_time
+                                    if float(np.max(r_sims)) < 0.85 and len(g_encs) < 5:
+                                        g_encs.append(face_encodings[0])
+                                    recent_matched = True
+                                    print(f"[AI GUEST RE-LINK] Track #{track_id} matched returning guest '{g_info['name']}' (sim={float(np.max(r_sims)):.4f})")
+                                    break
 
                     if match_id == "Unknown":
                         print(f"[AI] No match found — best staff sim={best_staff_sim:.4f}, best cust sim={best_cust_sim:.4f}")
@@ -939,19 +1037,26 @@ class VisionEngine:
                                 if x2f > x1f and y2f > y1f:
                                     face_img = face_source[y1f:y2f, x1f:x2f]
 
-                        if face_img is None:
-                            y1f = int(y1 * fs_scale_y)
-                            y2f = int(y1f + (y2 - y1) * fs_scale_y * 0.30)
-                            x_margin = int((x2 - x1) * fs_scale_x * 0.10)
-                            x1f = max(0, int(x1 * fs_scale_x) - x_margin)
-                            x2f = min(fw, int(x2 * fs_scale_x) + x_margin)
-                            if x2f > x1f and y2f > y1f:
-                                face_img = face_source[y1f:y2f, x1f:x2f]
+                        # Extract full body crop for Person Re-ID (appearance embedding)
+                        x1b = max(0, int(x1 * fs_scale_x))
+                        y1b = max(0, int(y1 * fs_scale_y))
+                        x2b = min(fw, int(x2 * fs_scale_x))
+                        y2b = min(fh, int(y2 * fs_scale_y))
+                        body_crop = face_source[y1b:y2b, x1b:x2b] if (x2b > x1b and y2b > y1b) else None
 
-                        if face_img is not None and face_img.shape[0] >= 64 and face_img.shape[1] >= 64:
+                        has_valid_face = face_img is not None and face_img.shape[0] >= 64 and face_img.shape[1] >= 64
+                        has_valid_body = body_crop is not None and body_crop.shape[0] >= 80 and body_crop.shape[1] >= 40
+
+                        if has_valid_face or has_valid_body:
                             with self.lock:
                                 self.processing_tracks.add(track_id)
-                            self.recognition_queue.put((track_id, face_img.copy(), current_zone, current_time))
+                            self.recognition_queue.put((
+                                track_id, 
+                                face_img.copy() if has_valid_face else None, 
+                                body_crop.copy() if has_valid_body else None, 
+                                current_zone, 
+                                current_time
+                            ))
                     else:
                         # Sync presence heartbeat (only for confirmed staff, not customers)
                         with self.lock:
