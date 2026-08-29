@@ -24,6 +24,8 @@ paths:
   cam_raw:
     source: rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0
     rtspTransport: tcp
+    runOnInit: 'python "C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\ptz_relay.py"'
+    runOnInitRestart: yes
 
   cam:
     runOnInit: '"C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\bin\ffmpeg.exe" -loglevel warning -rtsp_transport tcp -i rtsp://localhost:8554/cam_raw -vf "scale=1920:1080" -c:v libx264 -preset ultrafast -tune zerolatency -r 20 -g 20 -keyint_min 20 -sc_threshold 0 -b:v 2200k -maxrate 2800k -bufsize 5000k -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam'
