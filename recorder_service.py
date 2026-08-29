@@ -87,12 +87,14 @@ def storage_supervisor_loop():
         time.sleep(600)  # Check every 10 minutes
 
 
-def ensure_date_folder():
-    """Ensures today's date directory exists."""
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    folder_path = os.path.join(RECORDING_DIR, today_str)
-    os.makedirs(folder_path, exist_ok=True)
-    return folder_path
+def ensure_date_folders():
+    """Ensures today's and tomorrow's date directory exist in E:\Stafflytics Recording."""
+    from datetime import timedelta
+    today = datetime.now()
+    for offset in range(3): # Today, Tomorrow, Day after
+        d_str = (today + timedelta(days=offset)).strftime("%Y-%m-%d")
+        folder_path = os.path.join(RECORDING_DIR, d_str)
+        os.makedirs(folder_path, exist_ok=True)
 
 
 def run_recorder():
@@ -110,7 +112,7 @@ def run_recorder():
 
     while True:
         try:
-            ensure_date_folder()
+            ensure_date_folders()
             # Segment format: E:\Stafflytics Recording\%Y-%m-%d\%H-00.mp4
             output_pattern = os.path.join(RECORDING_DIR, "%Y-%m-%d", "%H-00.mp4")
 
