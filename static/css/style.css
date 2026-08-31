@@ -281,6 +281,8 @@ body {
 .stat-blue { background: color-mix(in srgb, var(--primary) 20%, transparent); color: var(--primary); }
 .stat-green { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
 .stat-red { background: color-mix(in srgb, var(--alert) 20%, transparent); color: var(--alert); }
+.stat-purple { background: color-mix(in srgb, #c084fc 20%, transparent); color: #c084fc; }
+.stat-gold { background: color-mix(in srgb, #eab308 20%, transparent); color: #eab308; }
 
 .stat-info span { font-size: 0.75rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 .stat-info div { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.5px; }
