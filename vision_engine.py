@@ -908,15 +908,16 @@ class VisionEngine:
             DETECTION_WIDTH = w_orig
             DETECTION_HEIGHT = h_orig
             small_frame = frame
-            results = model.track(
-                small_frame, 
-                persist=True, 
-                tracker="bytetrack.yaml", 
-                classes=[0], 
-                conf=0.50, 
-                iou=0.50, 
-                verbose=False
-            )
+            try:
+                results = model.track(
+                    small_frame, 
+                    persist=True, 
+                    conf=0.35, 
+                    verbose=False
+                )
+            except Exception:
+                # Fallback to direct model inference if tracking subsystem encounters any issue
+                results = model(small_frame, conf=0.35, verbose=False)
             
             # Detection boxes stay in native pixel space (scale = 1.0).
             scale_x = 1.0
@@ -924,45 +925,41 @@ class VisionEngine:
             
             if results and results[0].boxes is not None and len(results[0].boxes) > 0:
                 raw_boxes = results[0].boxes.xyxy.cpu().numpy()
-                raw_track_ids = results[0].boxes.id.int().cpu().numpy() if results[0].boxes.id is not None else None
-                raw_kps = results[0].keypoints.xy.cpu().numpy() if results[0].keypoints is not None else None
+                raw_track_ids = results[0].boxes.id.int().cpu().numpy() if (hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None) else None
+                raw_kps = results[0].keypoints.xy.cpu().numpy() if (hasattr(results[0], 'keypoints') and results[0].keypoints is not None) else None
                 
                 boxes = []
                 valid_kps = []
                 track_ids = []
                 
-                # LIVING PERSON VALIDATION: Ensure detected box contains valid human keypoints
                 with self.lock:
                     for b_idx, r_box in enumerate(raw_boxes):
-                        # Verify human pose keypoints if available
-                        if raw_kps is not None and b_idx < len(raw_kps):
-                            kp = raw_kps[b_idx]
-                            # Count keypoints with valid non-zero coordinates
-                            valid_count = np.sum((kp[:, 0] > 0) & (kp[:, 1] > 0))
-                            if valid_count < 3: # Must have at least 3 detected body joints
-                                continue
+                        x1, y1, x2, y2 = map(int, r_box)
+                        # Reject unreasonably tiny boxes (< 25px)
+                        if (x2 - x1) < 25 or (y2 - y1) < 30:
+                            continue
                         
                         boxes.append(r_box)
                         if raw_kps is not None and b_idx < len(raw_kps):
                             valid_kps.append(raw_kps[b_idx])
+                        else:
+                            valid_kps.append(None)
                             
-                        # Use ByteTrack ID directly for continuous motion tracking
+                        # Use Track ID or deterministic index
                         if raw_track_ids is not None and b_idx < len(raw_track_ids):
                             t_id = int(raw_track_ids[b_idx])
                         else:
                             t_id = b_idx + 1
                             
                         track_ids.append(t_id)
-                        x1, y1, x2, y2 = map(int, r_box)
                         self.last_boxes[t_id] = [x1, y1, x2, y2]
                         self.last_positions[t_id] = (int((x1+x2)/2), int((y1+y2)/2))
                 
                 boxes = np.array(boxes, dtype=np.float32) if boxes else np.empty((0, 4), dtype=np.float32)
                 track_ids = np.array(track_ids, dtype=np.int32) if track_ids else np.empty((0,), dtype=np.int32)
-                all_kps = valid_kps if valid_kps else None
+                all_kps = valid_kps
                 
                 # Process active tracks
-                all_kps = results[0].keypoints.xy.cpu().numpy() if results[0].keypoints is not None else None
                 for i, (box, track_id) in enumerate(zip(boxes, track_ids)):
                     x1, y1, x2, y2 = map(int, box)
                     center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
@@ -1072,7 +1069,7 @@ class VisionEngine:
                         fs_scale_y = fh / DETECTION_HEIGHT
 
                         # Try precise face crop using YOLO keypoints (nose)
-                        if all_kps is not None and i < len(all_kps):
+                        if all_kps is not None and i < len(all_kps) and all_kps[i] is not None:
                             kp = all_kps[i]
                             nose = kp[0]
                             if nose[0] > 0 and nose[1] > 0:
@@ -1080,8 +1077,6 @@ class VisionEngine:
                                 nose_y = int(nose[1] * fs_scale_y)
                                 det_box_h = y2 - y1
                                 face_size = max(int(det_box_h * fs_scale_y * 0.35), 80)
-                                # Shift crop upward so more area is above the nose
-                                # to consistently capture eyes and forehead
                                 shift_up = int(face_size * 0.15)
                                 x1f = max(0, nose_x - face_size)
                                 y1f = max(0, nose_y - face_size - shift_up)
@@ -1089,6 +1084,16 @@ class VisionEngine:
                                 y2f = min(fh, nose_y + face_size - shift_up)
                                 if x2f > x1f and y2f > y1f:
                                     face_img = face_source[y1f:y2f, x1f:x2f]
+
+                        # Fallback face crop: top 30% of detection bounding box
+                        if face_img is None:
+                            y1f = int(y1 * fs_scale_y)
+                            y2f = int(y1f + (y2 - y1) * fs_scale_y * 0.35)
+                            x_margin = int((x2 - x1) * fs_scale_x * 0.10)
+                            x1f = max(0, int(x1 * fs_scale_x) - x_margin)
+                            x2f = min(fw, int(x2 * fs_scale_x) + x_margin)
+                            if x2f > x1f and y2f > y1f:
+                                face_img = face_source[y1f:y2f, x1f:x2f]
 
                         # Extract full body crop for Person Re-ID (appearance embedding)
                         x1b = max(0, int(x1 * fs_scale_x))
