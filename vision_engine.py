@@ -923,10 +923,21 @@ class VisionEngine:
             scale_x = 1.0
             scale_y = 1.0
             
-            if results and results[0].boxes is not None and len(results[0].boxes) > 0:
+            if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
                 raw_boxes = results[0].boxes.xyxy.cpu().numpy()
-                raw_track_ids = results[0].boxes.id.int().cpu().numpy() if (hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None) else None
-                raw_kps = results[0].keypoints.xy.cpu().numpy() if (hasattr(results[0], 'keypoints') and results[0].keypoints is not None) else None
+                raw_track_ids = None
+                try:
+                    if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
+                        raw_track_ids = results[0].boxes.id.int().cpu().numpy()
+                except Exception:
+                    raw_track_ids = None
+
+                raw_kps = None
+                try:
+                    if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
+                        raw_kps = results[0].keypoints.xy.cpu().numpy()
+                except Exception:
+                    raw_kps = None
                 
                 boxes = []
                 valid_kps = []
@@ -1014,7 +1025,7 @@ class VisionEngine:
                                 print(f"[CORRIDOR PASSAGE] Track #{track_id} moved RIGHT ➔ LEFT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
                     
                     # Pose & Action Analysis
-                    keypoints = results[0].keypoints.xy.cpu().numpy()[0] if results[0].keypoints is not None else None
+                    keypoints = all_kps[i] if (all_kps is not None and i < len(all_kps)) else None
                     pose_label = "NEUTRAL"
                     pose_multiplier = 1.0
                     
