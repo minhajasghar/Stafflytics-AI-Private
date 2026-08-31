@@ -581,12 +581,23 @@ class VisionEngine:
                                     best_reid_score = sim
                                     best_reid_match = v
                         
-                        if best_reid_match is not None and best_reid_score >= 0.76:
-                            match_id = best_reid_match["db_id"]
-                            match_source = "reid_appearance"
-                            best_reid_match["last_seen"] = current_time
-                            best_reid_match["reid_vec"] = body_reid_vec # Update appearance with latest lighting/angle
-                            print(f"[RE-ID MATCH] Track #{track_id} -> Re-identified as '{best_reid_match['name']}' via Person Appearance (Score={best_reid_score:.4f}, Face Occluded/Ceiling Angle)")
+                        # Strict Re-ID Threshold: 0.82 (prevents confusion between coworkers in similar shirts)
+                        if best_reid_match is not None and best_reid_score >= 0.82:
+                            cand_id = best_reid_match["db_id"]
+                            # STRICT UNIQUENESS: Do not assign if another active track currently has this staff ID
+                            is_claimed = False
+                            for other_tid, other_st in list(self.person_states.items()):
+                                if other_tid != track_id and other_st.get("db_id") == cand_id and (current_time - other_st.get("last_active", 0)) < 8:
+                                    is_claimed = True
+                                    print(f"[RE-ID DUPLICATE PREVENTED] '{best_reid_match['name']}' already claimed by track #{other_tid} — rejecting track #{track_id}")
+                                    break
+                            
+                            if not is_claimed:
+                                match_id = cand_id
+                                match_source = "reid_appearance"
+                                best_reid_match["last_seen"] = current_time
+                                best_reid_match["reid_vec"] = body_reid_vec
+                                print(f"[RE-ID MATCH] Track #{track_id} -> Re-identified as '{best_reid_match['name']}' via Person Appearance (Score={best_reid_score:.4f}, Face Occluded/Ceiling Angle)")
 
                 # TIER 3: Check short-term recent guest face memory (15-min rolling window)
                 if match_id == "Unknown" and face_encodings:
@@ -651,16 +662,24 @@ class VisionEngine:
                             elif winner != "Unknown":
                                 meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
                                 if meta:
-                                    state["id"] = f"ID: {meta['id']}"
-                                    state["name"] = meta["name"]
-                                    state["role"] = meta["role"]
-                                    state["db_id"] = meta["id"]
-                                    state["last_sync"] = current_time
-                                    database.record_attendance(meta["id"])
-                                    # Remove any stale customer timer for this track (they're staff!)
-                                    if track_id in self.customer_timers:
-                                        del self.customer_timers[track_id]
-                                    print(f"[AI CONSENSUS] track {track_id} -> STAFF db_id={state['db_id']!r} name={state['name']!r}")
+                                    # STRICT UNIQUENESS: Reject assignment if another active track already possesses this staff ID
+                                    is_dup = False
+                                    for other_tid, other_st in list(self.person_states.items()):
+                                        if other_tid != track_id and other_st.get("db_id") == winner and (current_time - other_st.get("last_active", 0)) < 8:
+                                            is_dup = True
+                                            print(f"[AI CONSENSUS DUPLICATE PREVENTED] Staff '{meta['name']}' already assigned to track #{other_tid} — rejecting duplicate on track #{track_id}")
+                                            break
+                                    if not is_dup:
+                                        state["id"] = f"ID: {meta['id']}"
+                                        state["name"] = meta["name"]
+                                        state["role"] = meta["role"]
+                                        state["db_id"] = meta["id"]
+                                        state["last_sync"] = current_time
+                                        database.record_attendance(meta["id"])
+                                        # Remove any stale customer timer for this track (they're staff!)
+                                        if track_id in self.customer_timers:
+                                            del self.customer_timers[track_id]
+                                        print(f"[AI CONSENSUS] track {track_id} -> STAFF db_id={state['db_id']!r} name={state['name']!r}")
                 if refresh_faces:
                     self.load_known_faces()
                 
@@ -1223,10 +1242,34 @@ class VisionEngine:
                     state["last_color"] = color_hex
                     # Compile detection metadata for canvas rendering
                     detections.append({
+                        "track_id": track_id,
+                        "staff_id": db_id if (db_id and not str(db_id).startswith("C_")) else None,
                         "box": state["last_box"],
                         "label": label,
                         "color": color_hex
                     })
+
+            # STRICT 1-TO-1 DEDUPLICATION: Ensure no two boxes display the same staff identity
+            staff_tracker = {}
+            for d in detections:
+                st_id = d.get("staff_id")
+                if st_id:
+                    tid = d.get("track_id")
+                    if st_id in staff_tracker:
+                        # Conflict! Demote duplicate track to Guest
+                        print(f"[AI DEDUP] Multiple boxes claimed Staff ID {st_id} — demoting duplicate track #{tid} to Guest")
+                        with self.lock:
+                            if tid in self.person_states:
+                                self.person_states[tid]["db_id"] = None
+                                self.person_states[tid]["name"] = "Guest"
+                                self.person_states[tid]["role"] = "None"
+                                self.person_states[tid]["last_label"] = f"Guest #{tid}"
+                                self.person_states[tid]["last_color"] = "#f97316"
+                        d["label"] = f"Guest #{tid}"
+                        d["color"] = "#f97316"
+                        d["staff_id"] = None
+                    else:
+                        staff_tracker[st_id] = tid
 
             # Cleanup expired tracks under lock
             with self.lock:

@@ -619,6 +619,11 @@ async function fetchStatus() {
         if (document.getElementById('incidents-today')) document.getElementById('incidents-today').innerText = data.incidents_today;
         if (document.getElementById('monthly-customers')) document.getElementById('monthly-customers').innerText = data.monthly_customers;
         if (document.getElementById('repeat-customers')) document.getElementById('repeat-customers').innerText = data.repeat_customers;
+        if (data.today_customers !== undefined && document.getElementById('customer-time')) {
+            const mins = data.today_customer_minutes || 0;
+            const count = data.today_customers || 0;
+            document.getElementById('customer-time').innerText = `${count} today · ${mins} min`;
+        }
         if (data.passage) {
             if (document.getElementById('stat-ltr') && data.passage.l_to_r !== undefined) {
                 document.getElementById('stat-ltr').innerText = data.passage.l_to_r;
