@@ -912,12 +912,13 @@ class VisionEngine:
                 results = model.track(
                     small_frame, 
                     persist=True, 
-                    conf=0.35, 
+                    conf=0.22, 
+                    iou=0.45,
                     verbose=False
                 )
             except Exception:
                 # Fallback to direct model inference if tracking subsystem encounters any issue
-                results = model(small_frame, conf=0.35, verbose=False)
+                results = model(small_frame, conf=0.22, iou=0.45, verbose=False)
             
             # Detection boxes stay in native pixel space (scale = 1.0).
             scale_x = 1.0
