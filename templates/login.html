@@ -142,36 +142,7 @@
 <body>
     <div class="login-card">
         <div class="logo" style="margin-bottom: 1.5rem; flex-direction: column; gap: 8px;">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" style="width: 72px; height: 72px; filter: drop-shadow(0 6px 12px rgba(59,130,246,0.5));">
-                <defs>
-                    <linearGradient id="bg-grad-login" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <stop offset="0%" stop-color="#0f172a" />
-                        <stop offset="100%" stop-color="#1e1b4b" />
-                    </linearGradient>
-                    <linearGradient id="icon-grad-login" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <stop offset="0%" stop-color="#3b82f6" />
-                        <stop offset="50%" stop-color="#8b5cf6" />
-                        <stop offset="100%" stop-color="#06b6d4" />
-                    </linearGradient>
-                </defs>
-                <rect width="500" height="500" rx="250" fill="url(#bg-grad-login)" />
-                <g transform="translate(150, 150)">
-                    <path d="M100 40 L160 80 L160 150 L100 190 L40 150 L40 80 Z" fill="none" stroke="url(#icon-grad-login)" stroke-width="14" />
-                    <circle cx="100" cy="40" r="16" fill="#60a5fa" />
-                    <circle cx="160" cy="80" r="12" fill="#a78bfa" />
-                    <circle cx="160" cy="150" r="14" fill="#22d3ee" />
-                    <circle cx="100" cy="190" r="16" fill="#60a5fa" />
-                    <circle cx="40" cy="150" r="12" fill="#a78bfa" />
-                    <circle cx="40" cy="80" r="14" fill="#22d3ee" />
-                    <circle cx="100" cy="115" r="20" fill="url(#icon-grad-login)" />
-                    <line x1="100" y1="40" x2="100" y2="115" stroke="url(#icon-grad-login)" stroke-width="10" />
-                    <line x1="160" y1="80" x2="100" y2="115" stroke="url(#icon-grad-login)" stroke-width="10" />
-                    <line x1="160" y1="150" x2="100" y2="115" stroke="url(#icon-grad-login)" stroke-width="10" />
-                    <line x1="100" y1="190" x2="100" y2="115" stroke="url(#icon-grad-login)" stroke-width="10" />
-                    <line x1="40" y1="150" x2="100" y2="115" stroke="url(#icon-grad-login)" stroke-width="10" />
-                    <line x1="40" y1="80" x2="100" y2="115" stroke="url(#icon-grad-login)" stroke-width="10" />
-                </g>
-            </svg>
+            <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Stafflytics" style="width: 72px; height: 72px; object-fit: contain;">
             <div style="font-size: 1.8rem; font-weight: 800; background: linear-gradient(135deg, #fff 0%, #cbd5e1 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Stafflytics AI</div>
         </div>
         <h2>Enterprise Intelligence Login</h2>

@@ -851,11 +851,12 @@ html { overflow-x: hidden; }
 @media (max-width: 768px) {
     /* --- Layout: single column, no fixed height --- */
     .dashboard {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto 1fr auto;
+        display: flex;
+        flex-direction: column;
         height: 100dvh;
         height: 100vh;
-        overflow: hidden;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
 
     /* --- Hide the desktop sidebar entirely on mobile --- */
@@ -863,14 +864,12 @@ html { overflow-x: hidden; }
         display: none !important;
     }
 
-    /* --- Main content fills the screen --- */
+    /* --- Main content flows naturally --- */
     .main-content {
-        height: calc(100dvh - 64px);
-        height: calc(100vh - 64px);
+        height: auto;
         padding: 0.75rem;
         gap: 1rem;
-        overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
+        overflow-y: visible;
     }
 
     /* --- Mobile bottom navigation bar --- */
@@ -924,14 +923,14 @@ html { overflow-x: hidden; }
         background: color-mix(in srgb, var(--primary) 8%, transparent);
     }
 
-    /* --- Add padding-bottom so content doesn't hide behind bottom nav --- */
-    .main-content {
-        padding-bottom: calc(64px + 0.75rem);
-    }
-
-    /* --- Right monitor (alerts panel) becomes a collapsible section below main --- */
+    /* --- Right monitor (alerts panel) displays below main content --- */
     .right-monitor {
-        display: none !important;
+        display: flex !important;
+        width: 100%;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        padding: 1rem;
+        padding-bottom: calc(64px + 1rem); /* Space for bottom nav */
     }
 
     /* --- Top bar adjustments --- */
