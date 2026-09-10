@@ -31,7 +31,7 @@ paths:
     # at 640x480 for lightweight, error-free AI reads. ultrafast+zerolatency keeps
     # latency under 200ms while eliminating all HEVC decode failures that caused
     # frame drops and bounding box disappearances.
-    runOnInit: '"C:\Users\Sultan Mahmood\Desktop\TNT Innov Projects\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:480" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    runOnInit: '"C:\Users\Sultan Mahmood\Desktop\TNT Innov Projects\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:-2" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
     runOnInitRestart: yes
 
   mystream:

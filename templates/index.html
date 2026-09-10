@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stafflytics AI</title>
-    <link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}" type="image/png">
+    <link rel="icon" href="{{ url_for('static', filename='img/favicon-32.png') }}" type="image/png">
+    <link rel="icon" href="{{ url_for('static', filename='img/favicon-48.png') }}" type="image/png" sizes="48x48">
+    <link rel="icon" href="{{ url_for('static', filename='img/favicon-16.png') }}" type="image/png" sizes="16x16">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <!-- Cache buster to ensure mobile layout fixes are loaded -->
     <link rel="stylesheet" href="/static/css/style.css?v=15">
@@ -52,7 +54,7 @@
 <body>
     <div id="init-splash">
         <div class="coin-wrapper">
-            <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Loading" style="width: 100%; height: 100%; object-fit: cover; transform: scale(1.5);">
+            <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Loading" style="width: 100%; height: 100%; object-fit: cover; transform: scale(2.2);">
         </div>
         <h2 style="font-weight:800; letter-spacing:-1px;">Stafflytics Intelligence</h2>
         <p id="init-status-text" style="opacity:0.7; font-size:0.9rem; margin-top:10px;">Synchronizing AI Models & Hardware...</p>
@@ -62,7 +64,7 @@
     <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
         <nav class="sidebar">
             <div class="logo-icon" style="background: none; box-shadow: none; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:50%; width:46px; height:46px;">
-                <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Stafflytics" style="width: 100%; height: 100%; object-fit: cover; transform: scale(1.5);">
+                <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Stafflytics" style="width: 100%; height: 100%; object-fit: cover; transform: scale(2.2);">
             </div>
             <div class="sidebar-nav">
                 <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
@@ -606,6 +608,7 @@
         // boxes drift away from people whenever the wrapper isn't 16:9.
         let videoFitRect = { x: 0, y: 0, w: 0, h: 0 };
         let videoAspect = 16 / 9;
+        let lastFitRectUpdate = 0;
 
         function updateVideoAspect() {
             const hlsEl = document.getElementById('hls-video');
@@ -622,16 +625,19 @@
             const canvas = document.getElementById('detection-canvas');
             if (!canvas) return;
             const container = canvas.parentElement;
-            canvas.width = container.clientWidth;
-            canvas.height = container.clientHeight;
+            const cw = container.clientWidth;
+            const ch = container.clientHeight;
+            if (cw === 0 || ch === 0) return;
+            canvas.width = cw;
+            canvas.height = ch;
             updateVideoAspect();
             // Compute the largest centered rect with the video aspect that fits
             // the canvas — mirrors what object-fit:contain renders.
-            const cw = canvas.width, ch = canvas.height;
             const ar = videoAspect;
             let dw = cw, dh = cw / ar;
             if (dh > ch) { dh = ch; dw = ch * ar; }
             videoFitRect = { x: (cw - dw) / 2, y: (ch - dh) / 2, w: dw, h: dh };
+            lastFitRectUpdate = Date.now();
         }
 
         window.addEventListener('resize', resizeCanvas);
@@ -640,6 +646,18 @@
         function drawDetections(data) {
             const canvas = document.getElementById('detection-canvas');
             if (!canvas) return;
+
+            // Auto-resize canvas if it was never sized or container changed
+            if (canvas.width === 0 || canvas.height === 0 ||
+                Math.abs(canvas.width - canvas.parentElement.clientWidth) > 4 ||
+                Math.abs(canvas.height - canvas.parentElement.clientHeight) > 4) {
+                resizeCanvas();
+            }
+            // Periodically refresh the fit rect (every 2s) to catch video source changes
+            if (Date.now() - lastFitRectUpdate > 2000) {
+                resizeCanvas();
+            }
+
             const ctx = canvas.getContext('2d');
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -650,9 +668,9 @@
                 if (statLtr && data.passage.l_to_r !== undefined) statLtr.innerText = data.passage.l_to_r;
                 if (statRtl && data.passage.r_to_l !== undefined) statRtl.innerText = data.passage.r_to_l;
             }
-            // Detection frame space from the backend (native cam_ai res, 16:9).
+            // Detection frame space from the backend (native cam_ai res).
             let frameW = (data && data.frame_w) || 640;
-            let frameH = (data && data.frame_h) || 360;
+            let frameH = (data && data.frame_h) || 480;
 
             const now = Date.now();
             if (!detections || detections.length === 0) {
@@ -671,17 +689,28 @@
 
             // Coordinates from backend are in the native detection frame space.
             // Map them into the visible (contain-fit) video rect only.
+            // Use uniform scale to prevent box distortion when detection and
+            // display frame aspect ratios differ slightly.
             const fit = videoFitRect;
-            const scaleX = (fit.w > 0 ? fit.w : canvas.width) / frameW;
-            const scaleY = (fit.h > 0 ? fit.h : canvas.height) / frameH;
-            const offX = fit.x;
-            const offY = fit.y;
+            const fitReady = fit.w > 10 && fit.h > 10;
+            const baseW = fitReady ? fit.w : canvas.width;
+            const baseH = fitReady ? fit.h : canvas.height;
+            const offX = fitReady ? fit.x : 0;
+            const offY = fitReady ? fit.y : 0;
+            const scaleX = baseW / frameW;
+            const scaleY = baseH / frameH;
+            const scale = Math.min(scaleX, scaleY);
+            // Center the mapped detection area within the fit rect
+            const mappedW = frameW * scale;
+            const mappedH = frameH * scale;
+            const mapOffX = offX + (baseW - mappedW) / 2;
+            const mapOffY = offY + (baseH - mappedH) / 2;
 
             detections.forEach(det => {
-                const x1 = det.box[0] * scaleX + offX;
-                const y1 = det.box[1] * scaleY + offY;
-                const x2 = det.box[2] * scaleX + offX;
-                const y2 = det.box[3] * scaleY + offY;
+                const x1 = det.box[0] * scale + mapOffX;
+                const y1 = det.box[1] * scale + mapOffY;
+                const x2 = det.box[2] * scale + mapOffX;
+                const y2 = det.box[3] * scale + mapOffY;
                 const w = x2 - x1;
                 const h = y2 - y1;
 
