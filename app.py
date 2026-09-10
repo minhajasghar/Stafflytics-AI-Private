@@ -109,7 +109,7 @@ display_stream = None # Display stream: cam (full HD relay) — used by video_fe
 # RTSP Camera Configuration
 _DEFAULT_PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
 PHYSICAL_RTSP_URL = _DEFAULT_PHYSICAL_RTSP_URL
-RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"   # AI stream: H.264 640x480, stable, no HEVC errors
+RTSP_URL = "rtsp://127.0.0.1:8554/cam"   # AI stream: using /cam directly since WebRTC confirms it works
 DISPLAY_RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Display stream: full HD relay
 
 def sync_camera_config():
@@ -133,7 +133,7 @@ def sync_camera_config():
             stream_manager.setup_remote_rtsp_stream()
             if stream_manager.REMOTE_RTSP_URL:
                 PHYSICAL_RTSP_URL = stream_manager.REMOTE_RTSP_URL
-        RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"  # H.264 transcoded AI stream
+        RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Read directly from H.264 cam path
         print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {stream_manager.REMOTE_RTSP_URL}")
         return
 
@@ -161,7 +161,7 @@ def sync_camera_config():
     stream_manager.setup_mediamtx(PHYSICAL_RTSP_URL)
 
     # AI processing reads from the H.264 transcoded path — stable, no HEVC decode errors
-    RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"
+    RTSP_URL = "rtsp://127.0.0.1:8554/cam"
     print(f"[SYSTEM] RTSP_URL for AI set to: '{RTSP_URL}' (H.264 transcoded)")
 QUALITY_PRESETS = {
     "480p": {"size": (640, 480), "jpeg": 85, "label": "Standard (480p)"},
@@ -240,23 +240,10 @@ class CameraStream:
         # Use override URL if specified (display_stream uses cam, camera_stream uses cam_ai)
         active_url = self.rtsp_override if self.rtsp_override else RTSP_URL
         
-        # [Fallback logic]: If trying to open cam_ai (ffmpeg relay) but it's offline
-        # (e.g. ffmpeg not installed), fallback to the direct camera URL so YOLO still works.
+        # [Fallback logic]: No fallback to raw camera. We MUST read from mediamtx /cam path.
+        # If it's offline, OpenCV will keep trying until it comes online.
         if active_url == RTSP_URL:
-            # Give it a quick ping, if it fails, grab the real URL
-            import database
-            try:
-                cfg = database.get_camera_config()
-                if cfg and cfg.get("url"):
-                    # Probe localhost quickly
-                    cap = cv2.VideoCapture(active_url, cv2.CAP_FFMPEG)
-                    if cap and cap.isOpened():
-                        cap.release()
-                    else:
-                        print(f"[STREAM] cam_ai is offline. Falling back to direct camera URL for AI.")
-                        active_url = cfg["url"]
-            except Exception:
-                pass
+            pass
 
         print(f"[SYSTEM] Starting Camera Synchronization Loop... (URL='{active_url}')")
         if self.stream is not None:
