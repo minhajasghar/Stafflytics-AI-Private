@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stafflytics AI</title>
-    <link rel="icon" href="{{ url_for('static', filename='img/logo.svg') }}" type="image/svg+xml">
+    <link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}" type="image/png">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <!-- Cache buster to ensure mobile layout fixes are loaded -->
     <link rel="stylesheet" href="/static/css/style.css?v=15">
@@ -24,7 +24,7 @@
         .btn-delete { background: #fee2e2; color: #b91c1c; border: none; padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 0.7rem; font-weight: 800; }
         
         #init-splash { position: fixed; inset: 0; background: var(--primary); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; transition: 0.5s opacity; }
-        .coin-spinner { width: 80px; height: 80px; margin-bottom: 20px; animation: coinFlip 1.5s infinite linear; object-fit: contain; }
+        .coin-spinner { width: 80px; height: 80px; margin-bottom: 20px; border-radius: 50%; animation: coinFlip 1.5s infinite linear; object-fit: cover; }
         @keyframes coinFlip { 0% { transform: perspective(400px) rotateY(0deg); } 100% { transform: perspective(400px) rotateY(360deg); } }
         
         .webrtc-pulse-dot { animation: webrtc-pulse 1.5s infinite ease-in-out; }
@@ -60,7 +60,7 @@
     <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
         <nav class="sidebar">
             <div class="logo-icon" style="background: none; box-shadow: none; display:flex; align-items:center; justify-content:center;">
-                <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Stafflytics" style="width: 44px; height: 44px; object-fit: contain;">
+                <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Stafflytics" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover;">
             </div>
             <div class="sidebar-nav">
                 <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>

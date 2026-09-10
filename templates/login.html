@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stafflytics AI</title>
-    <link rel="icon" href="{{ url_for('static', filename='img/logo.svg') }}" type="image/svg+xml">
+    <link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}" type="image/png">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -142,7 +142,7 @@
 <body>
     <div class="login-card">
         <div class="logo" style="margin-bottom: 1.5rem; flex-direction: column; gap: 8px;">
-            <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Stafflytics" style="width: 72px; height: 72px; object-fit: contain;">
+            <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Stafflytics" style="width: 72px; height: 72px; border-radius: 50%; object-fit: cover;">
             <div style="font-size: 1.8rem; font-weight: 800; background: linear-gradient(135deg, #fff 0%, #cbd5e1 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Stafflytics AI</div>
         </div>
         <h2>Enterprise Intelligence Login</h2>
