@@ -59,8 +59,37 @@
     <div class="dashboard">
     <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
         <nav class="sidebar">
-            <div class="logo-icon" style="background: none; box-shadow: none;">
-                <img src="{{ url_for('static', filename='img/logo.svg') }}" alt="Stafflytics Logo" style="width: 50px; height: 50px; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">
+            <div class="logo-icon" style="background: none; box-shadow: none; display:flex; align-items:center; justify-content:center;">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" style="width: 44px; height: 44px; filter: drop-shadow(0 4px 10px rgba(59,130,246,0.5));">
+                    <defs>
+                        <linearGradient id="bg-grad-sidebar" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#0f172a" />
+                            <stop offset="100%" stop-color="#1e1b4b" />
+                        </linearGradient>
+                        <linearGradient id="icon-grad-sidebar" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#3b82f6" />
+                            <stop offset="50%" stop-color="#8b5cf6" />
+                            <stop offset="100%" stop-color="#06b6d4" />
+                        </linearGradient>
+                    </defs>
+                    <rect width="500" height="500" rx="250" fill="url(#bg-grad-sidebar)" />
+                    <g transform="translate(150, 150)">
+                        <path d="M100 40 L160 80 L160 150 L100 190 L40 150 L40 80 Z" fill="none" stroke="url(#icon-grad-sidebar)" stroke-width="14" />
+                        <circle cx="100" cy="40" r="16" fill="#60a5fa" />
+                        <circle cx="160" cy="80" r="12" fill="#a78bfa" />
+                        <circle cx="160" cy="150" r="14" fill="#22d3ee" />
+                        <circle cx="100" cy="190" r="16" fill="#60a5fa" />
+                        <circle cx="40" cy="150" r="12" fill="#a78bfa" />
+                        <circle cx="40" cy="80" r="14" fill="#22d3ee" />
+                        <circle cx="100" cy="115" r="20" fill="url(#icon-grad-sidebar)" />
+                        <line x1="100" y1="40" x2="100" y2="115" stroke="url(#icon-grad-sidebar)" stroke-width="10" />
+                        <line x1="160" y1="80" x2="100" y2="115" stroke="url(#icon-grad-sidebar)" stroke-width="10" />
+                        <line x1="160" y1="150" x2="100" y2="115" stroke="url(#icon-grad-sidebar)" stroke-width="10" />
+                        <line x1="100" y1="190" x2="100" y2="115" stroke="url(#icon-grad-sidebar)" stroke-width="10" />
+                        <line x1="40" y1="150" x2="100" y2="115" stroke="url(#icon-grad-sidebar)" stroke-width="10" />
+                        <line x1="40" y1="80" x2="100" y2="115" stroke="url(#icon-grad-sidebar)" stroke-width="10" />
+                    </g>
+                </svg>
             </div>
             <div class="sidebar-nav">
                 <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
