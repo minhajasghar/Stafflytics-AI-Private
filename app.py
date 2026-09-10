@@ -1547,5 +1547,9 @@ def test_camera():
     return jsonify({"status": "error", "message": "Camera not reachable. Check: 1) Camera powered on  2) IP correct  3) RTSP enabled in Imou app  4) No firewall blocking port 554  5) Try subtype=1 for H.264 sub-stream"})
 
 if __name__ == '__main__':
-    port = int(os.environ.get('STAFFLYTICS_PORT', 5000))
+    raw_port = str(os.environ.get('STAFFLYTICS_PORT', '5000')).strip().split()[0]
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = 5000
     app.run(host='0.0.0.0', debug=False, port=port, threaded=True, use_reloader=False)
