@@ -1,4 +1,3 @@
-import sqlite3
 import threading
 import os
 import json
@@ -6,31 +5,38 @@ import re
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal as _Decimal
+from dotenv import load_dotenv
 
 # Use RLock to prevent deadlocks when functions call each other
 db_lock = threading.RLock()
 
-# Absolute path (anchored to this file) so SQLite always points at the same
-# file regardless of the working directory the app is started from.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "data", "stafflytics.db")
+# Load environment variables from .env if present
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-# Load database configuration from config.json
+# Load database configuration: prioritizes .env variables, then config.json, then defaults
 DB_CONFIG = {
-    "DB_TYPE": "sqlite",
-    "MYSQL_HOST": "localhost",
-    "MYSQL_PORT": 3306,
-    "MYSQL_USER": "root",
-    "MYSQL_PASSWORD": "",
-    "MYSQL_DATABASE": "stafflytics"
+    "DB_TYPE": "mysql",
+    "MYSQL_HOST": os.getenv("MYSQL_HOST") or os.getenv("DB_HOST", "localhost"),
+    "MYSQL_PORT": int(os.getenv("MYSQL_PORT") or os.getenv("DB_PORT", 3306)),
+    "MYSQL_USER": os.getenv("MYSQL_USER") or os.getenv("DB_USER", "root"),
+    "MYSQL_PASSWORD": os.getenv("MYSQL_PASSWORD") if os.getenv("MYSQL_PASSWORD") is not None else os.getenv("DB_PASSWORD", ""),
+    "MYSQL_DATABASE": os.getenv("MYSQL_DATABASE") or os.getenv("DB_NAME", "stafflytics")
 }
 
-if os.path.exists("config.json"):
+config_json_path = os.path.join(BASE_DIR, "config.json")
+if os.path.exists(config_json_path):
     try:
-        with open("config.json", "r") as f:
-            DB_CONFIG.update(json.load(f))
+        with open(config_json_path, "r") as f:
+            cfg = json.load(f)
+            for key in ["MYSQL_HOST", "MYSQL_PORT", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE"]:
+                if key in cfg and not os.getenv(key):
+                    if key == "MYSQL_PORT":
+                        DB_CONFIG[key] = int(cfg[key])
+                    else:
+                        DB_CONFIG[key] = cfg[key]
     except Exception as e:
-        print(f"[DB] Error reading config.json, using defaults: {e}")
+        print(f"[DB] Error reading config.json, using environment/defaults: {e}")
 
 # MySQL compatibility layer to emulate sqlite3.Row
 def _coerce(value):
@@ -233,105 +239,42 @@ class MySQLConnectionWrapper:
     def close(self):
         self.conn.close()
 
-_CONFIGURED_DB_TYPE = DB_CONFIG.get("DB_TYPE", "sqlite")
-_mysql_check_done = False
-_mysql_ok = True
-_last_mysql_fail_time = 0.0
-_MYSQL_RETRY_SECONDS = 30
-
-def _verify_mysql():
-    """Probe MySQL. If it can't be reached, temporarily fall back to SQLite so
-    the whole app keeps working instead of failing every query — but log the
-    failure loudly and re-probe automatically so the app reconnects to MySQL
-    once it is available again (avoids silently saving data to a SQLite file
-    forever). The check runs only once per process unless MySQL was down."""
-    global _mysql_check_done, _mysql_ok, _last_mysql_fail_time
-    if _CONFIGURED_DB_TYPE != "mysql":
-        return True
-    if DB_CONFIG["DB_TYPE"] == "mysql" and _mysql_check_done and _mysql_ok:
-        return True
-    now = time.time()
-    if now - _last_mysql_fail_time < _MYSQL_RETRY_SECONDS:
-        return _mysql_ok
-    try:
-        import mysql.connector
-        conn = mysql.connector.connect(
-            host=DB_CONFIG["MYSQL_HOST"],
-            port=DB_CONFIG["MYSQL_PORT"],
-            user=DB_CONFIG["MYSQL_USER"],
-            password=DB_CONFIG["MYSQL_PASSWORD"],
-            connect_timeout=4
-        )
-        conn.close()
-        _mysql_ok = True
-        _mysql_check_done = True
-        if DB_CONFIG["DB_TYPE"] != "mysql":
-            DB_CONFIG["DB_TYPE"] = "mysql"
-            print("[DB] MySQL reachable again — switched back to MySQL.")
-    except Exception as e:
-        _mysql_ok = False
-        _last_mysql_fail_time = now
-        if DB_CONFIG["DB_TYPE"] == "mysql":
-            DB_CONFIG["DB_TYPE"] = "sqlite"
-            print(f"[DB ERROR] MySQL unreachable ({e}). TEMPORARILY using SQLite "
-                  f"({DB_PATH}). Data saved now will NOT appear in MySQL until "
-                  f"MySQL is back and the app reconnects. Install the MySQL driver "
-                  f"with: pip install mysql-connector-python")
-    return _mysql_ok
+import mysql.connector
 
 def get_db_connection():
-    _verify_mysql()
-    if DB_CONFIG["DB_TYPE"] == "mysql":
-        import mysql.connector
-        conn = mysql.connector.connect(
+    """Returns a MySQL database connection wrapped in MySQLConnectionWrapper."""
+    conn = mysql.connector.connect(
+        host=DB_CONFIG["MYSQL_HOST"],
+        port=DB_CONFIG["MYSQL_PORT"],
+        user=DB_CONFIG["MYSQL_USER"],
+        password=DB_CONFIG["MYSQL_PASSWORD"],
+        database=DB_CONFIG["MYSQL_DATABASE"]
+    )
+    return MySQLConnectionWrapper(conn)
+
+def init_db():
+    """Initializes the MySQL database and ensures all required tables exist."""
+    _init_conn = None
+    try:
+        conn_raw = mysql.connector.connect(
             host=DB_CONFIG["MYSQL_HOST"],
             port=DB_CONFIG["MYSQL_PORT"],
             user=DB_CONFIG["MYSQL_USER"],
-            password=DB_CONFIG["MYSQL_PASSWORD"],
-            database=DB_CONFIG["MYSQL_DATABASE"]
+            password=DB_CONFIG["MYSQL_PASSWORD"]
         )
-        return MySQLConnectionWrapper(conn)
-    else:
-        conn = sqlite3.connect(DB_PATH, timeout=20)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 10000;")
-        conn.execute("PRAGMA journal_mode=WAL;")
-        return conn
+        cur = conn_raw.cursor()
+        cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_CONFIG['MYSQL_DATABASE']}`")
+        cur.execute(f"USE `{DB_CONFIG['MYSQL_DATABASE']}`")
+        conn_raw.commit()
+        cur.close()
+        print(f"[DB] Verified/Created MySQL database '{DB_CONFIG['MYSQL_DATABASE']}'")
+        _init_conn = MySQLConnectionWrapper(conn_raw)
+    except Exception as e:
+        print(f"[DB ERROR] MySQL database setup failed: {e}")
+        raise e
 
-def init_db():
-    _init_conn = None  # Reuse this connection for table creation (avoids second-connection drop)
-    _verify_mysql()
-    if DB_CONFIG["DB_TYPE"] == "mysql":
-        import mysql.connector
-        try:
-            conn_raw = mysql.connector.connect(
-                host=DB_CONFIG["MYSQL_HOST"],
-                port=DB_CONFIG["MYSQL_PORT"],
-                user=DB_CONFIG["MYSQL_USER"],
-                password=DB_CONFIG["MYSQL_PASSWORD"]
-            )
-            cur = conn_raw.cursor()
-            cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_CONFIG['MYSQL_DATABASE']}`")
-            # Switch to the database on the SAME connection — avoids the second
-            # connect() that was being forcibly closed by MySQL (Errno 10054).
-            cur.execute(f"USE `{DB_CONFIG['MYSQL_DATABASE']}`")
-            conn_raw.commit()
-            cur.close()
-            print(f"[DB] Verified/Created MySQL database '{DB_CONFIG['MYSQL_DATABASE']}'")
-            _init_conn = MySQLConnectionWrapper(conn_raw)
-        except Exception as e:
-            print(f"[DB ERROR] MySQL pre-init database creation failed: {e}")
-            return
-    else:
-        data_dir = os.path.dirname(DB_PATH)
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir, exist_ok=True)
-        
     def _try(cursor, sql, label):
-        """Run a single DDL/DML statement and swallow benign failures
-        (e.g. ALTER on a column that already exists, or a corrupt table).
-        IMPORTANT: we never use PRAGMA table_info / DESCRIBE here — on MariaDB
-        that crashes the server when a table's metadata is damaged."""
+        """Run a single DDL statement and swallow benign errors (e.g. duplicate columns)."""
         try:
             cursor.execute(sql)
             return True
@@ -347,9 +290,7 @@ def init_db():
         conn = _init_conn if _init_conn is not None else get_db_connection()
         cursor = conn.cursor()
 
-        # DDL runs for BOTH SQLite and MySQL (MySQLCursorWrapper translates the
-        # SQLite syntax). Column additions use idempotent try/except ALTERs —
-        # never PRAGMA table_info (DESCRIBE crashes MariaDB on damaged tables).
+        # DDL execution for MySQL (MySQLCursorWrapper translates types like TEXT PRIMARY KEY to MySQL VARCHAR)
         cursor.execute('''CREATE TABLE IF NOT EXISTS staff (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, shift_start TEXT DEFAULT '10:00', shift TEXT DEFAULT 'Morning', hourly_rate REAL DEFAULT 500.0, salary_type TEXT DEFAULT 'Monthly', face_encoding BLOB NOT NULL)''')
         _try(cursor, "ALTER TABLE staff ADD COLUMN salary_type TEXT DEFAULT 'Monthly'", "staff.salary_type")
         _try(cursor, "ALTER TABLE staff ADD COLUMN photo TEXT", "staff.photo")
