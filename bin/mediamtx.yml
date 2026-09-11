@@ -1,11 +1,12 @@
-# MediaMTX configuration for Stafflytics (auto-generated)
+# MediaMTX configuration for Stafflytics - REMOTE RTSP MODE (auto-generated)
+# "cam" pulls directly from the remote RTSP source; no Imou bridge needed.
 rtspAddress: :8554
 rtpAddress: :8556
 rtcpAddress: :8557
 
 webrtc: yes
 webrtcAddress: :8889
-webrtcAllowOrigin: '*'
+webrtcAllowOrigin: "*"
 webrtcICEServers2:
   - url: stun:stun.l.google.com:19302
 webrtcLocalUDPAddress: :8189
@@ -20,20 +21,16 @@ srt: no
 
 paths:
   cam:
-    # Full-quality relay from physical camera — used for the display video feed.
-    # TCP transport prevents UDP packet loss that causes HEVC decode errors.
-    source: rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0
+    # Pull directly from the remote RTSP peer (e.g. Tailscale MediaMTX node).
+    source: rtsp://100.113.113.69:8554/cam
     rtspTransport: tcp
 
   cam_ai:
     # H.264 transcoded stream for OpenCV / YOLO AI processing.
-    # FFmpeg pulls from the local cam relay (already over TCP), re-encodes to H.264
-    # at 640x480 for lightweight, error-free AI reads. ultrafast+zerolatency keeps
-    # latency under 200ms while eliminating all HEVC decode failures that caused
-    # frame drops and bounding box disappearances.
-    runOnInit: '"C:\Users\Sultan Mahmood\Desktop\TNT Innov Projects\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:-2" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    # scale=640:-2 preserves source aspect ratio (no forced 4:3 stretch).
+    runOnInit: '"C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\bin\ffmpeg.exe" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:-2" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
     runOnInitRestart: yes
 
   mystream:
-    runOnDemand: '"C:\Users\Sultan Mahmood\Desktop\TNT Innov Projects\stafflytics\stafflytics-ai\bin\ffmpeg.exe" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=1920:1080" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
+    runOnDemand: '"C:\Users\admin\Desktop\TNT Innov Projects\stafflytics-ai\bin\ffmpeg.exe" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=1280:720" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
     runOnDemandRestart: yes

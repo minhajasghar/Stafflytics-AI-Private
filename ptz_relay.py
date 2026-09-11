@@ -170,6 +170,6 @@ if __name__ == '__main__':
     print(" Stafflytics PTZ Relay Server (ONVIF Mode)")
     print("==========================================")
     print(f"Target Camera: {CAMERA_IP}:{CAMERA_PORT}")
-    print("Listening on 0.0.0.0:5001 for VPS commands...")
+    print("Listening on 0.0.0.0:5003 for VPS commands...")
     sync_camera_clock()
-    app.run(host='0.0.0.0', port=5001)
+    app.run(host='0.0.0.0', port=5003)

@@ -1144,10 +1144,10 @@ def _ptz_send(direction, action):
 
     last_err = ""
     for ip, user, pwd, _ in _camera_targets():
-        for http_port in ['5001', '80', '8080']:
+        for http_port in ['5003', '80', '8080']:
             base = f"http://{ip}:{http_port}"
             for channel in ['1', '0']:
-                if http_port == '5001':
+                if http_port == '5003':
                     url = f"{base}/ptz?action={action}&channel={channel}&code={direction}&arg1=0&arg2=5"
                 else:
                     url = f"{base}/cgi-bin/ptz.cgi?action={action}&channel={channel}&code={direction}&arg1=0&arg2=5"
