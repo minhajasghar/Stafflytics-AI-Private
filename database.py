@@ -610,12 +610,12 @@ def get_dashboard_summary():
         
         # Average Team Efficiency Today
         cursor.execute("""
-            SELECT AVG(CAST(active_seconds AS REAL) / 
+            SELECT AVG(CAST(active_seconds AS DECIMAL(10,4)) / 
                        CASE WHEN exit_time IS NOT NULL 
-                            THEN MAX(1, (strftime('%s', exit_time, 'localtime') - strftime('%s', entry_time, 'localtime'))) 
-                            ELSE MAX(1, (strftime('%s', 'now', 'localtime') - strftime('%s', entry_time, 'localtime'))) END) * 100
+                            THEN GREATEST(1, (UNIX_TIMESTAMP(exit_time) - UNIX_TIMESTAMP(entry_time))) 
+                            ELSE GREATEST(1, (UNIX_TIMESTAMP(NOW()) - UNIX_TIMESTAMP(entry_time))) END) * 100
             FROM attendance 
-            WHERE date(entry_time, 'localtime') = date('now', 'localtime')
+            WHERE DATE(entry_time) = CURDATE()
         """)
         avg_efficiency = cursor.fetchone()[0] or 0
         
@@ -693,11 +693,11 @@ def get_performance_rankings():
         cursor.execute("""
             SELECT s.name, s.role,
                    COALESCE(SUM(CASE WHEN a.exit_time IS NOT NULL 
-                            THEN (strftime('%s', a.exit_time, 'localtime') - strftime('%s', a.entry_time, 'localtime'))
-                            ELSE (strftime('%s', 'now', 'localtime') - strftime('%s', a.entry_time, 'localtime')) END), 0) as total_sec,
+                            THEN (UNIX_TIMESTAMP(a.exit_time) - UNIX_TIMESTAMP(a.entry_time))
+                            ELSE (UNIX_TIMESTAMP(NOW()) - UNIX_TIMESTAMP(a.entry_time)) END), 0) as total_sec,
                    COALESCE(SUM(a.active_seconds), 0) as active_sec
             FROM staff s
-            LEFT JOIN attendance a ON s.id = a.staff_id AND strftime('%m', a.entry_time, 'localtime') = strftime('%m', 'now', 'localtime')
+            LEFT JOIN attendance a ON s.id = a.staff_id AND DATE_FORMAT(a.entry_time, '%m') = DATE_FORMAT(NOW(), '%m')
             GROUP BY s.id, s.name, s.role
         """)
         rows = cursor.fetchall()
@@ -723,12 +723,12 @@ def get_monthly_attendance(month=None, year=None):
         query = f"""
             SELECT a.entry_time, a.exit_time, s.name, s.role,
                    (CASE WHEN a.exit_time IS NOT NULL 
-                         THEN (strftime('%s', a.exit_time, 'localtime') - strftime('%s', a.entry_time, 'localtime')) 
-                         ELSE (strftime('%s', 'now', 'localtime') - strftime('%s', a.entry_time, 'localtime')) END) / 3600.0,
+                         THEN (UNIX_TIMESTAMP(a.exit_time) - UNIX_TIMESTAMP(a.entry_time)) 
+                         ELSE (UNIX_TIMESTAMP(NOW()) - UNIX_TIMESTAMP(a.entry_time)) END) / 3600.0,
                    s.salary_type, a.is_late, a.active_seconds
             FROM attendance a JOIN staff s ON a.staff_id = s.id
-            WHERE strftime('%m', a.entry_time, 'localtime') = {month}
-              AND strftime('%Y', a.entry_time, 'localtime') = {year}
+            WHERE MONTH(a.entry_time) = {int(month)}
+              AND YEAR(a.entry_time) = {int(year)}
             ORDER BY a.entry_time DESC
         """
         cursor.execute(query)
@@ -743,11 +743,11 @@ def get_daily_attendance(date_str):
         query = """
             SELECT a.entry_time, a.exit_time, s.name, s.role,
                    (CASE WHEN a.exit_time IS NOT NULL 
-                         THEN (strftime('%s', a.exit_time, 'localtime') - strftime('%s', a.entry_time, 'localtime')) 
-                         ELSE (strftime('%s', 'now', 'localtime') - strftime('%s', a.entry_time, 'localtime')) END) / 3600.0,
+                         THEN (UNIX_TIMESTAMP(a.exit_time) - UNIX_TIMESTAMP(a.entry_time)) 
+                         ELSE (UNIX_TIMESTAMP(NOW()) - UNIX_TIMESTAMP(a.entry_time)) END) / 3600.0,
                    s.salary_type, a.is_late, a.active_seconds
             FROM attendance a JOIN staff s ON a.staff_id = s.id
-            WHERE date(a.entry_time, 'localtime') = date(?, 'localtime')
+            WHERE DATE(a.entry_time) = DATE(%s)
             ORDER BY a.entry_time DESC
         """
         cursor.execute(query, (date_str,))
@@ -1236,6 +1236,14 @@ def get_zones_config():
         conn.close()
         return r
 
+def delete_zone_config(name):
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM zones_config WHERE name = ?", (name,))
+        conn.commit()
+        conn.close()
+
 def validate_admin(u, p):
     with db_lock:
         try:
@@ -1317,20 +1325,20 @@ def get_shift_optimization_data(days=7):
         cursor.execute(f"""
             WITH hourly_stats AS (
                 SELECT 
-                    strftime('%H', a.entry_time, 'localtime') as hour,
+                    HOUR(a.entry_time) as hour,
                     COUNT(DISTINCT a.id) as sessions,
                     SUM(COALESCE(a.active_seconds, 0)) as total_active,
                     SUM(CASE WHEN a.exit_time IS NOT NULL 
-                             THEN (strftime('%s', a.exit_time, 'localtime') - strftime('%s', a.entry_time, 'localtime'))
-                             ELSE (strftime('%s', 'now', 'localtime') - strftime('%s', a.entry_time, 'localtime')) END) as total_worked
+                             THEN (UNIX_TIMESTAMP(a.exit_time) - UNIX_TIMESTAMP(a.entry_time))
+                             ELSE (UNIX_TIMESTAMP(NOW()) - UNIX_TIMESTAMP(a.entry_time)) END) as total_worked
                 FROM attendance a
-                WHERE a.entry_time >= date('now', '-{days} days')
+                WHERE a.entry_time >= DATE_SUB(CURDATE(), INTERVAL {days} DAY)
                 GROUP BY hour
             )
             SELECT 
                 hour, 
-                CAST(sessions AS REAL) / {days} as avg_staff,
-                CASE WHEN total_worked > 0 THEN (CAST(total_active AS REAL) / total_worked) * 100 ELSE 0 END as activity_ratio
+                CAST(sessions AS DECIMAL(10,4)) / {days} as avg_staff,
+                CASE WHEN total_worked > 0 THEN (CAST(total_active AS DECIMAL(10,4)) / total_worked) * 100 ELSE 0 END as activity_ratio
             FROM hourly_stats
             ORDER BY hour ASC
         """)

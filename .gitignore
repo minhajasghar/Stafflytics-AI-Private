@@ -6,3 +6,12 @@ __pycache__/
 .DS_Store
 stafflytics_db.sqlite
 *.db
+node_modules/
+*.log
+scratch/
+mediamtx_*/
+models/
+face_models/
+test_out.txt
+test_err.txt
+bin/

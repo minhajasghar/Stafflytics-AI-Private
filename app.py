@@ -1428,6 +1428,19 @@ def update_zones():
     engine.reload_zones()
     return jsonify({"status": "success"})
 
+@app.route('/api/zones', methods=['GET'])
+@login_required
+def get_zones():
+    zones = database.get_zones_config()
+    return jsonify([{"name": z[0], "points": z[1], "unauthorized": z[2].split(",") if z[2] else []} for z in zones])
+
+@app.route('/api/zones/delete/<name>', methods=['DELETE'])
+@login_required
+def delete_zone(name):
+    database.delete_zone_config(name)
+    engine.reload_zones()
+    return jsonify({"status": "success"})
+
 @app.route('/api/settings/emails', methods=['GET', 'POST'])
 @login_required
 def email_settings():

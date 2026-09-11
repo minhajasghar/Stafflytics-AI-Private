@@ -236,9 +236,9 @@
                 <div class="section-toolbar" style="display:flex; justify-content:space-between; margin-bottom: 2rem;">
                     <h1>Attendance Reports</h1>
                     <div class="filter-group" style="display:flex; gap:10px; align-items:center;">
-                        <input type="month" id="report-filter" onchange="loadAttendanceReports()" class="custom-input" style="max-width:180px;">
+                        <input type="month" id="report-filter" onchange="document.getElementById('report-date-filter').value=''; loadAttendanceReports()" class="custom-input" style="max-width:180px;">
                         <span style="color:var(--text-muted); font-weight:700; font-size:0.75rem;">OR</span>
-                        <input type="date" id="report-date-filter" onchange="loadAttendanceReports()" class="custom-input" style="max-width:180px;">
+                        <input type="date" id="report-date-filter" onchange="document.getElementById('report-filter').value=''; loadAttendanceReports()" class="custom-input" style="max-width:180px;">
                     </div>
                 </div>
                 
@@ -409,6 +409,16 @@
                             <button onclick="testCameraConnection()" class="btn-primary" style="flex:1; background:var(--accent);"><i class="fas fa-plug"></i> Test</button>
                             <button onclick="saveCameraSettings()" class="btn-primary" style="flex:1;"><i class="fas fa-save"></i> Save & Reconnect</button>
                         </div>
+                    </div>
+                    
+                    <div class="standard-card">
+                        <h3 style="margin-bottom:1.5rem;"><i class="fas fa-draw-polygon" style="color:var(--primary);"></i> Zone Configuration</h3>
+                        <p style="font-size:0.75rem; color:var(--text-muted); margin-bottom:10px;">Manage your custom tracking areas. "Main Hall" is the default fallback zone.</p>
+                        <div id="settings-zone-list" style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px; max-height:180px; overflow-y:auto;">
+                            <!-- Populated by JS -->
+                            <div style="text-align:center; padding:1rem; color:var(--text-muted); font-size:0.8rem;">Loading zones...</div>
+                        </div>
+                        <button onclick="handleNavClick(document.querySelector('.nav-item[title=\'Monitor\']')); setTimeout(toggleZoneEditor, 300);" class="btn-primary" style="width:100%; justify-content:center; background:var(--accent);"><i class="fas fa-plus"></i> Draw New Zone</button>
                     </div>
 
                 </div>

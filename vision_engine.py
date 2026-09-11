@@ -240,6 +240,9 @@ class VisionEngine:
                         new_zones.append(Zone(name, points, unauthorized_roles=roles))
                     except: continue
                 if new_zones: 
+                    # Ensure Main Hall exists as a fallback if not explicitly redefined by user
+                    if not any(z.name == "Main Hall" for z in new_zones):
+                        new_zones.append(Zone("Main Hall", [[10, 10], [630, 10], [630, 470], [10, 470]]))
                     self.zones = new_zones
                     return
         except: pass
@@ -1235,25 +1238,35 @@ class VisionEngine:
                         track_age = current_time - state.get("first_seen", current_time)
                         
                     if not db_id:
-                        color_hex = "#f97316"  # Orange for Guest / Customer
+                        color_hex = "#f97316"  # Amber for Unknown
+                        cv2_color = (6, 119, 217)
                         if track_age < 1.0:
                             label = "Detecting..."
                         else:
-                            label = f"Guest #{track_id}"
+                            label = f"CUSTOMER #{track_id}"
                     elif str(db_id).startswith("C_"):
                         visits = state.get("visits", 1)
+                        cv2_color = (0, 215, 255) # Gold for Guests
                         if visits <= 1:
                             color_hex = "#f97316"  # Orange for New Customer (first visit)
                             label = "New Customer (1st visit)"
                         else:
-                            color_hex = "#eab308"  # Yellow for Regular Guest (2+ visits on different days)
+                            color_hex = "#eab308"  # Yellow for Regular Guest
                             suffix = "th" if visits >= 4 else ({1:"st",2:"nd",3:"rd"}.get(visits, "th"))
                             label = f"Regular Customer ({visits}{suffix} visit)"
                     else:
                         color_hex = "#3b82f6"  # Blue for Enrolled Staff (Type 3)
+                        cv2_color = (229, 70, 79) # Indigo for Staff
                         role_tag = f" ({state_role})" if state_role and state_role != "None" else ""
-                        label = f"STAFF: {state_name}{role_tag}"
+                        status = state.get("pose_label", "NEUTRAL")
+                        label = f"STAFF: {state_name} [{status}]"
                     
+                    # Draw Box overlay directly onto video stream frame
+                    cv2.rectangle(output_frame, (int(x1), int(y1)), (int(x2), int(y2)), cv2_color, 2)
+                    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                    cv2.rectangle(output_frame, (int(x1), int(y1) - th - 10), (int(x1) + tw + 10, int(y1)), cv2_color, -1)
+                    cv2.putText(output_frame, label, (int(x1) + 5, int(y1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
                     # Store last box in state for carry-forward during brief YOLO misses
                     state["last_box"] = [float(x1), float(y1), float(x2), float(y2)]
                     state["last_label"] = label

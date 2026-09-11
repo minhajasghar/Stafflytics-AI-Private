@@ -107,6 +107,7 @@ function handleNavClick(element) {
                 loadEvents(); 
                 loadEmailSettings(); 
                 loadCameraSettings(); 
+                loadSettingsZones();
             } catch (e) { console.error("Settings load error", e); }
         }
     }
