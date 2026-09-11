@@ -1255,10 +1255,15 @@ def export_attendance(format):
 @login_required
 def get_attendance_report():
     date_param = request.args.get('date')
+    month_param = request.args.get('month')
+    year_param = request.args.get('year')
     if date_param:
         data = database.get_daily_attendance(date_param)
+    elif month_param and year_param:
+        data = database.get_monthly_attendance(month_param, year_param)
     else:
-        data = database.get_monthly_attendance(request.args.get('month'), request.args.get('year'))
+        date_param = datetime.now().strftime("%Y-%m-%d")
+        data = database.get_daily_attendance(date_param)
     report = []
     for row in data:
         entry, exit_t, name, role, hours, sal_type, is_late, active_sec = row

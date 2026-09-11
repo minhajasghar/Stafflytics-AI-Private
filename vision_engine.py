@@ -154,6 +154,20 @@ def _box_iou(boxA, boxB):
     union = boxAArea + boxBArea - interArea
     return interArea / float(union + 1e-6) if union > 0 else 0.0
 
+def _extract_dominant_color(body_crop):
+    """Extract mean color (B, G, R) of the torso region."""
+    if body_crop is None or body_crop.size == 0:
+        return None
+    try:
+        h, w = body_crop.shape[:2]
+        torso = body_crop[int(h*0.25):int(h*0.65), int(w*0.25):int(w*0.75)]
+        if torso.size == 0:
+            return None
+        mean_color = cv2.mean(torso)
+        return (int(mean_color[0]), int(mean_color[1]), int(mean_color[2]))
+    except:
+        return None
+
 
 def _extract_appearance_embedding(body_crop):
     """
@@ -273,6 +287,8 @@ class VisionEngine:
         self.last_boxes = {} # track_id -> [x1, y1, x2, y2]
         self.recent_guest_embeddings = [] # Short-term memory for returning guests: [{"name": name, "db_id": db_id, "encs": list, "last_seen": timestamp}]
         self.reid_appearance_cache = {} # Person Re-ID Appearance Cache: identity_id -> {"name": name, "role": role, "reid_vec": vec, "last_seen": timestamp}
+        self.staff_clothes_colors = {} # db_id -> (B, G, R) dominant color
+        self.clothes_memory_date = datetime.now().date()
         self.activity_buffer = {} # track_id -> seconds_active
         self.last_activity_sync = time.time()
         self.visitor_logged = set() # track_ids that have been logged to visitor_log
@@ -457,6 +473,15 @@ class VisionEngine:
                             match_source = "staff"
                             matched_staff_meta = known_staff_meta[best_staff_idx]
                             
+                            # Extract and save daily clothing color memory
+                            color = _extract_dominant_color(body_crop)
+                            if color is not None:
+                                with self.lock:
+                                    if datetime.now().date() != self.clothes_memory_date:
+                                        self.staff_clothes_colors.clear()
+                                        self.clothes_memory_date = datetime.now().date()
+                                    self.staff_clothes_colors[s_id] = (color, s_name, matched_staff_meta.get("role", "None"))
+                                    
                             # Update Re-ID appearance cache for this staff member
                             if body_reid_vec is not None:
                                 with self.lock:
@@ -622,6 +647,32 @@ class VisionEngine:
                                     break
 
                     if match_id == "Unknown":
+                        # Attempt fallback to Daily Clothing Memory for Staff
+                        curr_color = _extract_dominant_color(body_crop)
+                        if curr_color is not None:
+                            best_col_score = 9999
+                            best_col_match = None
+                            with self.lock:
+                                if datetime.now().date() == self.clothes_memory_date:
+                                    for sid, (c_bgr, c_name, c_role) in self.staff_clothes_colors.items():
+                                        dist = sum((c1 - c2)**2 for c1, c2 in zip(curr_color, c_bgr))**0.5
+                                        if dist < best_col_score:
+                                            best_col_score = dist
+                                            best_col_match = (sid, c_name, c_role)
+                            
+                            # Strict color distance threshold (e.g. Euclidean < 15 in BGR space)
+                            if best_col_match is not None and best_col_score < 15:
+                                is_claimed = False
+                                with self.lock:
+                                    for other_tid, other_st in list(self.person_states.items()):
+                                        if other_tid != track_id and other_st.get("db_id") == best_col_match[0] and (current_time - other_st.get("last_active", 0)) < 8:
+                                            is_claimed = True
+                                            break
+                                if not is_claimed:
+                                    match_id = best_col_match[0]
+                                    match_source = "staff"
+                                    matched_staff_meta = {"name": best_col_match[1] + " (By Clothes)", "role": best_col_match[2]}
+                                    print(f"[CLOTHING MATCH] Track #{track_id} -> Re-identified as '{best_col_match[1]}' via Daily Clothing (Dist={best_col_score:.1f})")
                         print(f"[AI] No match found — best staff sim={best_staff_sim:.4f}, best cust sim={best_cust_sim:.4f}")
                 
                 # Update consensus and state under lock
@@ -1240,10 +1291,7 @@ class VisionEngine:
                     if not db_id:
                         color_hex = "#f97316"  # Amber for Unknown
                         cv2_color = (6, 119, 217)
-                        if track_age < 1.0:
-                            label = "Detecting..."
-                        else:
-                            label = f"CUSTOMER #{track_id}"
+                        label = "HUMAN"
                     elif str(db_id).startswith("C_"):
                         visits = state.get("visits", 1)
                         cv2_color = (0, 215, 255) # Gold for Guests
