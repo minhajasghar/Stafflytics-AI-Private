@@ -640,6 +640,19 @@ def generate_frames():
                     time.sleep(0.05)
                     continue
             
+            # Overlay Bounding Boxes on the raw display feed
+            if engine and hasattr(engine, 'latest_detections') and engine.latest_detections:
+                try:
+                    from vision_engine import draw_detections_on_frame
+                    # Ensure camera_stream is defined; use its dims for scaling detection coordinates
+                    if 'camera_stream' in globals() and camera_stream.actual_width and camera_stream.actual_height:
+                        src_w, src_h = camera_stream.actual_width, camera_stream.actual_height
+                    else:
+                        src_w, src_h = 640, 480 # Fallback
+                    display_frame = draw_detections_on_frame(display_frame, engine.latest_detections, src_w, src_h)
+                except Exception as e:
+                    pass
+
             elapsed = time.time() - last_yield_time
             if elapsed < min_frame_interval:
                 time.sleep(min_frame_interval - elapsed)

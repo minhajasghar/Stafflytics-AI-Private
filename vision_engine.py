@@ -1465,3 +1465,43 @@ class VisionEngine:
     def get_passage_counts(self):
         """Returns today's cumulative Left-to-Right and Right-to-Left passage counts."""
         return dict(self.passage_counts)
+
+def draw_detections_on_frame(frame, detections, src_w, src_h):
+    if frame is None or not detections:
+        return frame
+    import cv2
+    out_frame = frame.copy()
+    fh, fw = out_frame.shape[:2]
+    
+    # Scale coordinates from native cam_ai resolution to the target frame resolution
+    scale_x = fw / max(1.0, float(src_w))
+    scale_y = fh / max(1.0, float(src_h))
+    
+    for det in detections:
+        box = det.get('box')
+        if not box or len(box) < 4: 
+            continue
+            
+        x1 = int(box[0] * scale_x)
+        y1 = int(box[1] * scale_y)
+        x2 = int(box[2] * scale_x)
+        y2 = int(box[3] * scale_y)
+        
+        hex_col = str(det.get('color', '#38bdf8')).lstrip('#')
+        if len(hex_col) == 6:
+            r, g, b = int(hex_col[:2], 16), int(hex_col[2:4], 16), int(hex_col[4:6], 16)
+            bgr_col = (b, g, r)
+        else:
+            bgr_col = (248, 189, 56)
+            
+        cv2.rectangle(out_frame, (x1, y1), (x2, y2), bgr_col, 2)
+        
+        label = str(det.get('label', 'Detecting...'))
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        
+        ly = max(y1 - 10, th + 10)
+        cv2.rectangle(out_frame, (x1, ly - th - 10), (x1 + tw + 10, ly), bgr_col, -1)
+        cv2.putText(out_frame, label, (x1 + 5, ly - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+        
+    return out_frame
+
