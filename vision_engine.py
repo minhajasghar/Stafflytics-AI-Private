@@ -53,83 +53,92 @@ face_rec_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# OpenCV face recognition backend (YuNet detection + SFace recognition).
-# Replaces the broken dlib/face_recognition install (rogue dlib 19.24.99).
-# Embeds are 128-d float vectors; normalized to unit length so matching is a
-# cosine similarity (dot product). Stored in DB via pickle like before.
+# InsightFace backend (SCRFD detection + ArcFace recognition).
+# Embeds are 512-d float vectors; normalized to unit length so matching is a
+# cosine similarity (dot product). Stored in DB via pickle.
 # ---------------------------------------------------------------------------
-_face_detector = None
-_face_recognizer = None
+_face_app = None
 _face_models_loaded = False
 
-# SFace cosine-similarity thresholds (Staff Priority Architecture)
-FACE_STAFF_THRESHOLD = 0.38      # Lenient staff threshold for reliable recognition
-FACE_CUSTOMER_THRESHOLD = 0.43   # Strict customer threshold to prevent false merges
-FACE_STAFF_RELAXED = 0.38        # Backward-compatibility alias
-FACE_CUSTOMER = 0.43             # Backward-compatibility alias
+# ArcFace cosine-similarity thresholds (Production Tuned)
+FACE_STAFF_THRESHOLD = 0.60      # Strict staff threshold for reliable recognition
+FACE_CUSTOMER_THRESHOLD = 0.65   # Strict customer threshold to prevent false merges
+FACE_STAFF_RELAXED = 0.55        # Slightly relaxed threshold for rapid checks
+FACE_CUSTOMER = 0.65             # Backward-compatibility alias
 
 
 def _load_face_models():
-    """Load YuNet detector + SFace recognizer ONNX models (idempotent)."""
-    global _face_detector, _face_recognizer, _face_models_loaded
+    """Load InsightFace models (idempotent)."""
+    global _face_app, _face_models_loaded
     if _face_models_loaded:
         return True
-    base = os.path.abspath(os.path.dirname(__file__))
-    yunet = os.path.join(base, 'face_models', 'face_detection_yunet_2023mar.onnx')
-    sface = os.path.join(base, 'face_models', 'face_recognition_sface_2021oct.onnx')
-    if not (os.path.exists(yunet) and os.path.exists(sface)):
-        print(f"[AI ERROR] Face models missing: {yunet} / {sface}")
-        return False
     try:
-        _face_detector = cv2.FaceDetectorYN.create(yunet, "", (320, 320), 0.6, 0.3, 50)
-        _face_recognizer = cv2.FaceRecognizerSF.create(sface, "")
+        from insightface.app import FaceAnalysis
+        _face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+        _face_app.prepare(ctx_id=-1, det_size=(640, 640))
         _face_models_loaded = True
-        print("[AI] OpenCV face models loaded (YuNet + SFace).")
+        print("[AI] InsightFace models loaded (SCRFD + ArcFace).")
         return True
     except Exception as e:
-        print(f"[AI ERROR] Failed to load face models: {e}")
+        print(f"[AI ERROR] Failed to load InsightFace models: {e}")
         return False
 
 
-def _detect_face_box(bgr):
-    """Return the largest detected face (all 15 elements including landmarks) in a BGR image, or None."""
+def _get_best_face(bgr):
+    """Return the largest detected Face object from InsightFace, or None."""
     if bgr is None or bgr.size == 0:
         return None
     if not _load_face_models():
         return None
-    h, w = bgr.shape[:2]
-    det = _face_detector
     try:
-        det.setInputSize((w, h))
-        result = det.detect(bgr)
-        # result is a tuple: (retval, faces) where faces is ndarray
-        faces = result[1] if isinstance(result, tuple) else result
-        if faces is None or getattr(faces, 'ndim', 0) != 2 or len(faces) == 0:
+        faces = _face_app.get(bgr)
+        if not faces:
             return None
-        # Maximize width * height (f[2] * f[3])
-        best = max(faces, key=lambda f: f[2] * f[3])
-        return best.copy()
+        # InsightFace returns bounding boxes as [x1, y1, x2, y2]
+        # Maximize width * height: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1])
+        best = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
+        return best
     except Exception as e:
-        print(f"[AI ERROR] YuNet detect failed: {e}")
+        print(f"[AI ERROR] InsightFace detect failed: {e}")
         return None
 
 
 def _encode_face(bgr):
-    """Detect the largest face in a BGR image and return a normalized 128-d
-    SFace embedding, or None when no face is found."""
-    face = _detect_face_box(bgr)
+    """Detect the largest face in a BGR image and return a normalized 512-d
+    ArcFace embedding, or None when no face is found or quality is low."""
+    face = _get_best_face(bgr)
     if face is None:
         return None
+    
+    # Pre-Inference Quality Filters (FIQA)
+    # 1. Minimum Resolution (80x80)
+    w = face.bbox[2] - face.bbox[0]
+    h = face.bbox[3] - face.bbox[1]
+    if w < 80 or h < 80:
+        return None
+        
+    # 2. Blur / Sharpness Check (Laplacian Variance)
+    # Crop the face from the original image using the bounding box
+    x1, y1, x2, y2 = map(int, face.bbox)
+    x1, y1 = max(0, x1), max(0, y1)
+    face_crop = bgr[y1:y2, x1:x2]
+    if face_crop.size == 0:
+        return None
+        
+    lap_var = cv2.Laplacian(face_crop, cv2.CV_64F).var()
+    if lap_var < 100.0:
+        return None
+        
+    # Optional: 3. Head Pose check (could be inferred from landmarks if needed)
+    
     try:
-        aligned = _face_recognizer.alignCrop(bgr, face)
-        feat = _face_recognizer.feature(aligned)
-        v = feat.flatten().astype(np.float64)
+        v = face.embedding.flatten().astype(np.float64)
         n = np.linalg.norm(v)
         if n == 0:
             return None
         return v / n
     except Exception as e:
-        print(f"[AI ERROR] SFace feature failed: {e}")
+        print(f"[AI ERROR] ArcFace feature extraction failed: {e}")
         return None
 
 

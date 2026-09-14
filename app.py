@@ -1405,7 +1405,7 @@ def enroll_staff():
 def enroll_staff_with_faces():
     data = request.json
     try:
-        from vision_engine import face_rec_lock, _encode_face, _detect_face_box
+        from vision_engine import face_rec_lock, _encode_face, _get_best_face
         images = data.get('images', [])
         if len(images) < 1:
             return jsonify({"status": "error", "message": "Need at least 1 face capture"}), 400
@@ -1421,13 +1421,15 @@ def enroll_staff_with_faces():
                 
                 # Detect face location first, then crop to face for encoding
                 with face_rec_lock:
-                    face_box = _detect_face_box(bgr)
-                    enc = _encode_face(bgr) if face_box is not None else None
+                    face = _get_best_face(bgr)
+                    # _encode_face enforces strict FIQA checks (blur, resolution)
+                    enc = _encode_face(bgr) if face is not None else None
                 if enc is None:
                     continue
                 encodings.append(enc)
                 if idx == 0 or first_photo is None:
-                    x, y, w_b, h_b = [int(v) for v in face_box]
+                    x1, y1, x2, y2 = [int(v) for v in face.bbox]
+                    x, y, w_b, h_b = x1, y1, x2 - x1, y2 - y1
                     margin = 80
                     h_rgb, w_rgb = rgb.shape[:2]
                     y1 = max(0, y - margin)
