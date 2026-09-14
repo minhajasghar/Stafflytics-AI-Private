@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 import time
+from datetime import datetime
 import database
 import pickle
 import queue
@@ -877,6 +878,7 @@ class VisionEngine:
                                 # Robust New Identity Gate:
                                 # Require persistence (>=6 consensus samples), minimum face size (>=75px),
                                 # natural face aspect ratio, and blur check to prevent spurious registrations from motion blur.
+                                consensus_count = len(self.recognition_consensus.get(track_id, []))
                                 face_h, face_w = face_crop.shape[:2]
                                 aspect_ratio = face_h / float(max(1, face_w))
                                 
@@ -1322,7 +1324,7 @@ class VisionEngine:
                     state["last_color"] = color_hex
                     # Compile detection metadata for canvas rendering
                     detections.append({
-                        "track_id": track_id,
+                        "track_id": int(track_id),
                         "staff_id": db_id if (db_id and not str(db_id).startswith("C_")) else None,
                         "box": state["last_box"],
                         "label": label,

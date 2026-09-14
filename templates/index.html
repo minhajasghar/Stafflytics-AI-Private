@@ -673,6 +673,13 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             let detections = data && data.detections ? data.detections : null;
+            
+            // Update Trackers count using total people detected
+            if (document.getElementById('person-count')) {
+                const count = detections ? detections.length : 0;
+                document.getElementById('person-count').innerText = `${count} ACTIVE`;
+            }
+
             if (data && data.passage) {
                 const statLtr = document.getElementById('stat-ltr');
                 const statRtl = document.getElementById('stat-rtl');

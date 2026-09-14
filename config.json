@@ -2,7 +2,7 @@
     "DB_TYPE": "mysql",
     "MYSQL_HOST": "localhost",
     "MYSQL_PORT": 3306,
-    "MYSQL_USER": "stafflytics_user",
-    "MYSQL_PASSWORD": "minhajasghar66",
+    "MYSQL_USER": "root",
+    "MYSQL_PASSWORD": "",
     "MYSQL_DATABASE": "stafflytics"
 }

@@ -615,7 +615,6 @@ async function fetchStatus() {
         
         // Update stats (Now runs even if initializing=True in backend)
         if (document.getElementById('active-count')) document.getElementById('active-count').innerText = data.count;
-        if (document.getElementById('person-count')) document.getElementById('person-count').innerText = `${data.count} ACTIVE`;
         if (document.getElementById('avg-efficiency')) document.getElementById('avg-efficiency').innerText = `${data.avg_efficiency}%`;
         if (document.getElementById('incidents-today')) document.getElementById('incidents-today').innerText = data.incidents_today;
         if (document.getElementById('monthly-customers')) document.getElementById('monthly-customers').innerText = data.monthly_customers;

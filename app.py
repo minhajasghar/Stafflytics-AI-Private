@@ -54,6 +54,7 @@ _wz_logger.setLevel(_logging.INFO)
 
 websocket_clients = set()
 websocket_lock = threading.Lock()
+last_detection_payload = json.dumps({"detections": [], "frame_w": 640, "frame_h": 480, "passage": {"l_to_r": 0, "r_to_l": 0}})
 
 def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None):
     global last_detection_payload
@@ -62,12 +63,21 @@ def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None):
             passage = engine.get_passage_counts()
         except:
             passage = {"l_to_r": 0, "r_to_l": 0}
+    def _json_serial(obj):
+        if isinstance(obj, (np.integer, np.int32, np.int64)):
+            return int(obj)
+        if isinstance(obj, (np.floating, np.float32, np.float64)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return str(obj)
+
     payload = json.dumps({
         "detections": detections, 
         "frame_w": frame_w, 
         "frame_h": frame_h,
         "passage": passage or {"l_to_r": 0, "r_to_l": 0}
-    })
+    }, default=_json_serial)
     last_detection_payload = payload
     with websocket_lock:
         inactive = set()
