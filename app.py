@@ -898,6 +898,37 @@ def stream_refresh():
         print(f"[STREAM] refresh error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 502
 
+def generate_recording_frames():
+    """Yields processed frames with bounding boxes for the 24/7 recorder."""
+    global latest_processed_frame, engine, camera_stream
+    while True:
+        with processed_frame_lock:
+            frame = latest_processed_frame.copy() if latest_processed_frame is not None else None
+        
+        if frame is None:
+            time.sleep(0.1)
+            continue
+            
+        if engine and hasattr(engine, 'latest_detections') and engine.latest_detections:
+            try:
+                from vision_engine import draw_detections_on_frame
+                if 'camera_stream' in globals() and camera_stream is not None and camera_stream.actual_width and camera_stream.actual_height:
+                    src_w, src_h = camera_stream.actual_width, camera_stream.actual_height
+                else:
+                    src_w, src_h = 640, 480
+                frame = draw_detections_on_frame(frame, engine.latest_detections, src_w, src_h)
+            except Exception:
+                pass
+            
+        ret, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if ret:
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
+        time.sleep(0.1)  # ~10 FPS matching vision_engine_loop
+
+@app.route('/api/recording_feed')
+def recording_feed():
+    return Response(generate_recording_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
 @app.route('/video_feed')
 def video_feed():
     resp = Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')

@@ -534,11 +534,16 @@ class VisionEngine:
                                 with self.lock:
                                     if track_id in self.person_states:
                                         s = self.person_states[track_id]
+                                        # If the identity is the same, preserve the highest ever similarity to prevent weak false-positive thefts
+                                        if s.get("db_id") == match_id:
+                                            s["best_staff_sim"] = max(s.get("best_staff_sim", 0.0), best_staff_sim)
+                                        else:
+                                            s["best_staff_sim"] = best_staff_sim
+                                            
                                         s["db_id"] = match_id
                                         s["id"] = f"ID: {match_id}"
                                         s["name"] = known_staff_meta[best_staff_idx]["name"]
                                         s["role"] = known_staff_meta[best_staff_idx]["role"]
-                                        s["best_staff_sim"] = best_staff_sim
                                         s["last_sync"] = current_time
                                         if track_id in self.customer_timers:
                                             del self.customer_timers[track_id]
@@ -762,6 +767,12 @@ class VisionEngine:
                                 with self.lock:
                                     if track_id in self.person_states:
                                         state = self.person_states[track_id]
+                                        # Protect identity by setting max similarity
+                                        if state.get("db_id") == s_meta_q["id"]:
+                                            state["best_staff_sim"] = max(state.get("best_staff_sim", 0.0), best_s_sim_q)
+                                        else:
+                                            state["best_staff_sim"] = best_s_sim_q
+                                            
                                         state["id"] = f"ID: {s_meta_q['id']}"
                                         state["name"] = s_meta_q["name"]
                                         state["role"] = s_meta_q["role"]

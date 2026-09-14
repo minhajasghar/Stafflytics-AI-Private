@@ -8,13 +8,13 @@ import sys
 import time
 import subprocess
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Configuration
 RECORDING_DIR = r"E:\Stafflytics Recording"
 MAX_STORAGE_BYTES = 850 * 1024 * 1024 * 1024  # 850 GB
 TARGET_AFTER_PURGE_BYTES = 840 * 1024 * 1024 * 1024  # 840 GB (headroom)
-RTSP_SOURCE = "rtsp://localhost:8554/cam"
+RTSP_SOURCE = "http://127.0.0.1:5001/api/recording_feed"
 
 # Resolve FFmpeg binary
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,7 +98,7 @@ def ensure_date_folders():
 
 
 def run_recorder():
-    """Runs FFmpeg segment recording with 0% CPU stream copy."""
+    """Runs FFmpeg segment recording with CPU re-encoding for bounding boxes."""
     os.makedirs(RECORDING_DIR, exist_ok=True)
     print("=" * 65)
     print("  Stafflytics AI — 24/7 Continuous Video Recorder Service")
@@ -113,33 +113,43 @@ def run_recorder():
     while True:
         try:
             ensure_date_folders()
-            # Segment format: E:\Stafflytics Recording\%Y-%m-%d\%H-00.mp4
-            output_pattern = os.path.join(RECORDING_DIR, "%Y-%m-%d", "%H-00.mp4")
+            now = datetime.now()
+            
+            # Calculate seconds remaining until the next hour
+            next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+            duration_seconds = int((next_hour - now).total_seconds())
+            
+            # Segment format: E:\Stafflytics Recording\%Y-%m-%d\HH-00.mp4
+            date_str = now.strftime("%Y-%m-%d")
+            time_str = now.strftime("%H-00")
+            
+            output_pattern = os.path.join(RECORDING_DIR, date_str, f"{time_str}.mp4")
+            # Avoid overwrite if it crashed and restarted within the same hour
+            suffix = 1
+            while os.path.exists(output_pattern):
+                output_pattern = os.path.join(RECORDING_DIR, date_str, f"{time_str}_part{suffix}.mp4")
+                suffix += 1
 
-            # FFmpeg Command:
-            # -c copy : direct stream copy (0% CPU, no quality loss)
-            # -segment_time 3600 : hourly files (3600 seconds)
-            # -segment_atclocktime 1 : aligned to exact clock hours (:00)
-            # -strftime 1 : allows %Y-%m-%d\%H-00 in output path
+            # FFmpeg Command for MJPEG stream to H.264 MP4:
             cmd = [
                 FFMPEG_PATH,
                 "-loglevel", "warning",
-                "-rtsp_transport", "tcp",
+                "-f", "mjpeg",
+                "-use_wallclock_as_timestamps", "1",
                 "-i", RTSP_SOURCE,
-                "-c", "copy",
-                "-f", "segment",
-                "-segment_time", "3600",
-                "-segment_atclocktime", "1",
-                "-reset_timestamps", "1",
-                "-strftime", "1",
+                "-t", str(duration_seconds),
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "23",
+                "-y",
                 output_pattern
             ]
 
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [RECORDER] Starting hourly segment recording...")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [RECORDER] Recording segment {time_str}.mp4 for {duration_seconds} seconds...")
             proc = subprocess.Popen(cmd)
             proc.wait()
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [RECORDER] FFmpeg exited (code {proc.returncode}). Reconnecting in 3s...")
-            time.sleep(3)
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [RECORDER] Segment finished (code {proc.returncode}). Starting next segment...")
+            time.sleep(1)
         except Exception as e:
             print(f"[RECORDER ERROR] {e}. Retrying in 5s...")
             time.sleep(5)
