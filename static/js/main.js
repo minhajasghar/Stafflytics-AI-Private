@@ -1073,27 +1073,37 @@ function captureFace() {
     const webrtcVideo = document.getElementById('webrtc-video');
     const hlsVideo = document.getElementById('hls-video');
     
-    let src = img;
-    let isVideo = hlsVideo && hlsVideo.style.display !== 'none' && hlsVideo.readyState >= 2;
-    if (isVideo) {
+    let src = null;
+    let isVideo = false;
+    
+    // Only capture from a live video source when it's actually playing
+    if (hlsVideo && hlsVideo.style.display !== 'none' && hlsVideo.readyState >= 2 && hlsVideo.videoWidth > 0) {
         src = hlsVideo;
-    } else if (webrtcVideo && webrtcVideo.style.display !== 'none' && webrtcVideo.readyState >= 2) {
         isVideo = true;
+    } else if (webrtcVideo && webrtcVideo.style.display !== 'none' && webrtcVideo.readyState >= 2 && webrtcVideo.videoWidth > 0) {
         src = webrtcVideo;
+        isVideo = true;
+    } else if (img && img.complete && img.naturalWidth > 0) {
+        src = img;
     }
 
-    const w = isVideo ? src.videoWidth : src.naturalWidth;
-    const h = isVideo ? src.videoHeight : src.naturalHeight;
-    if (!src || w === 0 || h === 0) {
-        alert('Camera feed not ready. Please wait...');
+    if (!src) {
+        alert('Camera feed not ready. Please wait for the live stream to load.');
         return;
     }
 
+    // Use explicit hardware dimensions — never rely on naturalWidth/Height alone
+    const w = isVideo ? src.videoWidth : src.naturalWidth;
+    const h = isVideo ? src.videoHeight : src.naturalHeight;
+    if (!w || !h || w === 0 || h === 0) {
+        alert('Camera feed dimensions invalid (w=' + w + ', h=' + h + '). Please wait...');
+        return;
+    }
+
+    // Create canvas with explicit hardware dimensions — prevents blank/black captures
     const canvas = document.createElement('canvas');
-    const MAX_CAPTURE_DIM = 1920;
-    const scale = Math.min(1, MAX_CAPTURE_DIM / Math.max(w, h));
-    canvas.width = Math.round(w * scale);
-    canvas.height = Math.round(h * scale);
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.95);

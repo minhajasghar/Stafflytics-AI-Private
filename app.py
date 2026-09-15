@@ -1391,6 +1391,9 @@ def enroll_staff():
         header, encoded = data['image'].split(",", 1)
         img = Image.open(io.BytesIO(base64.b64decode(encoded)))
         bgr = np.ascontiguousarray(cv2.cvtColor(np.array(img.convert('RGB')), cv2.COLOR_RGB2BGR))
+        # --- DEBUG: Verify frame is valid before detection ---
+        print(f"[DEBUG ENROLL] shape={bgr.shape} mean={bgr.mean():.2f} dtype={bgr.dtype}")
+        cv2.imwrite('/tmp/debug_enroll_single.jpg', bgr)
         with face_rec_lock:
             enc = _encode_face(bgr, strict=False)
             face = _get_best_face(bgr)
@@ -1433,10 +1436,22 @@ def enroll_staff_with_faces():
         for idx, b64_img in enumerate(images):
             try:
                 header, encoded = b64_img.split(",", 1)
-                pil_img = Image.open(io.BytesIO(base64.b64decode(encoded)))
+                img_bytes = base64.b64decode(encoded)
+                pil_img = Image.open(io.BytesIO(img_bytes))
                 rgb = np.array(pil_img.convert('RGB'))
                 bgr = np.ascontiguousarray(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-                
+
+                # --- DEBUG: Dump received frame to verify it's not empty/black ---
+                cv2.imwrite('/tmp/debug_enroll_%d.jpg' % idx, bgr)
+                print(f"[DEBUG ENROLL] Capt idx={idx} shape={bgr.shape} mean={bgr.mean():.2f} dtype={bgr.dtype}")
+                if bgr.mean() < 1.0:
+                    print(f"[DEBUG ENROLL] WARNING: Frame {idx} is BLACK/EMPTY! mean={bgr.mean():.2f}")
+
+                # Verify BGR format (not RGB) - InsightFace expects OpenCV BGR arrays
+                if len(bgr.shape) != 3 or bgr.shape[2] != 3:
+                    print(f"[DEBUG ENROLL] ERROR: Invalid BGR shape {bgr.shape} at idx={idx}")
+                    continue
+
                 # Detect face location first, then crop to face for encoding
                 with face_rec_lock:
                     face = _get_best_face(bgr)

@@ -86,7 +86,7 @@ def _load_face_models():
         # Use a larger det_size to prevent 1080p web captures from being downscaled too much,
         # which causes small faces to disappear during enrollment. 
         # (Real-time tracking is unaffected because it passes pre-cropped small faces).
-        _face_app.prepare(ctx_id=-1, det_size=(1280, 1280))
+        _face_app.prepare(ctx_id=-1, det_size=(640, 640), det_thresh=0.3)
         _face_models_loaded = True
         print("[AI] InsightFace models loaded (SCRFD + ArcFace).")
         return True
