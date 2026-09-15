@@ -37,7 +37,7 @@ def _start_model_load():
             from ultralytics import YOLO
             import torch
             base_dir = os.path.abspath(os.path.dirname(__file__))
-            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose_openvino_model')
+            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose.onnx')
             print(f"[AI] Attempting to load YOLO model from: {model_path}")
             device = 'cpu' if not torch.cuda.is_available() else 0
             if os.path.exists(model_path):
