@@ -1050,7 +1050,21 @@ class VisionEngine:
                                     last = self.last_boxes[tid]
                                     dx = box[0] - last[0]
                                     dy = box[1] - last[1]
-                                    self.velocities[tid] = (dx, dy)
+                                    
+                                    # Deadzone (ignore YOLO micro-jitter when standing still)
+                                    if abs(dx) < 5: dx = 0
+                                    if abs(dy) < 5: dy = 0
+                                    
+                                    # dx is movement over 3 frames. Get per-frame velocity
+                                    per_frame_dx = dx / 3.0
+                                    per_frame_dy = dy / 3.0
+                                    
+                                    # Exponential Moving Average for smoothing
+                                    if tid in self.velocities:
+                                        old_dx, old_dy = self.velocities[tid]
+                                        self.velocities[tid] = (0.5 * per_frame_dx + 0.5 * old_dx, 0.5 * per_frame_dy + 0.5 * old_dy)
+                                    else:
+                                        self.velocities[tid] = (per_frame_dx, per_frame_dy)
                                 else:
                                     self.velocities[tid] = (0, 0)
                                 self.last_boxes[tid] = box.copy()
