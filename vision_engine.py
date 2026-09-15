@@ -307,7 +307,6 @@ class VisionEngine:
         self.alerted_tracks = set() # (track_id, zone_name)
         self.last_positions = {} # track_id -> (x, y)
         self.last_boxes = {} # track_id -> [x1, y1, x2, y2]
-        self.velocities = {} # track_id -> (dx, dy)
         self.last_kps = {} # track_id -> keypoints array
         self.last_valid_raw_boxes = [] # Full list of boxes for skipped frames
         self.last_valid_raw_kps = []
@@ -1011,17 +1010,18 @@ class VisionEngine:
             if self.frame_count % 3 == 1:
                 try:
                     results = model.track(
-                        small_frame, 
-                        persist=True, 
-                        conf=0.22, 
-                        iou=0.45,
-                        verbose=False,
+                        small_frame,
+                        persist=True,
+                        tracker="custom_bytetrack.yaml",
+                        conf=0.50,
+                        iou=0.6,
                         classes=[0],
-                        imgsz=480
+                        imgsz=480,
+                        verbose=False
                     )
                 except Exception:
                     # Fallback to direct model inference if tracking subsystem encounters any issue
-                    results = model(small_frame, conf=0.22, iou=0.45, verbose=False, classes=[0], imgsz=480)
+                    results = model(small_frame, persist=True, conf=0.50, iou=0.6, verbose=False, classes=[0], imgsz=480)
                 
                 if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
                     raw_boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -1030,7 +1030,7 @@ class VisionEngine:
                             raw_track_ids = results[0].boxes.id.int().cpu().numpy()
                     except Exception:
                         raw_track_ids = None
-    
+     
                     try:
                         if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
                             raw_kps = results[0].keypoints.xy.cpu().numpy()
@@ -1041,55 +1041,13 @@ class VisionEngine:
                         self.last_valid_raw_boxes = raw_boxes
                         self.last_valid_track_ids = raw_track_ids
                         self.last_valid_raw_kps = raw_kps
-                        
-                        # Calculate velocities
-                        if raw_track_ids is not None:
-                            for idx, tid in enumerate(raw_track_ids):
-                                box = raw_boxes[idx]
-                                if tid in self.last_boxes:
-                                    last = self.last_boxes[tid]
-                                    dx = box[0] - last[0]
-                                    dy = box[1] - last[1]
-                                    
-                                    # Deadzone (ignore YOLO micro-jitter when standing still)
-                                    if abs(dx) < 5: dx = 0
-                                    if abs(dy) < 5: dy = 0
-                                    
-                                    # dx is movement over 3 frames. Get per-frame velocity
-                                    per_frame_dx = dx / 3.0
-                                    per_frame_dy = dy / 3.0
-                                    
-                                    # Exponential Moving Average for smoothing
-                                    if tid in self.velocities:
-                                        old_dx, old_dy = self.velocities[tid]
-                                        self.velocities[tid] = (0.5 * per_frame_dx + 0.5 * old_dx, 0.5 * per_frame_dy + 0.5 * old_dy)
-                                    else:
-                                        self.velocities[tid] = (per_frame_dx, per_frame_dy)
-                                else:
-                                    self.velocities[tid] = (0, 0)
-                                self.last_boxes[tid] = box.copy()
-                                
             else:
-                # FRAME SKIPPED: Extrapolate boxes using velocities
+                # FRAME SKIPPED: Retain last verified bounding boxes (ByteTrack handles Kalman)
                 with self.lock:
                     if self.last_valid_raw_boxes is not None and len(self.last_valid_raw_boxes) > 0:
                         raw_boxes = np.copy(self.last_valid_raw_boxes)
                         raw_track_ids = self.last_valid_track_ids
                         raw_kps = self.last_valid_raw_kps
-                        if raw_track_ids is not None:
-                            for idx, tid in enumerate(raw_track_ids):
-                                if tid in self.velocities:
-                                    dx, dy = self.velocities[tid]
-                                    raw_boxes[idx][0] += dx
-                                    raw_boxes[idx][1] += dy
-                                    raw_boxes[idx][2] += dx
-                                    raw_boxes[idx][3] += dy
-                                    
-                                    # Shift keypoints if available
-                                    if raw_kps is not None and idx < len(raw_kps) and raw_kps[idx] is not None:
-                                        raw_kps[idx][:, 0] += dx
-                                        raw_kps[idx][:, 1] += dy
-                        self.last_valid_raw_boxes = raw_boxes
 
             # Detection boxes stay in native pixel space (scale = 1.0).
             scale_x = 1.0
