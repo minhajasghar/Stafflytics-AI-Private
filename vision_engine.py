@@ -997,7 +997,7 @@ class VisionEngine:
             # Run YOLO with ByteTrack on the native camera frame.
             # - tracker="bytetrack.yaml": Activates ByteTrack Kalman filter motion tracker
             # - classes=[0]: STRICTLY tracks humans (class 0: person) to prevent boxing non-living objects
-            # - conf=0.50: Conservative confidence threshold eliminating false positives on chairs/screens
+            # - conf=0.30: Calibrated threshold for indoor 480p pose detection — 0.50 was killing valid human detections entirely
             DETECTION_WIDTH = w_orig
             DETECTION_HEIGHT = h_orig
             small_frame = frame
@@ -1009,11 +1009,13 @@ class VisionEngine:
             self.frame_count += 1
             if self.frame_count % 3 == 1:
                 try:
+                    tracker_path = os.path.join(os.path.dirname(__file__), "custom_bytetrack.yaml")
+                    tracker = tracker_path if os.path.exists(tracker_path) else "bytetrack.yaml"
                     results = model.track(
                         small_frame,
                         persist=True,
-                        tracker="custom_bytetrack.yaml",
-                        conf=0.50,
+                        tracker=tracker,
+                        conf=0.30,
                         iou=0.6,
                         classes=[0],
                         imgsz=480,
@@ -1021,7 +1023,7 @@ class VisionEngine:
                     )
                 except Exception:
                     # Fallback to direct model inference if tracking subsystem encounters any issue
-                    results = model(small_frame, persist=True, conf=0.50, iou=0.6, verbose=False, classes=[0], imgsz=480)
+                    results = model(small_frame, persist=True, conf=0.30, iou=0.6, verbose=False, classes=[0], imgsz=480)
                 
                 if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
                     raw_boxes = results[0].boxes.xyxy.cpu().numpy()

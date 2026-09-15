@@ -400,6 +400,9 @@ class CameraStream:
                     continue
                 
                 retry_count = 0
+                # Drop stale frames so only the freshest frame is passed to inference
+                if hasattr(self, 'stream') and self.stream is not None and self.stream.isOpened():
+                    self.stream.grab()
                 with self.lock:
                     self.frame = frame
                     self.frame_id += 1
