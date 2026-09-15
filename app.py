@@ -1422,8 +1422,8 @@ def enroll_staff_with_faces():
                 # Detect face location first, then crop to face for encoding
                 with face_rec_lock:
                     face = _get_best_face(bgr)
-                    # _encode_face enforces strict FIQA checks (blur, resolution)
-                    enc = _encode_face(bgr) if face is not None else None
+                    # Use strict=False for enrollment so webcam photos don't fail FIQA
+                    enc = _encode_face(bgr, strict=False) if face is not None else None
                 if enc is None:
                     continue
                 encodings.append(enc)

@@ -8,6 +8,13 @@ import pickle
 import queue
 import threading
 
+# Limit background thread count for ONNXRuntime (InsightFace) to prevent CPU starvation / video buffering
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["OPENBLAS_NUM_THREADS"] = "2"
+os.environ["MKL_NUM_THREADS"] = "2"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "2"
+os.environ["NUMEXPR_NUM_THREADS"] = "2"
+
 # YOLO and face_recognition moved inside for lazy loading
 model = None
 model_loading_active = False
@@ -103,7 +110,7 @@ def _get_best_face(bgr):
         return None
 
 
-def _encode_face(bgr):
+def _encode_face(bgr, strict=True):
     """Detect the largest face in a BGR image and return a normalized 512-d
     ArcFace embedding, or None when no face is found or quality is low."""
     face = _get_best_face(bgr)
@@ -111,25 +118,22 @@ def _encode_face(bgr):
         return None
     
     # Pre-Inference Quality Filters (FIQA)
-    # 1. Minimum Resolution (80x80)
-    w = face.bbox[2] - face.bbox[0]
-    h = face.bbox[3] - face.bbox[1]
-    if w < 80 or h < 80:
-        return None
-        
-    # 2. Blur / Sharpness Check (Laplacian Variance)
-    # Crop the face from the original image using the bounding box
-    x1, y1, x2, y2 = map(int, face.bbox)
-    x1, y1 = max(0, x1), max(0, y1)
-    face_crop = bgr[y1:y2, x1:x2]
-    if face_crop.size == 0:
-        return None
-        
-    lap_var = cv2.Laplacian(face_crop, cv2.CV_64F).var()
-    if lap_var < 100.0:
-        return None
-        
-    # Optional: 3. Head Pose check (could be inferred from landmarks if needed)
+    if strict:
+        # 1. Minimum Resolution (80x80)
+        w = face.bbox[2] - face.bbox[0]
+        h = face.bbox[3] - face.bbox[1]
+        if w < 70 or h < 70:
+            return None
+            
+        # 2. Blur / Sharpness Check (Laplacian Variance)
+        # Crop the face from the original image using the bounding box
+        x1, y1, x2, y2 = map(int, face.bbox)
+        x1, y1 = max(0, x1), max(0, y1)
+        face_crop = bgr[y1:y2, x1:x2]
+        if face_crop.size > 0:
+            lap_var = cv2.Laplacian(face_crop, cv2.CV_64F).var()
+            if lap_var < 40.0:  # Relaxed slightly to allow typical webcams
+                return None
     
     try:
         v = face.embedding.flatten().astype(np.float64)
