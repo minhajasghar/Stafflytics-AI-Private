@@ -105,6 +105,26 @@ def _get_best_face(bgr):
     try:
         faces = _face_app.get(bgr)
         if not faces:
+            # Fallback 1: Scale down if high-res (>1280px) to prevent tiny face miss
+            h, w = bgr.shape[:2]
+            if max(h, w) > 1280:
+                scale = 1280.0 / max(h, w)
+                resized = cv2.resize(bgr, (int(w * scale), int(h * scale)))
+                faces = _face_app.get(resized)
+                if faces:
+                    for f in faces:
+                        f.bbox = f.bbox / scale
+        if not faces:
+            # Fallback 2: Scale up if small (<300px)
+            h, w = bgr.shape[:2]
+            if min(h, w) < 300:
+                scale = min(3.0, 300.0 / max(min(h, w), 1))
+                resized = cv2.resize(bgr, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                faces = _face_app.get(resized)
+                if faces:
+                    for f in faces:
+                        f.bbox = f.bbox / scale
+        if not faces:
             return None
         # InsightFace returns bounding boxes as [x1, y1, x2, y2]
         # Maximize width * height: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1])
@@ -117,37 +137,38 @@ def _get_best_face(bgr):
         return None
 
 
-def _encode_face(bgr, strict=True):
+def _encode_face(bgr, strict=True, face=None):
     """Detect the largest face in a BGR image and return a normalized 512-d
     ArcFace embedding, or None when no face is found or quality is low."""
-    face = _get_best_face(bgr)
+    if face is None:
+        face = _get_best_face(bgr)
     if face is None:
         return None
     
     # Pre-Inference Quality Filters (FIQA)
     if strict:
-        # 1. Minimum Resolution (80x80)
+        # 1. Minimum Resolution (60x60)
         w = face.bbox[2] - face.bbox[0]
         h = face.bbox[3] - face.bbox[1]
-        if w < 70 or h < 70:
+        if w < 60 or h < 60:
             return None
             
         # 2. Blur / Sharpness Check (Laplacian Variance)
-        # Crop the face from the original image using the bounding box
         x1, y1, x2, y2 = map(int, face.bbox)
         x1, y1 = max(0, x1), max(0, y1)
         face_crop = bgr[y1:y2, x1:x2]
         if face_crop.size > 0:
             lap_var = cv2.Laplacian(face_crop, cv2.CV_64F).var()
-            if lap_var < 40.0:
+            if lap_var < 30.0:
                 return None
     
     try:
-        v = face.embedding.flatten().astype(np.float64)
-        n = np.linalg.norm(v)
-        if n == 0:
-            return None
-        return v / n
+        if hasattr(face, 'embedding') and face.embedding is not None:
+            v = face.embedding.flatten().astype(np.float64)
+            n = np.linalg.norm(v)
+            if n > 0:
+                return v / n
+        return None
     except Exception as e:
         print(f"[AI ERROR] ArcFace feature extraction failed: {e}")
         return None
@@ -961,6 +982,7 @@ class VisionEngine:
                 self.recognition_queue.task_done()
                 with self.lock:
                     self.processing_tracks.discard(track_id)
+                time.sleep(0.01)
             except Exception as e:
                 print(f"[AI BACKGROUND ERROR] {e}")
                 try:
@@ -995,9 +1017,6 @@ class VisionEngine:
             fh, fw = face_source.shape[:2]
             
             # Run YOLO with ByteTrack on the native camera frame.
-            # - tracker="bytetrack.yaml": Activates ByteTrack Kalman filter motion tracker
-            # - classes=[0]: STRICTLY tracks humans (class 0: person) to prevent boxing non-living objects
-            # - conf=0.30: Calibrated threshold for indoor 480p pose detection — 0.50 was killing valid human detections entirely
             DETECTION_WIDTH = w_orig
             DETECTION_HEIGHT = h_orig
             small_frame = frame
@@ -1007,49 +1026,44 @@ class VisionEngine:
             raw_kps = None
             
             self.frame_count += 1
-            if self.frame_count % 3 == 1:
+            try:
+                tracker_path = os.path.join(os.path.dirname(__file__), "custom_bytetrack.yaml")
+                tracker = tracker_path if os.path.exists(tracker_path) else "bytetrack.yaml"
+                results = model.track(
+                    small_frame,
+                    persist=True,
+                    tracker=tracker,
+                    conf=0.25,
+                    iou=0.5,
+                    classes=[0],
+                    imgsz=480,
+                    verbose=False
+                )
+            except Exception:
                 try:
-                    tracker_path = os.path.join(os.path.dirname(__file__), "custom_bytetrack.yaml")
-                    tracker = tracker_path if os.path.exists(tracker_path) else "bytetrack.yaml"
-                    results = model.track(
-                        small_frame,
-                        persist=True,
-                        tracker=tracker,
-                        conf=0.30,
-                        iou=0.6,
-                        classes=[0],
-                        imgsz=480,
-                        verbose=False
-                    )
-                except Exception:
                     # Fallback to direct model inference if tracking subsystem encounters any issue
-                    results = model(small_frame, persist=True, conf=0.30, iou=0.6, verbose=False, classes=[0], imgsz=480)
-                
-                if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
-                    raw_boxes = results[0].boxes.xyxy.cpu().numpy()
-                    try:
-                        if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                            raw_track_ids = results[0].boxes.id.int().cpu().numpy()
-                    except Exception:
-                        raw_track_ids = None
-     
-                    try:
-                        if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
-                            raw_kps = results[0].keypoints.xy.cpu().numpy()
-                    except Exception:
-                        raw_kps = None
-                        
-                    with self.lock:
-                        self.last_valid_raw_boxes = raw_boxes
-                        self.last_valid_track_ids = raw_track_ids
-                        self.last_valid_raw_kps = raw_kps
-            else:
-                # FRAME SKIPPED: Retain last verified bounding boxes (ByteTrack handles Kalman)
+                    results = model(small_frame, persist=True, conf=0.25, iou=0.5, verbose=False, classes=[0], imgsz=480)
+                except Exception:
+                    results = None
+            
+            if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
+                raw_boxes = results[0].boxes.xyxy.cpu().numpy()
+                try:
+                    if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
+                        raw_track_ids = results[0].boxes.id.int().cpu().numpy()
+                except Exception:
+                    raw_track_ids = None
+ 
+                try:
+                    if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
+                        raw_kps = results[0].keypoints.xy.cpu().numpy()
+                except Exception:
+                    raw_kps = None
+                    
                 with self.lock:
-                    if self.last_valid_raw_boxes is not None and len(self.last_valid_raw_boxes) > 0:
-                        raw_boxes = np.copy(self.last_valid_raw_boxes)
-                        raw_track_ids = self.last_valid_track_ids
-                        raw_kps = self.last_valid_raw_kps
+                    self.last_valid_raw_boxes = raw_boxes
+                    self.last_valid_track_ids = raw_track_ids
+                    self.last_valid_raw_kps = raw_kps
 
             # Detection boxes stay in native pixel space (scale = 1.0).
             scale_x = 1.0
@@ -1485,9 +1499,13 @@ class VisionEngine:
                             break
                 for tid in carried:
                     s = self.person_states[tid]
+                    db_id = s.get("db_id")
+                    st_id = db_id if (db_id and not str(db_id).startswith("C_")) else None
                     detections.append({
+                        "track_id": int(tid),
+                        "staff_id": st_id,
                         "box": s["last_box"],
-                        "label": s.get("last_label", "Detecting..."),
+                        "label": s.get("last_label", "HUMAN"),
                         "color": s.get("last_color", "#f97316")
                     })
 

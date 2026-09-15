@@ -23,7 +23,7 @@ import numpy as np
 import base64
 import io
 from collections import deque
-from PIL import Image
+from PIL import Image, ImageOps
 from functools import wraps
 from datetime import datetime, timedelta
 import mailer
@@ -1393,13 +1393,14 @@ def enroll_staff():
         from vision_engine import face_rec_lock, _encode_face, _get_best_face
         header, encoded = data['image'].split(",", 1)
         img = Image.open(io.BytesIO(base64.b64decode(encoded)))
+        img = ImageOps.exif_transpose(img)
         bgr = np.ascontiguousarray(cv2.cvtColor(np.array(img.convert('RGB')), cv2.COLOR_RGB2BGR))
         # --- DEBUG: Verify frame is valid before detection ---
         print(f"[DEBUG ENROLL] shape={bgr.shape} mean={bgr.mean():.2f} dtype={bgr.dtype}")
         cv2.imwrite('/tmp/debug_enroll_single.jpg', bgr)
         with face_rec_lock:
-            enc = _encode_face(bgr, strict=False)
             face = _get_best_face(bgr)
+            enc = _encode_face(bgr, strict=False, face=face) if face is not None else None
         if enc is None or face is None:
             return jsonify({"status": "error", "message": "No valid face detected (ensure good lighting and distance)"}), 400
         
@@ -1441,6 +1442,7 @@ def enroll_staff_with_faces():
                 header, encoded = b64_img.split(",", 1)
                 img_bytes = base64.b64decode(encoded)
                 pil_img = Image.open(io.BytesIO(img_bytes))
+                pil_img = ImageOps.exif_transpose(pil_img)
                 rgb = np.array(pil_img.convert('RGB'))
                 bgr = np.ascontiguousarray(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
 
@@ -1459,7 +1461,7 @@ def enroll_staff_with_faces():
                 with face_rec_lock:
                     face = _get_best_face(bgr)
                     # Use strict=False for enrollment so webcam photos don't fail FIQA
-                    enc = _encode_face(bgr, strict=False) if face is not None else None
+                    enc = _encode_face(bgr, strict=False, face=face) if face is not None else None
                     print(f"[DEBUG ENROLL] Capt idx={idx} shape={bgr.shape} face_found={face is not None} enc_found={enc is not None}")
                 if enc is None:
                     continue
