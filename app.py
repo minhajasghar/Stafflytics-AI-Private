@@ -1442,6 +1442,7 @@ def enroll_staff_with_faces():
                     face = _get_best_face(bgr)
                     # Use strict=False for enrollment so webcam photos don't fail FIQA
                     enc = _encode_face(bgr, strict=False) if face is not None else None
+                    print(f"[DEBUG ENROLL] Capt idx={idx} shape={bgr.shape} face_found={face is not None} enc_found={enc is not None}")
                 if enc is None:
                     continue
                 encodings.append(enc)
@@ -1459,7 +1460,10 @@ def enroll_staff_with_faces():
                     face_pil.save(buf, format='JPEG', quality=90)
                     b64_face = base64.b64encode(buf.getvalue()).decode('utf-8')
                     first_photo = f"data:image/jpeg;base64,{b64_face}"
-            except Exception:
+            except Exception as e:
+                import traceback
+                print(f"[ENROLL ERROR] Capture {idx} failed: {e}")
+                traceback.print_exc()
                 continue
         
         if not encodings:

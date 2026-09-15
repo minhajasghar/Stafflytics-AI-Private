@@ -82,7 +82,10 @@ def _load_face_models():
     try:
         from insightface.app import FaceAnalysis
         _face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
-        _face_app.prepare(ctx_id=-1, det_size=(640, 640))
+        # Use a larger det_size to prevent 1080p web captures from being downscaled too much,
+        # which causes small faces to disappear during enrollment. 
+        # (Real-time tracking is unaffected because it passes pre-cropped small faces).
+        _face_app.prepare(ctx_id=-1, det_size=(1280, 1280))
         _face_models_loaded = True
         print("[AI] InsightFace models loaded (SCRFD + ArcFace).")
         return True
@@ -132,7 +135,7 @@ def _encode_face(bgr, strict=True):
         face_crop = bgr[y1:y2, x1:x2]
         if face_crop.size > 0:
             lap_var = cv2.Laplacian(face_crop, cv2.CV_64F).var()
-            if lap_var < 40.0:  # Relaxed slightly to allow typical webcams
+            if lap_var < 40.0:
                 return None
     
     try:
