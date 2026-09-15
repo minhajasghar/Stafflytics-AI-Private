@@ -37,14 +37,14 @@ def _start_model_load():
             from ultralytics import YOLO
             import torch
             base_dir = os.path.abspath(os.path.dirname(__file__))
-            model_path = os.path.join(base_dir, 'models', 'yolov8n.pt')
+            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose.onnx')
             print(f"[AI] Attempting to load YOLO model from: {model_path}")
             device = 'cpu' if not torch.cuda.is_available() else 0
             if os.path.exists(model_path):
-                model = YOLO(model_path)
+                model = YOLO(model_path, task='pose')
             else:
                 print(f"[AI INFO] Local model {model_path} not found. Ultralytics will auto-download.")
-                model = YOLO('yolov8n.pt') # Let ultralytics download it
+                model = YOLO('yolov8n-pose.pt') # Let ultralytics download and we use pt as fallback
             model.to(device)
             print(f"[AI] Background Model Load Complete. Running on {device}")
         except Exception as e:
