@@ -66,6 +66,7 @@ face_rec_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 _face_app = None
 _face_models_loaded = False
+_last_ai_error = None
 
 # ArcFace cosine-similarity thresholds (Production Tuned)
 FACE_STAFF_THRESHOLD = 0.60      # Strict staff threshold for reliable recognition
@@ -76,7 +77,7 @@ FACE_CUSTOMER = 0.65             # Backward-compatibility alias
 
 def _load_face_models():
     """Load InsightFace models (idempotent)."""
-    global _face_app, _face_models_loaded
+    global _face_app, _face_models_loaded, _last_ai_error
     if _face_models_loaded:
         return True
     try:
@@ -90,6 +91,7 @@ def _load_face_models():
         print("[AI] InsightFace models loaded (SCRFD + ArcFace).")
         return True
     except Exception as e:
+        _last_ai_error = str(e)
         print(f"[AI ERROR] Failed to load InsightFace models: {e}")
         return False
 
@@ -109,6 +111,8 @@ def _get_best_face(bgr):
         best = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
         return best
     except Exception as e:
+        global _last_ai_error
+        _last_ai_error = str(e)
         print(f"[AI ERROR] InsightFace detect failed: {e}")
         return None
 

@@ -1467,6 +1467,11 @@ def enroll_staff_with_faces():
                 continue
         
         if not encodings:
+            from vision_engine import _face_models_loaded, _last_ai_error
+            if not _face_models_loaded:
+                return jsonify({"status": "error", "message": f"CRITICAL: AI Models failed to load on this server (VPS). Error: {_last_ai_error}"}), 500
+            elif _last_ai_error:
+                return jsonify({"status": "error", "message": f"CRITICAL: Face detection crashed on this server. Error: {_last_ai_error}"}), 500
             return jsonify({"status": "error", "message": "No valid face detected in any capture"}), 400
         
         # Store ALL individual encodings from different angles for robust multi-angle matching
