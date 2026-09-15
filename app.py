@@ -1387,15 +1387,33 @@ def delete_staff(staff_id):
 def enroll_staff():
     data = request.json
     try:
-        from vision_engine import face_rec_lock, _encode_face
+        from vision_engine import face_rec_lock, _encode_face, _get_best_face
         header, encoded = data['image'].split(",", 1)
         img = Image.open(io.BytesIO(base64.b64decode(encoded)))
         bgr = np.ascontiguousarray(cv2.cvtColor(np.array(img.convert('RGB')), cv2.COLOR_RGB2BGR))
         with face_rec_lock:
-            enc = _encode_face(bgr)
-        if enc is None: return jsonify({"status": "error", "message": "No face detected"}), 400
+            enc = _encode_face(bgr, strict=False)
+            face = _get_best_face(bgr)
+        if enc is None or face is None:
+            return jsonify({"status": "error", "message": "No valid face detected (ensure good lighting and distance)"}), 400
+        
+        # Crop the face for the thumbnail
+        x1, y1, x2, y2 = [int(v) for v in face.bbox]
+        margin = 80
+        h_rgb, w_rgb = bgr.shape[:2]
+        y1_c = max(0, y1 - margin)
+        y2_c = min(h_rgb, y2 + margin)
+        x1_c = max(0, x1 - margin)
+        x2_c = min(w_rgb, x2 + margin)
+        rgb = np.array(img.convert('RGB'))
+        face_pil = Image.fromarray(rgb[y1_c:y2_c, x1_c:x2_c])
+        buf = io.BytesIO()
+        face_pil.save(buf, format='JPEG', quality=90)
+        b64_face = base64.b64encode(buf.getvalue()).decode('utf-8')
+        photo_b64 = f"data:image/jpeg;base64,{b64_face}"
+        
         database.add_staff(data['id'], data['name'], data['role'], pickle.dumps([enc]),
-                          data.get('shift_time', '10:00'), data.get('shift', 'Morning'), data.get('rate', 500), data.get('salary_type', 'Monthly'))
+                          data.get('shift_time', '10:00'), data.get('shift', 'Morning'), data.get('rate', 500), data.get('salary_type', 'Monthly'), photo_b64)
         engine.load_known_faces()
         return jsonify({"status": "success"})
     except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
