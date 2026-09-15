@@ -37,7 +37,7 @@ def _start_model_load():
             from ultralytics import YOLO
             import torch
             base_dir = os.path.abspath(os.path.dirname(__file__))
-            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose.onnx')
+            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose_openvino_model')
             print(f"[AI] Attempting to load YOLO model from: {model_path}")
             device = 'cpu' if not torch.cuda.is_available() else 0
             if os.path.exists(model_path):
@@ -307,6 +307,12 @@ class VisionEngine:
         self.alerted_tracks = set() # (track_id, zone_name)
         self.last_positions = {} # track_id -> (x, y)
         self.last_boxes = {} # track_id -> [x1, y1, x2, y2]
+        self.velocities = {} # track_id -> (dx, dy)
+        self.last_kps = {} # track_id -> keypoints array
+        self.last_valid_raw_boxes = [] # Full list of boxes for skipped frames
+        self.last_valid_raw_kps = []
+        self.last_valid_track_ids = []
+        
         self.recent_guest_embeddings = [] # Short-term memory for returning guests: [{"name": name, "db_id": db_id, "encs": list, "last_seen": timestamp}]
         self.reid_appearance_cache = {} # Person Re-ID Appearance Cache: identity_id -> {"name": name, "role": role, "reid_vec": vec, "last_seen": timestamp}
         self.staff_clothes_colors = {} # db_id -> (B, G, R) dominant color
@@ -996,39 +1002,86 @@ class VisionEngine:
             DETECTION_WIDTH = w_orig
             DETECTION_HEIGHT = h_orig
             small_frame = frame
-            try:
-                results = model.track(
-                    small_frame, 
-                    persist=True, 
-                    conf=0.22, 
-                    iou=0.45,
-                    verbose=False,
-                    classes=[0]
-                )
-            except Exception:
-                # Fallback to direct model inference if tracking subsystem encounters any issue
-                results = model(small_frame, conf=0.22, iou=0.45, verbose=False, classes=[0])
             
+            raw_boxes = []
+            raw_track_ids = None
+            raw_kps = None
+            
+            self.frame_count += 1
+            if self.frame_count % 3 == 1:
+                try:
+                    results = model.track(
+                        small_frame, 
+                        persist=True, 
+                        conf=0.22, 
+                        iou=0.45,
+                        verbose=False,
+                        classes=[0],
+                        imgsz=480
+                    )
+                except Exception:
+                    # Fallback to direct model inference if tracking subsystem encounters any issue
+                    results = model(small_frame, conf=0.22, iou=0.45, verbose=False, classes=[0], imgsz=480)
+                
+                if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
+                    raw_boxes = results[0].boxes.xyxy.cpu().numpy()
+                    try:
+                        if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
+                            raw_track_ids = results[0].boxes.id.int().cpu().numpy()
+                    except Exception:
+                        raw_track_ids = None
+    
+                    try:
+                        if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
+                            raw_kps = results[0].keypoints.xy.cpu().numpy()
+                    except Exception:
+                        raw_kps = None
+                        
+                    with self.lock:
+                        self.last_valid_raw_boxes = raw_boxes
+                        self.last_valid_track_ids = raw_track_ids
+                        self.last_valid_raw_kps = raw_kps
+                        
+                        # Calculate velocities
+                        if raw_track_ids is not None:
+                            for idx, tid in enumerate(raw_track_ids):
+                                box = raw_boxes[idx]
+                                if tid in self.last_boxes:
+                                    last = self.last_boxes[tid]
+                                    dx = box[0] - last[0]
+                                    dy = box[1] - last[1]
+                                    self.velocities[tid] = (dx, dy)
+                                else:
+                                    self.velocities[tid] = (0, 0)
+                                self.last_boxes[tid] = box.copy()
+                                
+            else:
+                # FRAME SKIPPED: Extrapolate boxes using velocities
+                with self.lock:
+                    if self.last_valid_raw_boxes is not None and len(self.last_valid_raw_boxes) > 0:
+                        raw_boxes = np.copy(self.last_valid_raw_boxes)
+                        raw_track_ids = self.last_valid_track_ids
+                        raw_kps = self.last_valid_raw_kps
+                        if raw_track_ids is not None:
+                            for idx, tid in enumerate(raw_track_ids):
+                                if tid in self.velocities:
+                                    dx, dy = self.velocities[tid]
+                                    raw_boxes[idx][0] += dx
+                                    raw_boxes[idx][1] += dy
+                                    raw_boxes[idx][2] += dx
+                                    raw_boxes[idx][3] += dy
+                                    
+                                    # Shift keypoints if available
+                                    if raw_kps is not None and idx < len(raw_kps) and raw_kps[idx] is not None:
+                                        raw_kps[idx][:, 0] += dx
+                                        raw_kps[idx][:, 1] += dy
+                        self.last_valid_raw_boxes = raw_boxes
+
             # Detection boxes stay in native pixel space (scale = 1.0).
             scale_x = 1.0
             scale_y = 1.0
             
-            if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
-                raw_boxes = results[0].boxes.xyxy.cpu().numpy()
-                raw_track_ids = None
-                try:
-                    if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                        raw_track_ids = results[0].boxes.id.int().cpu().numpy()
-                except Exception:
-                    raw_track_ids = None
-
-                raw_kps = None
-                try:
-                    if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
-                        raw_kps = results[0].keypoints.xy.cpu().numpy()
-                except Exception:
-                    raw_kps = None
-                
+            if len(raw_boxes) > 0:
                 boxes = []
                 valid_kps = []
                 track_ids = []
