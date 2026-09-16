@@ -8,12 +8,16 @@ import pickle
 import queue
 import threading
 
-# Limit background thread count for ONNXRuntime (InsightFace) to prevent CPU starvation / video buffering
+# Limiting background thread count for ONNXRuntime (InsightFace) to prevent CPU starvation / video buffering
 os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["OPENBLAS_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "2"
 os.environ["NUMEXPR_NUM_THREADS"] = "2"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+YOLO_MODEL_PATH = os.path.join(BASE_DIR, "models", "yolov8n-pose.onnx")
+TRACKER_PATH = os.path.join(BASE_DIR, "custom_bytetrack.yaml")
 
 # YOLO and face_recognition moved inside for lazy loading
 model = None
@@ -36,14 +40,12 @@ def _start_model_load():
         try:
             from ultralytics import YOLO
             import torch
-            base_dir = os.path.abspath(os.path.dirname(__file__))
-            model_path = os.path.join(base_dir, 'models', 'yolov8n-pose.onnx')
-            print(f"[AI] Attempting to load YOLO model from: {model_path}")
+            print(f"[AI] Attempting to load YOLO model from: {YOLO_MODEL_PATH}")
             device = 'cpu' if not torch.cuda.is_available() else 0
-            if os.path.exists(model_path):
-                model = YOLO(model_path, task='pose')
+            if os.path.exists(YOLO_MODEL_PATH):
+                model = YOLO(YOLO_MODEL_PATH, task='pose')
             else:
-                print(f"[AI INFO] Local model {model_path} not found. Ultralytics will auto-download.")
+                print(f"[AI INFO] Local model {YOLO_MODEL_PATH} not found. Ultralytics will auto-download.")
                 model = YOLO('yolov8n-pose.pt') # Let ultralytics download and we use pt as fallback
                 model.to(device)
             print(f"[AI] Background Model Load Complete. Running on {device}")
@@ -60,7 +62,7 @@ face_rec_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# InsightFace backend (SCRFD detection + ArcFace recognition).
+# InsightFace backend (SCRFD detection + MobileNet ArcFace recognition).
 # Embeds are 512-d float vectors; normalized to unit length so matching is a
 # cosine similarity (dot product). Stored in DB via pickle.
 # ---------------------------------------------------------------------------
@@ -76,19 +78,21 @@ FACE_CUSTOMER = 0.65             # Backward-compatibility alias
 
 
 def _load_face_models():
-    """Load InsightFace models (idempotent)."""
+    """Load InsightFace models using buffalo_s (idempotent)."""
     global _face_app, _face_models_loaded, _last_ai_error
-    if _face_models_loaded:
+    if _face_models_loaded and _face_app is not None:
         return True
     try:
         from insightface.app import FaceAnalysis
-        _face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
-        # Use a larger det_size to prevent 1080p web captures from being downscaled too much,
-        # which causes small faces to disappear during enrollment. 
-        # (Real-time tracking is unaffected because it passes pre-cropped small faces).
-        _face_app.prepare(ctx_id=-1, det_size=(640, 640), det_thresh=0.3)
+        _face_app = FaceAnalysis(
+            name="buffalo_s",
+            root=BASE_DIR,
+            allowed_modules=["detection", "recognition"],
+            providers=["CPUExecutionProvider"]
+        )
+        _face_app.prepare(ctx_id=-1, det_size=(640, 640), det_thresh=0.35)
         _face_models_loaded = True
-        print("[AI] InsightFace models loaded (SCRFD + ArcFace).")
+        print("[AI] InsightFace buffalo_s models loaded (SCRFD + MobileNet ArcFace).")
         return True
     except Exception as e:
         _last_ai_error = str(e)
@@ -1027,8 +1031,7 @@ class VisionEngine:
             
             self.frame_count += 1
             try:
-                tracker_path = os.path.join(os.path.dirname(__file__), "custom_bytetrack.yaml")
-                tracker = tracker_path if os.path.exists(tracker_path) else "bytetrack.yaml"
+                tracker = TRACKER_PATH if os.path.exists(TRACKER_PATH) else "bytetrack.yaml"
                 results = model.track(
                     small_frame,
                     persist=True,

@@ -1390,17 +1390,20 @@ def delete_staff(staff_id):
 def enroll_staff():
     data = request.json
     try:
-        from vision_engine import face_rec_lock, _encode_face, _get_best_face
-        header, encoded = data['image'].split(",", 1)
+        from vision_engine import face_rec_lock, _get_best_face
+        header, encoded = data['image'].split(",", 1) if "," in data['image'] else ("", data['image'])
         img = Image.open(io.BytesIO(base64.b64decode(encoded)))
         img = ImageOps.exif_transpose(img)
         bgr = np.ascontiguousarray(cv2.cvtColor(np.array(img.convert('RGB')), cv2.COLOR_RGB2BGR))
-        # --- DEBUG: Verify frame is valid before detection ---
-        print(f"[DEBUG ENROLL] shape={bgr.shape} mean={bgr.mean():.2f} dtype={bgr.dtype}")
-        cv2.imwrite('/tmp/debug_enroll_single.jpg', bgr)
         with face_rec_lock:
             face = _get_best_face(bgr)
-            enc = _encode_face(bgr, strict=False, face=face) if face is not None else None
+            if face is not None and hasattr(face, 'embedding') and face.embedding is not None:
+                emb = face.embedding.flatten().astype(np.float64)
+                norm = np.linalg.norm(emb)
+                enc = (emb / norm) if norm > 0 else None
+            else:
+                enc = None
+
         if enc is None or face is None:
             return jsonify({"status": "error", "message": "No valid face detected (ensure good lighting and distance)"}), 400
         
@@ -1430,7 +1433,7 @@ def enroll_staff():
 def enroll_staff_with_faces():
     data = request.json
     try:
-        from vision_engine import face_rec_lock, _encode_face, _get_best_face
+        from vision_engine import face_rec_lock, _get_best_face
         images = data.get('images', [])
         if len(images) < 1:
             return jsonify({"status": "error", "message": "Need at least 1 face capture"}), 400
@@ -1439,31 +1442,28 @@ def enroll_staff_with_faces():
         first_photo = None
         for idx, b64_img in enumerate(images):
             try:
-                header, encoded = b64_img.split(",", 1)
+                header, encoded = b64_img.split(",", 1) if "," in b64_img else ("", b64_img)
                 img_bytes = base64.b64decode(encoded)
                 pil_img = Image.open(io.BytesIO(img_bytes))
                 pil_img = ImageOps.exif_transpose(pil_img)
                 rgb = np.array(pil_img.convert('RGB'))
                 bgr = np.ascontiguousarray(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
 
-                # --- DEBUG: Dump received frame to verify it's not empty/black ---
-                cv2.imwrite('/tmp/debug_enroll_%d.jpg' % idx, bgr)
-                print(f"[DEBUG ENROLL] Capt idx={idx} shape={bgr.shape} mean={bgr.mean():.2f} dtype={bgr.dtype}")
-                if bgr.mean() < 1.0:
-                    print(f"[DEBUG ENROLL] WARNING: Frame {idx} is BLACK/EMPTY! mean={bgr.mean():.2f}")
-
-                # Verify BGR format (not RGB) - InsightFace expects OpenCV BGR arrays
                 if len(bgr.shape) != 3 or bgr.shape[2] != 3:
                     print(f"[DEBUG ENROLL] ERROR: Invalid BGR shape {bgr.shape} at idx={idx}")
                     continue
 
-                # Detect face location first, then crop to face for encoding
+                # Pass BGR directly to _get_best_face (runs face_app.get(bgr) and selects largest area face)
                 with face_rec_lock:
                     face = _get_best_face(bgr)
-                    # Use strict=False for enrollment so webcam photos don't fail FIQA
-                    enc = _encode_face(bgr, strict=False, face=face) if face is not None else None
-                    print(f"[DEBUG ENROLL] Capt idx={idx} shape={bgr.shape} face_found={face is not None} enc_found={enc is not None}")
-                if enc is None:
+                    if face is not None and hasattr(face, 'embedding') and face.embedding is not None:
+                        emb = face.embedding.flatten().astype(np.float64)
+                        norm = np.linalg.norm(emb)
+                        enc = (emb / norm) if norm > 0 else None
+                    else:
+                        enc = None
+
+                if enc is None or face is None:
                     continue
                 encodings.append(enc)
                 if idx == 0 or first_photo is None:
@@ -1495,7 +1495,6 @@ def enroll_staff_with_faces():
             return jsonify({"status": "error", "message": "No valid face detected in any capture"}), 400
         
         # Store ALL individual encodings from different angles for robust multi-angle matching
-        # Each encoding remains separate so face_distance can pick the best angle match
         database.add_staff(
             data['id'], data['name'], data['role'],
             pickle.dumps(encodings),
