@@ -168,6 +168,7 @@ def translate_sqlite_to_mysql(query):
     query = query.replace('intensity TEXT', 'intensity VARCHAR(255)')
     query = query.replace('points_json TEXT', 'points_json VARCHAR(2000)')
     query = query.replace('unauthorized_roles TEXT', 'unauthorized_roles VARCHAR(1000)')
+    query = query.replace('photo TEXT', 'photo MEDIUMTEXT')
     query = query.replace('duration_minutes REAL', 'duration_minutes FLOAT')
     query = query.replace('hourly_rate REAL', 'hourly_rate DECIMAL(10,2)')
     query = query.replace('active_seconds REAL', 'active_seconds DECIMAL(10,4)')
@@ -252,6 +253,44 @@ def get_db_connection():
     )
     return MySQLConnectionWrapper(conn)
 
+def run_auto_migrations(cursor):
+    """
+    Ensures columns have sufficient capacity for enrollment images without manual SQL intervention.
+    """
+    try:
+        # Check current column type for 'photo' in the staff table
+        cursor.execute("""
+            SELECT DATA_TYPE 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'staff' AND COLUMN_NAME = 'photo'
+        """)
+        row = cursor.fetchone()
+        
+        # If it's varchar or standard text (<= 64KB), alter to MEDIUMTEXT (16MB)
+        if row and row[0].lower() in ['varchar', 'text', 'tinytext']:
+            print("[MIGRATION] Altering staff.photo to MEDIUMTEXT...")
+            cursor.execute("ALTER TABLE staff MODIFY COLUMN photo MEDIUMTEXT;")
+            print("[MIGRATION] staff.photo successfully updated to MEDIUMTEXT.")
+    except Exception as e:
+        print(f"[MIGRATION WARNING] Auto-migration check: {e}")
+
+    try:
+        # Check current column type for 'photo' in the customer_profiles table
+        cursor.execute("""
+            SELECT DATA_TYPE 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'customer_profiles' AND COLUMN_NAME = 'photo'
+        """)
+        row = cursor.fetchone()
+        
+        # If it's varchar or standard text (<= 64KB), alter to MEDIUMTEXT (16MB)
+        if row and row[0].lower() in ['varchar', 'text', 'tinytext']:
+            print("[MIGRATION] Altering customer_profiles.photo to MEDIUMTEXT...")
+            cursor.execute("ALTER TABLE customer_profiles MODIFY COLUMN photo MEDIUMTEXT;")
+            print("[MIGRATION] customer_profiles.photo successfully updated to MEDIUMTEXT.")
+    except Exception as e:
+        print(f"[MIGRATION WARNING] Auto-migration check (customer_profiles): {e}")
+
 def init_db():
     """Initializes the MySQL database and ensures all required tables exist."""
     _init_conn = None
@@ -291,9 +330,9 @@ def init_db():
         cursor = conn.cursor()
 
         # DDL execution for MySQL (MySQLCursorWrapper translates types like TEXT PRIMARY KEY to MySQL VARCHAR)
-        cursor.execute('''CREATE TABLE IF NOT EXISTS staff (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, shift_start TEXT DEFAULT '10:00', shift TEXT DEFAULT 'Morning', hourly_rate REAL DEFAULT 500.0, salary_type TEXT DEFAULT 'Monthly', face_encoding BLOB NOT NULL)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS staff (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, shift_start TEXT DEFAULT '10:00', shift TEXT DEFAULT 'Morning', hourly_rate REAL DEFAULT 500.0, salary_type TEXT DEFAULT 'Monthly', face_encoding BLOB NOT NULL, photo MEDIUMTEXT)''')
         _try(cursor, "ALTER TABLE staff ADD COLUMN salary_type TEXT DEFAULT 'Monthly'", "staff.salary_type")
-        _try(cursor, "ALTER TABLE staff ADD COLUMN photo TEXT", "staff.photo")
+        _try(cursor, "ALTER TABLE staff ADD COLUMN photo MEDIUMTEXT", "staff.photo")
         cursor.execute('''CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, staff_id TEXT, entry_time DATETIME DEFAULT CURRENT_TIMESTAMP, exit_time DATETIME, status TEXT DEFAULT 'Present', is_late BOOLEAN DEFAULT 0, active_seconds REAL DEFAULT 0, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, staff_id TEXT, zone TEXT, action TEXT, details TEXT, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS admins (username TEXT PRIMARY KEY, password TEXT NOT NULL, email TEXT)''')
@@ -316,8 +355,8 @@ def init_db():
             print("[DB] Seeded default admin account (minhajasghar).")
         cursor.execute('''CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_time DATETIME DEFAULT CURRENT_TIMESTAMP, exit_time DATETIME, table_id TEXT, duration_minutes REAL, customer_id INTEGER)''')
         _try(cursor, "ALTER TABLE customers ADD COLUMN customer_id INTEGER", "customers.customer_id")
-        cursor.execute('''CREATE TABLE IF NOT EXISTS customer_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT DEFAULT 'New Guest', face_encoding BLOB NOT NULL, first_seen DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP, visit_count INTEGER DEFAULT 1)''')
-        _try(cursor, "ALTER TABLE customer_profiles ADD COLUMN photo TEXT", "customer_profiles.photo")
+        cursor.execute('''CREATE TABLE IF NOT EXISTS customer_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT DEFAULT 'New Guest', face_encoding BLOB NOT NULL, first_seen DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP, visit_count INTEGER DEFAULT 1, photo MEDIUMTEXT)''')
+        _try(cursor, "ALTER TABLE customer_profiles ADD COLUMN photo MEDIUMTEXT", "customer_profiles.photo")
         cursor.execute('''CREATE TABLE IF NOT EXISTS special_events (id INTEGER PRIMARY KEY AUTOINCREMENT, date DATE UNIQUE, event_type TEXT DEFAULT 'General Peak', intensity TEXT DEFAULT 'High')''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS zones_config (name TEXT PRIMARY KEY, points_json TEXT NOT NULL, unauthorized_roles TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS sales (id INTEGER PRIMARY KEY AUTOINCREMENT, staff_id TEXT, amount REAL NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (staff_id) REFERENCES staff(id))''')
@@ -328,6 +367,9 @@ def init_db():
         defaults = [('owner_email', 'admin@stafflytics.ai'), ('sender_email', ''), ('sender_password', ''), ('rtsp_url', ''), ('late_grace_minutes', '10'), ('wellness_threshold', '4')]
         for key, val in defaults:
             cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
+
+        # Auto-migrations for schema capacity updates
+        run_auto_migrations(cursor)
 
         conn.commit()
         conn.close()
