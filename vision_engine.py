@@ -1046,13 +1046,18 @@ class VisionEngine:
                 except Exception:
                     results = None
             
+            num_boxes = len(results[0].boxes) if results and len(results) > 0 and results[0].boxes is not None else 0
+            print(f"[VISION DEBUG] Raw YOLO detections: {num_boxes}")
+            
             if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
                 raw_boxes = results[0].boxes.xyxy.cpu().numpy()
                 try:
                     if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                        raw_track_ids = results[0].boxes.id.int().cpu().numpy()
+                        raw_track_ids = results[0].boxes.id.int().cpu().tolist()
+                    else:
+                        raw_track_ids = [-1] * len(raw_boxes)
                 except Exception:
-                    raw_track_ids = None
+                    raw_track_ids = [-1] * len(raw_boxes)
  
                 try:
                     if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
@@ -1087,8 +1092,8 @@ class VisionEngine:
                         else:
                             valid_kps.append(None)
                             
-                        # Use Track ID or deterministic index
-                        if raw_track_ids is not None and b_idx < len(raw_track_ids):
+                        # Use Track ID or fallback to deterministic index when ID is None / warming up
+                        if raw_track_ids is not None and b_idx < len(raw_track_ids) and raw_track_ids[b_idx] != -1:
                             t_id = int(raw_track_ids[b_idx])
                         else:
                             t_id = b_idx + 1
