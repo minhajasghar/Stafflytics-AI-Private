@@ -45,7 +45,7 @@ def _start_model_load():
             else:
                 print(f"[AI INFO] Local model {model_path} not found. Ultralytics will auto-download.")
                 model = YOLO('yolov8n-pose.pt') # Let ultralytics download and we use pt as fallback
-            model.to(device)
+                model.to(device)
             print(f"[AI] Background Model Load Complete. Running on {device}")
         except Exception as e:
             import traceback
