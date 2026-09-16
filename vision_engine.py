@@ -16,7 +16,7 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "2"
 os.environ["NUMEXPR_NUM_THREADS"] = "2"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-YOLO_MODEL_PATH = os.path.join(BASE_DIR, "models", "yolov8n-pose.onnx")
+YOLO_MODEL_PATH = os.path.join(BASE_DIR, "models", "yolov8n.onnx")
 TRACKER_PATH = os.path.join(BASE_DIR, "custom_bytetrack.yaml")
 
 # YOLO and face_recognition moved inside for lazy loading
@@ -43,11 +43,23 @@ def _start_model_load():
             print(f"[AI] Attempting to load YOLO model from: {YOLO_MODEL_PATH}")
             device = 'cpu' if not torch.cuda.is_available() else 0
             if os.path.exists(YOLO_MODEL_PATH):
-                model = YOLO(YOLO_MODEL_PATH, task='pose')
+                model = YOLO(YOLO_MODEL_PATH, task='detect')
             else:
-                print(f"[AI INFO] Local model {YOLO_MODEL_PATH} not found. Ultralytics will auto-download.")
-                model = YOLO('yolov8n-pose.pt') # Let ultralytics download and we use pt as fallback
-                model.to(device)
+                pt_path = os.path.join(BASE_DIR, "models", "yolov8n.pt")
+                if not os.path.exists(pt_path):
+                    pt_path = "yolov8n.pt"
+                try:
+                    print(f"[AI] ONNX model not found at {YOLO_MODEL_PATH}. Exporting {pt_path} to ONNX format...")
+                    pt_model = YOLO(pt_path)
+                    pt_model.export(format="onnx")
+                    if os.path.exists(YOLO_MODEL_PATH):
+                        model = YOLO(YOLO_MODEL_PATH, task='detect')
+                    else:
+                        model = pt_model
+                except Exception as ex_export:
+                    print(f"[AI WARNING] ONNX export failed ({ex_export}), using PyTorch model fallback.")
+                    model = YOLO(pt_path, task='detect')
+                    model.to(device)
             print(f"[AI] Background Model Load Complete. Running on {device}")
         except Exception as e:
             import traceback
@@ -70,11 +82,11 @@ _face_app = None
 _face_models_loaded = False
 _last_ai_error = None
 
-# ArcFace cosine-similarity thresholds (Production Tuned)
-FACE_STAFF_THRESHOLD = 0.60      # Strict staff threshold for reliable recognition
-FACE_CUSTOMER_THRESHOLD = 0.65   # Strict customer threshold to prevent false merges
-FACE_STAFF_RELAXED = 0.55        # Slightly relaxed threshold for rapid checks
-FACE_CUSTOMER = 0.65             # Backward-compatibility alias
+# ArcFace cosine-similarity thresholds (Enterprise Tuned)
+FACE_STAFF_THRESHOLD = 0.58      # Confirmed staff identity threshold (cosine sim >= 0.58)
+FACE_CUSTOMER_THRESHOLD = 0.58   # Confirmed customer identity threshold (cosine sim >= 0.58)
+FACE_STAFF_RELAXED = 0.50        # Relaxed threshold for rapid initial checks
+FACE_CUSTOMER = 0.58             # Backward-compatibility alias
 
 
 def _load_face_models():
@@ -584,6 +596,18 @@ class VisionEngine:
                                 with self.lock:
                                     if track_id in self.person_states:
                                         s = self.person_states[track_id]
+                                        # Track-Identity Locking: verify over 3 consecutive frames with cosine sim >= 0.58
+                                        if not s.get("identity_locked", False):
+                                            if s.get("pending_id") == match_id:
+                                                s["consecutive_matches"] = s.get("consecutive_matches", 0) + 1
+                                            else:
+                                                s["pending_id"] = match_id
+                                                s["consecutive_matches"] = 1
+                                            print(f"[TRACK VERIFY] Track #{track_id} -> Staff '{s_name}' sim={best_staff_sim:.4f} (Consecutive: {s['consecutive_matches']}/3)")
+                                            if s["consecutive_matches"] >= 3:
+                                                s["identity_locked"] = True
+                                                print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} permanently locked to Staff '{s_name}' (ID: {match_id})! ArcFace inference disabled for this track. ***")
+
                                         # If the identity is the same, preserve the highest ever similarity to prevent weak false-positive thefts
                                         if s.get("db_id") == match_id:
                                             s["best_staff_sim"] = max(s.get("best_staff_sim", 0.0), best_staff_sim)
@@ -621,6 +645,21 @@ class VisionEngine:
                             match_source = "customer"
                             matched_cust_idx = best_cust_idx
                             
+                            with self.lock:
+                                if track_id in self.person_states:
+                                    s = self.person_states[track_id]
+                                    if not s.get("identity_locked", False):
+                                        cust_key = f"C_{c_id_matched}"
+                                        if s.get("pending_id") == cust_key:
+                                            s["consecutive_matches"] = s.get("consecutive_matches", 0) + 1
+                                        else:
+                                            s["pending_id"] = cust_key
+                                            s["consecutive_matches"] = 1
+                                        print(f"[TRACK VERIFY] Track #{track_id} -> Customer '{c_name}' sim={best_cust_sim:.4f} (Consecutive: {s['consecutive_matches']}/3)")
+                                        if s["consecutive_matches"] >= 3:
+                                            s["identity_locked"] = True
+                                            print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} permanently locked to Customer '{c_name}'! ArcFace inference disabled for this track. ***")
+
                             # Update Re-ID appearance cache for this returning guest
                             if body_reid_vec is not None:
                                 with self.lock:
@@ -1123,9 +1162,10 @@ class VisionEngine:
                     with self.lock:
                         if track_id not in self.person_states:
                             self.person_states[track_id] = {
-                                "id": "Unknown", "db_id": None, "zone": "Main Hall", 
+                                "id": f"Track #{track_id}", "name": "Guest", "db_id": None, "zone": "Main Hall", 
                                 "first_seen": current_time,
-                                "last_active": current_time, "last_sync": 0, "role": "None"
+                                "last_active": current_time, "last_sync": 0, "role": "None",
+                                "identity_locked": False, "consecutive_matches": 0, "pending_id": None
                             }
                         state = self.person_states[track_id]
                         state["last_active"] = current_time
@@ -1200,16 +1240,17 @@ class VisionEngine:
                     # Identification Logic (Offloaded to background queue)
                     with self.lock:
                         db_id = state.get("db_id")
-                        is_identified = (db_id is not None and db_id != "Unknown")
+                        is_locked = state.get("identity_locked", False)
                         is_processing = track_id in self.processing_tracks
                     
                     last_attempt = self.last_rec_attempt.get(track_id, 0)
                     
-                    # Temporal Optimization:
-                    # - Already-identified tracks: periodic re-verification/learning every 2.5s (15-20 frames)
-                    # - Unidentified tracks: rapid sub-second verification every 0.35s
-                    check_interval = 2.5 if is_identified else 0.35
-                    if not is_processing and (current_time - last_attempt > check_interval):
+                    # Track-Identity Locking:
+                    # Once ByteTrack assigns a track_id and InsightFace confirms identity
+                    # (cosine similarity >= 0.58 over 3 consecutive frames), that identity is locked.
+                    # Do NOT re-run ArcFace on every frame for already identified tracks!
+                    check_interval = 0.35
+                    if not is_locked and not is_processing and (current_time - last_attempt > check_interval):
                         self.last_rec_attempt[track_id] = current_time
 
                         face_img = None
@@ -1265,15 +1306,14 @@ class VisionEngine:
                                 current_zone, 
                                 current_time
                             ))
-                    else:
-                        # Sync presence heartbeat (only for confirmed staff, not customers)
+                    # Sync presence heartbeat (only for confirmed staff, not customers)
+                    with self.lock:
+                        last_sync = state.get("last_sync", 0)
+                    if current_time - last_sync > self.heartbeat_interval:
+                        if db_id and not str(db_id).startswith("C_"):
+                            database.record_attendance(db_id)
                         with self.lock:
-                            last_sync = state["last_sync"]
-                        if current_time - last_sync > self.heartbeat_interval:
-                            if db_id and not str(db_id).startswith("C_"):
-                                database.record_attendance(db_id)
-                            with self.lock:
-                                state["last_sync"] = current_time
+                            state["last_sync"] = current_time
                         
                     # Path Context & Exact Efficiency Logic
                     with self.lock:
@@ -1425,6 +1465,9 @@ class VisionEngine:
                                 self.person_states[tid]["db_id"] = None
                                 self.person_states[tid]["name"] = "Guest"
                                 self.person_states[tid]["role"] = "None"
+                                self.person_states[tid]["identity_locked"] = False
+                                self.person_states[tid]["consecutive_matches"] = 0
+                                self.person_states[tid]["pending_id"] = None
                                 self.person_states[tid]["last_label"] = f"Guest #{tid}"
                                 self.person_states[tid]["last_color"] = "#f97316"
                         d["label"] = f"Guest #{tid}"

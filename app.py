@@ -247,6 +247,8 @@ class CameraStream:
     def _attempt_connection(self):
         global camera_online
         import stream_manager
+        # Zero-buffer streaming configuration to drop queued frames and eliminate positional latency
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|max_delay;500000"
         # Use override URL if specified (display_stream uses cam, camera_stream uses cam_ai)
         active_url = self.rtsp_override if self.rtsp_override else RTSP_URL
         
@@ -317,13 +319,14 @@ class CameraStream:
                         print(f"[SYSTEM] Probing RTSP: {display_url} (backend: {be})")
                         cap = cv2.VideoCapture(url, be)
                         if cap:
+                            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                             cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
                             cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)
                         if cap and cap.isOpened():
                             ret, f = cap.read()
                             if ret and f is not None:
                                 print(f"[SYSTEM] Camera successfully synchronized via RTSP: {display_url}")
-                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
+                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                                 self.stream = cap
                                 self.actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                                 self.actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -353,7 +356,7 @@ class CameraStream:
                                 preset_cfg = QUALITY_PRESETS.get(camera_preset, QUALITY_PRESETS['480p'])
                                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, preset_cfg["size"][0])
                                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, preset_cfg["size"][1])
-                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
+                                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                                 self.actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                                 self.actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                                 print(f"[SYSTEM] Camera native resolution: {self.actual_width}x{self.actual_height}")
@@ -477,8 +480,8 @@ def vision_engine_loop():
             # frame_w/frame_h = the native detection space (cam_ai res, 16:9),
             # so the browser canvas can scale boxes to the video exactly.
             broadcast_detections(detections, frame_w=frame.shape[1], frame_h=frame.shape[0])
-            # Throttle to max ~10 FPS to conserve CPU resources while retaining real-time analytics
-            time.sleep(0.1)
+            # Sleep small interval to yield CPU and maintain smooth ~30 FPS tracking with lightweight YOLOv8n
+            time.sleep(0.01)
         except Exception as e:
             print(f"[VISION LOOP ERROR] {e}")
             time.sleep(1)
