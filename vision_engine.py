@@ -339,6 +339,7 @@ class VisionEngine:
         self.known_customer_encodings = []
         self.known_customer_metadata = []
         self.person_states = {} # track_id -> {"id": "Unknown", ...}
+        self.track_identities = {} # {track_id: {"name": str, "verified": bool, "history": list, "db_id": str, "role": str}}
         self.recognition_consensus = {}
         self.customer_timers = {} # track_id -> {"start": time, "zone": name}
         self.alerted_tracks = set() # (track_id, zone_name)
@@ -463,6 +464,7 @@ class VisionEngine:
                 
                 # Flush recognition consensus so existing tracks get re-evaluated
                 self.recognition_consensus.clear()
+                self.track_identities.clear()
                 self.last_rec_attempt.clear()
                 self.processing_tracks.clear()
             
@@ -593,22 +595,29 @@ class VisionEngine:
                                         s_meta_matched["all_encs"] = stored_list
                                         print(f"[AI MULTI-ANGLE] Learned new distinct face angle for Staff {s_meta_matched['name']} (total stored: {len(stored_list)}/5)")
                                 
+                                match_name = known_staff_meta[best_staff_idx]["name"]
+                                match_role = known_staff_meta[best_staff_idx]["role"]
                                 with self.lock:
+                                    # 2. Track-to-Identity Caching Map
+                                    t_entry = self.track_identities.setdefault(track_id, {"history": [], "name": "Unknown", "verified": False})
+                                    t_entry["history"].append(match_name)
+                                    
+                                    # Temporal Consensus: 3 matches confirm attendance
+                                    if t_entry["history"].count(match_name) >= 3:
+                                        t_entry["name"] = match_name
+                                        t_entry["verified"] = True
+                                        t_entry["db_id"] = match_id
+                                        t_entry["role"] = match_role
+                                        t_entry["is_staff"] = True
+                                        print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} permanently locked to Staff '{match_name}' (ID: {match_id})! ArcFace inference disabled. ***")
+                                        try:
+                                            database.record_attendance(match_id)
+                                        except Exception as eat:
+                                            print(f"[AI] Attendance record error: {eat}")
+
                                     if track_id in self.person_states:
                                         s = self.person_states[track_id]
-                                        # Track-Identity Locking: verify over 3 consecutive frames with cosine sim >= 0.58
-                                        if not s.get("identity_locked", False):
-                                            if s.get("pending_id") == match_id:
-                                                s["consecutive_matches"] = s.get("consecutive_matches", 0) + 1
-                                            else:
-                                                s["pending_id"] = match_id
-                                                s["consecutive_matches"] = 1
-                                            print(f"[TRACK VERIFY] Track #{track_id} -> Staff '{s_name}' sim={best_staff_sim:.4f} (Consecutive: {s['consecutive_matches']}/3)")
-                                            if s["consecutive_matches"] >= 3:
-                                                s["identity_locked"] = True
-                                                print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} permanently locked to Staff '{s_name}' (ID: {match_id})! ArcFace inference disabled for this track. ***")
-
-                                        # If the identity is the same, preserve the highest ever similarity to prevent weak false-positive thefts
+                                        s["identity_locked"] = t_entry["verified"]
                                         if s.get("db_id") == match_id:
                                             s["best_staff_sim"] = max(s.get("best_staff_sim", 0.0), best_staff_sim)
                                         else:
@@ -616,15 +625,11 @@ class VisionEngine:
                                             
                                         s["db_id"] = match_id
                                         s["id"] = f"ID: {match_id}"
-                                        s["name"] = known_staff_meta[best_staff_idx]["name"]
-                                        s["role"] = known_staff_meta[best_staff_idx]["role"]
+                                        s["name"] = match_name
+                                        s["role"] = match_role
                                         s["last_sync"] = current_time
                                         if track_id in self.customer_timers:
                                             del self.customer_timers[track_id]
-                                try:
-                                    database.record_attendance(match_id)
-                                except Exception as eat:
-                                    print(f"[AI] Attendance record error: {eat}")
                             else:
                                 match_id = "Unknown"
                                 match_source = None
@@ -645,20 +650,25 @@ class VisionEngine:
                             match_source = "customer"
                             matched_cust_idx = best_cust_idx
                             
+                            match_name = c_name
+                            cust_id = f"C_{c_id_matched}"
                             with self.lock:
+                                # 2. Track-to-Identity Caching Map
+                                t_entry = self.track_identities.setdefault(track_id, {"history": [], "name": "Unknown", "verified": False})
+                                t_entry["history"].append(match_name)
+                                if t_entry["history"].count(match_name) >= 3:
+                                    t_entry["name"] = match_name
+                                    t_entry["verified"] = True
+                                    t_entry["db_id"] = cust_id
+                                    t_entry["is_staff"] = False
+                                    print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} permanently locked to Customer '{match_name}'! ***")
+
                                 if track_id in self.person_states:
                                     s = self.person_states[track_id]
-                                    if not s.get("identity_locked", False):
-                                        cust_key = f"C_{c_id_matched}"
-                                        if s.get("pending_id") == cust_key:
-                                            s["consecutive_matches"] = s.get("consecutive_matches", 0) + 1
-                                        else:
-                                            s["pending_id"] = cust_key
-                                            s["consecutive_matches"] = 1
-                                        print(f"[TRACK VERIFY] Track #{track_id} -> Customer '{c_name}' sim={best_cust_sim:.4f} (Consecutive: {s['consecutive_matches']}/3)")
-                                        if s["consecutive_matches"] >= 3:
-                                            s["identity_locked"] = True
-                                            print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} permanently locked to Customer '{c_name}'! ArcFace inference disabled for this track. ***")
+                                    s["identity_locked"] = t_entry["verified"]
+                                    s["name"] = match_name
+                                    s["db_id"] = cust_id
+                                    s["id"] = f"Guest ({match_name})"
 
                             # Update Re-ID appearance cache for this returning guest
                             if body_reid_vec is not None:
@@ -1237,75 +1247,61 @@ class VisionEngine:
                                 state["pose_label"] = pose_label
                         except: pass
 
-                    # Identification Logic (Offloaded to background queue)
+                    # 2. Track-to-Identity Caching Map
                     with self.lock:
+                        t_ident = self.track_identities.get(track_id)
+                        is_verified = (t_ident is not None and t_ident.get("verified", False))
+                        if is_verified:
+                            state["name"] = t_ident["name"]
+                            state["db_id"] = t_ident.get("db_id")
+                            state["role"] = t_ident.get("role", "None")
+                            state["identity_locked"] = True
                         db_id = state.get("db_id")
-                        is_locked = state.get("identity_locked", False)
                         is_processing = track_id in self.processing_tracks
-                    
-                    last_attempt = self.last_rec_attempt.get(track_id, 0)
-                    
-                    # Track-Identity Locking:
-                    # Once ByteTrack assigns a track_id and InsightFace confirms identity
-                    # (cosine similarity >= 0.58 over 3 consecutive frames), that identity is locked.
-                    # Do NOT re-run ArcFace on every frame for already identified tracks!
-                    check_interval = 0.35
-                    if not is_locked and not is_processing and (current_time - last_attempt > check_interval):
-                        self.last_rec_attempt[track_id] = current_time
 
-                        face_img = None
+                    # Fast path: Identity already verified for this active track
+                    if is_verified:
+                        pass
+                    else:
+                        # Recognition path: Run ArcFace only until identity is locked
+                        last_attempt = self.last_rec_attempt.get(track_id, 0)
+                        check_interval = 0.35
+                        if not is_processing and (current_time - last_attempt > check_interval):
+                            self.last_rec_attempt[track_id] = current_time
 
-                        # Compute scale from DETECTION (640x480) to face_source (native camera res)
-                        fs_scale_x = fw / DETECTION_WIDTH
-                        fs_scale_y = fh / DETECTION_HEIGHT
+                            # Compute scale from DETECTION (640x480) to face_source (native camera res)
+                            fs_scale_x = fw / DETECTION_WIDTH
+                            fs_scale_y = fh / DETECTION_HEIGHT
 
-                        # Try precise face crop using YOLO keypoints (nose)
-                        if all_kps is not None and i < len(all_kps) and all_kps[i] is not None:
-                            kp = all_kps[i]
-                            nose = kp[0]
-                            if nose[0] > 0 and nose[1] > 0:
-                                nose_x = int(nose[0] * fs_scale_x)
-                                nose_y = int(nose[1] * fs_scale_y)
-                                det_box_h = y2 - y1
-                                face_size = max(int(det_box_h * fs_scale_y * 0.35), 80)
-                                shift_up = int(face_size * 0.15)
-                                x1f = max(0, nose_x - face_size)
-                                y1f = max(0, nose_y - face_size - shift_up)
-                                x2f = min(fw, nose_x + face_size)
-                                y2f = min(fh, nose_y + face_size - shift_up)
-                                if x2f > x1f and y2f > y1f:
-                                    face_img = face_source[y1f:y2f, x1f:x2f]
-
-                        # Fallback face crop: top 30% of detection bounding box
-                        if face_img is None:
+                            # Extract face crop: top 35% of detection bounding box
                             y1f = int(y1 * fs_scale_y)
                             y2f = int(y1f + (y2 - y1) * fs_scale_y * 0.35)
                             x_margin = int((x2 - x1) * fs_scale_x * 0.10)
                             x1f = max(0, int(x1 * fs_scale_x) - x_margin)
                             x2f = min(fw, int(x2 * fs_scale_x) + x_margin)
-                            if x2f > x1f and y2f > y1f:
-                                face_img = face_source[y1f:y2f, x1f:x2f]
+                            face_crop = face_source[y1f:y2f, x1f:x2f] if (x2f > x1f and y2f > y1f) else None
 
-                        # Extract full body crop for Person Re-ID (appearance embedding)
-                        x1b = max(0, int(x1 * fs_scale_x))
-                        y1b = max(0, int(y1 * fs_scale_y))
-                        x2b = min(fw, int(x2 * fs_scale_x))
-                        y2b = min(fh, int(y2 * fs_scale_y))
-                        body_crop = face_source[y1b:y2b, x1b:x2b] if (x2b > x1b and y2b > y1b) else None
+                            # Quality check: Size > 80x80 for clean ArcFace recognition
+                            is_good_quality = (face_crop is not None and face_crop.shape[0] >= 80 and face_crop.shape[1] >= 80)
 
-                        has_valid_face = face_img is not None and face_img.shape[0] >= 64 and face_img.shape[1] >= 64
-                        has_valid_body = body_crop is not None and body_crop.shape[0] >= 80 and body_crop.shape[1] >= 40
+                            # Extract full body crop for Person Re-ID (appearance embedding)
+                            x1b = max(0, int(x1 * fs_scale_x))
+                            y1b = max(0, int(y1 * fs_scale_y))
+                            x2b = min(fw, int(x2 * fs_scale_x))
+                            y2b = min(fh, int(y2 * fs_scale_y))
+                            body_crop = face_source[y1b:y2b, x1b:x2b] if (x2b > x1b and y2b > y1b) else None
+                            has_valid_body = body_crop is not None and body_crop.shape[0] >= 80 and body_crop.shape[1] >= 40
 
-                        if has_valid_face or has_valid_body:
-                            with self.lock:
-                                self.processing_tracks.add(track_id)
-                            self.recognition_queue.put((
-                                track_id, 
-                                face_img.copy() if has_valid_face else None, 
-                                body_crop.copy() if has_valid_body else None, 
-                                current_zone, 
-                                current_time
-                            ))
+                            if is_good_quality or has_valid_body:
+                                with self.lock:
+                                    self.processing_tracks.add(track_id)
+                                self.recognition_queue.put((
+                                    track_id, 
+                                    face_crop.copy() if is_good_quality else None, 
+                                    body_crop.copy() if has_valid_body else None, 
+                                    current_zone, 
+                                    current_time
+                                ))
                     # Sync presence heartbeat (only for confirmed staff, not customers)
                     with self.lock:
                         last_sync = state.get("last_sync", 0)
@@ -1470,6 +1466,8 @@ class VisionEngine:
                                 self.person_states[tid]["pending_id"] = None
                                 self.person_states[tid]["last_label"] = f"Guest #{tid}"
                                 self.person_states[tid]["last_color"] = "#f97316"
+                                if tid in self.track_identities:
+                                    del self.track_identities[tid]
                         d["label"] = f"Guest #{tid}"
                         d["color"] = "#f97316"
                         d["staff_id"] = None
@@ -1504,6 +1502,7 @@ class VisionEngine:
                                 # Not enough face evidence — skip logging this track
                                 del self.person_states[tid]
                                 if tid in self.recognition_consensus: del self.recognition_consensus[tid]
+                                if tid in self.track_identities: del self.track_identities[tid]
                                 continue
 
                         self.visitor_logged.add(tid)
@@ -1517,6 +1516,7 @@ class VisionEngine:
                     
                     del self.person_states[tid]
                     if tid in self.recognition_consensus: del self.recognition_consensus[tid]
+                    if tid in self.track_identities: del self.track_identities[tid]
 
             self.frame_count += 1
             

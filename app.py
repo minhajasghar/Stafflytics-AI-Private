@@ -389,8 +389,10 @@ class CameraStream:
                     continue
 
             try:
-                grabbed, frame = self.stream.read()
-                if not grabbed or frame is None:
+                # 1. Zero-Buffer Frame Capture:
+                # Dedicated thread continuously runs cap.grab() to ensure YOLO
+                # processes strictly the latest camera frame without latency.
+                if not self.stream.grab():
                     print("[SYSTEM] Camera Signal Lost. Attempting Reconnection...")
                     self.online = False
                     camera_online = False
@@ -401,11 +403,12 @@ class CameraStream:
                     retry_count += 1
                     time.sleep(min(retry_count, 10))
                     continue
+
+                ret, frame = self.stream.retrieve()
+                if not ret or frame is None:
+                    continue
                 
                 retry_count = 0
-                # Drop stale frames so only the freshest frame is passed to inference
-                if hasattr(self, 'stream') and self.stream is not None and self.stream.isOpened():
-                    self.stream.grab()
                 with self.lock:
                     self.frame = frame
                     self.frame_id += 1
