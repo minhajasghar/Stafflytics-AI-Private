@@ -79,20 +79,75 @@ face_rec_lock = threading.Lock()
 # cosine similarity (dot product). Stored in DB via pickle.
 # ---------------------------------------------------------------------------
 _face_app = None
+face_app = None
 _face_models_loaded = False
 _last_ai_error = None
 
-# ArcFace cosine-similarity thresholds (Enterprise Tuned)
-FACE_STAFF_THRESHOLD = 0.58      # Confirmed staff identity threshold (cosine sim >= 0.58)
-FACE_CUSTOMER_THRESHOLD = 0.58   # Confirmed customer identity threshold (cosine sim >= 0.58)
-FACE_STAFF_RELAXED = 0.50        # Relaxed threshold for rapid initial checks
-FACE_CUSTOMER = 0.58             # Backward-compatibility alias
+# ArcFace cosine-similarity thresholds (Calibrated)
+FACE_STAFF_THRESHOLD = 0.42      # Calibrated ArcFace threshold for staff identification (0.42)
+FACE_CUSTOMER_THRESHOLD = 0.50   # Calibrated customer identity threshold
+FACE_STAFF_RELAXED = 0.38        # Relaxed threshold for rapid initial checks
+FACE_CUSTOMER = 0.50             # Backward-compatibility alias
+
+
+def match_staff(query_emb, enrolled_staff_embs, threshold=0.42):
+    """Calibrate ArcFace Cosine Matching for staff identification.
+    
+    Normalizes query and enrolled embeddings and evaluates cosine similarity against threshold=0.42.
+    """
+    if query_emb is None or not enrolled_staff_embs:
+        return "Unknown", -1.0
+    q_norm = np.linalg.norm(query_emb)
+    if q_norm > 0:
+        query_emb = query_emb / q_norm
+    best_id, best_score = None, -1.0
+
+    if isinstance(enrolled_staff_embs, dict):
+        items = enrolled_staff_embs.items()
+    elif isinstance(enrolled_staff_embs, (list, tuple)):
+        items = list(enumerate(enrolled_staff_embs))
+    else:
+        items = []
+
+    for staff_id, db_emb in items:
+        if db_emb is None:
+            continue
+        embs = db_emb if isinstance(db_emb, list) else [db_emb]
+        for emb in embs:
+            e_norm = np.linalg.norm(emb)
+            if e_norm > 0:
+                emb = emb / e_norm
+            score = float(np.dot(query_emb, emb))
+            if score > best_score:
+                best_score = score
+                best_id = staff_id
+
+    if best_score >= threshold and best_id is not None:
+        return best_id, best_score
+    return "Unknown", best_score
+
+
+def extract_head_crop(frame, track_box, head_ratio=0.40):
+    """Crop head/upper body region from YOLO track bounding box for InsightFace.
+    
+    Do NOT pass full body crop to face_app.get(). Slices the top 40% head region
+    so SCRFD detects face inside the zoomed head crop.
+    """
+    if frame is None or frame.size == 0 or track_box is None:
+        return None
+    x1, y1, x2, y2 = map(int, track_box)
+    fh, fw = frame.shape[:2]
+    h = y2 - y1
+    head_y2 = int(y1 + (h * head_ratio))
+    head_crop = frame[max(0, y1):min(fh, head_y2), max(0, x1):min(fw, x2)]
+    return head_crop if head_crop.size > 0 else None
 
 
 def _load_face_models():
     """Load InsightFace models using buffalo_s (idempotent)."""
-    global _face_app, _face_models_loaded, _last_ai_error
+    global _face_app, face_app, _face_models_loaded, _last_ai_error
     if _face_models_loaded and _face_app is not None:
+        face_app = _face_app
         return True
     try:
         from insightface.app import FaceAnalysis
@@ -104,6 +159,7 @@ def _load_face_models():
         )
         _face_app.prepare(ctx_id=-1, det_size=(640, 640), det_thresh=0.35)
         _face_models_loaded = True
+        face_app = _face_app
         print("[AI] InsightFace buffalo_s models loaded (SCRFD + MobileNet ArcFace).")
         return True
     except Exception as e:
@@ -153,7 +209,7 @@ def _get_best_face(bgr):
         return None
 
 
-def _encode_face(bgr, strict=True, face=None):
+def _encode_face(bgr, strict=False, face=None):
     """Detect the largest face in a BGR image and return a normalized 512-d
     ArcFace embedding, or None when no face is found or quality is low."""
     if face is None:
@@ -163,10 +219,10 @@ def _encode_face(bgr, strict=True, face=None):
     
     # Pre-Inference Quality Filters (FIQA)
     if strict:
-        # 1. Minimum Resolution (60x60)
+        # 1. Minimum Resolution (30x30)
         w = face.bbox[2] - face.bbox[0]
         h = face.bbox[3] - face.bbox[1]
-        if w < 60 or h < 60:
+        if w < 30 or h < 30:
             return None
             
         # 2. Blur / Sharpness Check (Laplacian Variance)
@@ -175,7 +231,7 @@ def _encode_face(bgr, strict=True, face=None):
         face_crop = bgr[y1:y2, x1:x2]
         if face_crop.size > 0:
             lap_var = cv2.Laplacian(face_crop, cv2.CV_64F).var()
-            if lap_var < 30.0:
+            if lap_var < 15.0:
                 return None
     
     try:
@@ -527,13 +583,18 @@ class VisionEngine:
                     
                     best_staff_sim = -1.0
                     if known_staff_enc:
-                        staff_sims = _cos_sims(known_staff_enc, face_encodings[0])
-                        best_staff_idx = int(np.argmax(staff_sims))
-                        best_staff_sim = float(staff_sims[best_staff_idx])
+                        # ArcFace Cosine Matching via match_staff (calibrated threshold=0.42)
+                        enrolled_staff_dict = {i: enc for i, enc in enumerate(known_staff_enc)}
+                        matched_idx, best_staff_sim = match_staff(face_encodings[0], enrolled_staff_dict, threshold=FACE_STAFF_THRESHOLD)
+
+                        best_staff_idx = int(np.argmax(_cos_sims(known_staff_enc, face_encodings[0])))
                         s_name = known_staff_meta[best_staff_idx]['name']
                         s_id = known_staff_meta[best_staff_idx]['id']
-                        
-                        if best_staff_sim >= FACE_STAFF_THRESHOLD:
+
+                        if matched_idx != "Unknown":
+                            best_staff_idx = int(matched_idx)
+                            s_name = known_staff_meta[best_staff_idx]['name']
+                            s_id = known_staff_meta[best_staff_idx]['id']
                             print(f"[FACE SCORE] Track #{track_id} -> Staff '{s_name}' (ID {s_id}) Score={best_staff_sim:.4f} (Threshold={FACE_STAFF_THRESHOLD}) -> MATCH ACCEPTED")
                             match_id = s_id
                             match_source = "staff"
@@ -1273,31 +1334,37 @@ class VisionEngine:
                             fs_scale_x = fw / DETECTION_WIDTH
                             fs_scale_y = fh / DETECTION_HEIGHT
 
-                            # Extract face crop: top 35% of detection bounding box
-                            y1f = int(y1 * fs_scale_y)
-                            y2f = int(y1f + (y2 - y1) * fs_scale_y * 0.35)
-                            x_margin = int((x2 - x1) * fs_scale_x * 0.10)
-                            x1f = max(0, int(x1 * fs_scale_x) - x_margin)
-                            x2f = min(fw, int(x2 * fs_scale_x) + x_margin)
-                            face_crop = face_source[y1f:y2f, x1f:x2f] if (x2f > x1f and y2f > y1f) else None
+                            # 1. Crop Head Region for InsightFace (Fixes "Face Not Detected")
+                            # Map YOLO track bounding box to native frame
+                            track_box_native = (
+                                int(x1 * fs_scale_x),
+                                int(y1 * fs_scale_y),
+                                int(x2 * fs_scale_x),
+                                int(y2 * fs_scale_y)
+                            )
+                            x1_orig, y1_orig, x2_orig, y2_orig = map(int, track_box_native)
+                            h_orig = y2_orig - y1_orig
+                            # Focus strictly on the upper body/head (top 40% head region)
+                            head_y2 = int(y1_orig + (h_orig * 0.40))
+                            head_crop = face_source[max(0, y1_orig):min(fh, head_y2), max(0, x1_orig):min(fw, x2_orig)] if (x2_orig > x1_orig and head_y2 > y1_orig) else None
 
-                            # Quality check: Size > 80x80 for clean ArcFace recognition
-                            is_good_quality = (face_crop is not None and face_crop.shape[0] >= 80 and face_crop.shape[1] >= 80)
+                            # Quality check: head crop available for InsightFace
+                            is_good_quality = (head_crop is not None and head_crop.shape[0] >= 30 and head_crop.shape[1] >= 30)
 
                             # Extract full body crop for Person Re-ID (appearance embedding)
-                            x1b = max(0, int(x1 * fs_scale_x))
-                            y1b = max(0, int(y1 * fs_scale_y))
-                            x2b = min(fw, int(x2 * fs_scale_x))
-                            y2b = min(fh, int(y2 * fs_scale_y))
+                            x1b = max(0, x1_orig)
+                            y1b = max(0, y1_orig)
+                            x2b = min(fw, x2_orig)
+                            y2b = min(fh, y2_orig)
                             body_crop = face_source[y1b:y2b, x1b:x2b] if (x2b > x1b and y2b > y1b) else None
-                            has_valid_body = body_crop is not None and body_crop.shape[0] >= 80 and body_crop.shape[1] >= 40
+                            has_valid_body = body_crop is not None and body_crop.shape[0] >= 60 and body_crop.shape[1] >= 30
 
                             if is_good_quality or has_valid_body:
                                 with self.lock:
                                     self.processing_tracks.add(track_id)
                                 self.recognition_queue.put((
                                     track_id, 
-                                    face_crop.copy() if is_good_quality else None, 
+                                    head_crop.copy() if is_good_quality else None, 
                                     body_crop.copy() if has_valid_body else None, 
                                     current_zone, 
                                     current_time
