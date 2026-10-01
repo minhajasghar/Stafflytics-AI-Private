@@ -12,8 +12,8 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
-            --primary: #1e1b4b;
-            --accent: #d97706;
+            --primary: #818cf8;
+            --accent: #fbbf24;
             --bg: #0f172a;
             --surface: #1e293b;
             --text: #f8fafc;
@@ -29,6 +29,21 @@
             justify-content: center;
             height: 100vh;
             overflow: hidden;
+        }
+
+        /* ── Live Wallpaper Canvas ─────────────────────────────────────── */
+        #stafflytics-wallpaper {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;   /* never intercepts clicks */
+            display: block;
+        }
+
+        /* Ensure login card always sits above the canvas */
+        .login-card {
+            position: relative;
+            z-index: 1;
         }
 
         .login-card {
@@ -143,6 +158,8 @@
     </style>
 </head>
 <body>
+    <!-- Live Wallpaper Layer — sits behind everything -->
+    <canvas id="stafflytics-wallpaper" aria-hidden="true"></canvas>
     <div class="login-card">
         <div class="logo" style="margin-bottom: 1.5rem; flex-direction: column; gap: 8px; align-items: center;">
             <div style="width: 84px; height: 84px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center;">
@@ -207,5 +224,8 @@
             }
         }
     </script>
+
+    <!-- Live Wallpaper Engine -->
+    <script src="{{ url_for('static', filename='js/live-wallpaper.js') }}"></script>
 </body>
 </html>
