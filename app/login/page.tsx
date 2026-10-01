@@ -13,7 +13,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import VisionWallpaper from '@/components/VisionWallpaper';
+import VisionTrackingWallpaper from '@/components/VisionTrackingWallpaper';
 import Logo from '@/components/Logo';
 import { Eye, EyeOff, ShieldCheck, ArrowRight, Lock, User } from 'lucide-react';
 
@@ -50,7 +50,7 @@ export default function LoginPage() {
 
     // Simulate authentication check
     setTimeout(() => {
-      if (username === 'admin' || username === 'owner_admin' || username === '') {
+      if (username === 'admin' || username === 'owner_admin' || username === 'minhajasghar' || username === '') {
         window.location.href = '/dashboard';
       } else {
         setErrorMessage('Invalid master security credentials.');
@@ -62,7 +62,7 @@ export default function LoginPage() {
   return (
     <div className="relative min-h-screen bg-[#090D16] text-slate-100 font-sans flex items-center justify-center p-4 overflow-hidden select-none">
       {/* ── Background Vision Wallpaper Layer ──────────────────────────── */}
-      <VisionWallpaper />
+      <VisionTrackingWallpaper targetCount={8} />
 
       {/* ── Glowing Ambient Radial Backdrop Gradient ───────────────────── */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-emerald-500/10 rounded-full blur-[140px] pointer-events-none"></div>

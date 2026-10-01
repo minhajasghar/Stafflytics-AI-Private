@@ -16,7 +16,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import VisionWallpaper from '@/components/VisionWallpaper';
+import VisionTrackingWallpaper from '@/components/VisionTrackingWallpaper';
 import Logo from '@/components/Logo';
 import {
   Monitor,
@@ -144,7 +144,7 @@ export default function DashboardPage() {
   return (
     <div className="relative min-h-screen bg-[#090D16] text-slate-100 font-sans antialiased overflow-x-hidden flex">
       {/* ── Background Vision Wallpaper ───────────────────────────── */}
-      <VisionWallpaper />
+      <VisionTrackingWallpaper targetCount={10} />
 
       {/* ── 1. UNIFIED MONOCHROME SIDEBAR NAVIGATION ──────────────────── */}
       <aside className="w-16 lg:w-20 bg-slate-950/80 backdrop-blur-2xl border-r border-slate-800/80 flex flex-col items-center py-5 flex-shrink-0 z-30 justify-between">

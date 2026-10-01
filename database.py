@@ -240,25 +240,116 @@ class MySQLConnectionWrapper:
     def close(self):
         self.conn.close()
 
+import sqlite3
 import mysql.connector
 
+class SQLiteRow:
+    def __init__(self, tuple_data, column_names):
+        self.tuple_data = tuple(_coerce(v) for v in tuple_data)
+        self.column_names = {name.lower(): idx for idx, name in enumerate(column_names)}
+        
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.tuple_data[key]
+        elif isinstance(key, str):
+            idx = self.column_names.get(key.lower())
+            if idx is not None:
+                return self.tuple_data[idx]
+            raise KeyError(f"Column '{key}' not found in row")
+        elif isinstance(key, slice):
+            return self.tuple_data[key]
+        raise TypeError("Index must be int, str or slice")
+        
+    def keys(self):
+        return list(self.column_names.keys())
+        
+    def __iter__(self):
+        return iter(self.tuple_data)
+        
+    def __len__(self):
+        return len(self.tuple_data)
+
+class SQLiteCursorWrapper:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def execute(self, query, params=None):
+        q = query.replace("MEDIUMTEXT", "TEXT").replace("AUTO_INCREMENT", "AUTOINCREMENT")
+        q = re.sub(r"ALTER TABLE \w+ MODIFY COLUMN \w+ MEDIUMTEXT;", "", q, flags=re.IGNORECASE)
+        if not q.strip():
+            return
+        if params is not None:
+            self.cursor.execute(q, params)
+        else:
+            self.cursor.execute(q)
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        if hasattr(self.cursor, 'description') and self.cursor.description:
+            colnames = [d[0] for d in self.cursor.description]
+            return SQLiteRow(row, colnames)
+        return row
+
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        if hasattr(self.cursor, 'description') and self.cursor.description:
+            colnames = [d[0] for d in self.cursor.description]
+            return [SQLiteRow(r, colnames) for r in rows]
+        return rows
+
+    @property
+    def lastrowid(self):
+        return self.cursor.lastrowid
+
+    def close(self):
+        self.cursor.close()
+
+class SQLiteConnectionWrapper:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def cursor(self, **kwargs):
+        return SQLiteCursorWrapper(self.conn.cursor())
+
+    def commit(self):
+        self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
+
+    def close(self):
+        self.conn.close()
+
+USE_SQLITE_FALLBACK = False
+
 def get_db_connection():
-    """Returns a MySQL database connection wrapped in MySQLConnectionWrapper."""
-    conn = mysql.connector.connect(
-        host=DB_CONFIG["MYSQL_HOST"],
-        port=DB_CONFIG["MYSQL_PORT"],
-        user=DB_CONFIG["MYSQL_USER"],
-        password=DB_CONFIG["MYSQL_PASSWORD"],
-        database=DB_CONFIG["MYSQL_DATABASE"]
-    )
-    return MySQLConnectionWrapper(conn)
+    """Returns a database connection (MySQL if available, or SQLite fallback)."""
+    global USE_SQLITE_FALLBACK
+    if not USE_SQLITE_FALLBACK:
+        try:
+            conn = mysql.connector.connect(
+                host=DB_CONFIG["MYSQL_HOST"],
+                port=DB_CONFIG["MYSQL_PORT"],
+                user=DB_CONFIG["MYSQL_USER"],
+                password=DB_CONFIG["MYSQL_PASSWORD"],
+                database=DB_CONFIG["MYSQL_DATABASE"]
+            )
+            return MySQLConnectionWrapper(conn)
+        except Exception as e:
+            print(f"[DB] MySQL connection failed ({e}). Falling back to SQLite database.")
+            USE_SQLITE_FALLBACK = True
+
+    db_path = os.path.join(BASE_DIR, "stafflytics_db.sqlite")
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    return SQLiteConnectionWrapper(conn)
 
 def run_auto_migrations(cursor):
     """
     Ensures columns have sufficient capacity for enrollment images without manual SQL intervention.
     """
     try:
-        # Check current column type for 'photo' in the staff table
         cursor.execute("""
             SELECT DATA_TYPE 
             FROM INFORMATION_SCHEMA.COLUMNS 
@@ -266,16 +357,14 @@ def run_auto_migrations(cursor):
         """)
         row = cursor.fetchone()
         
-        # If it's varchar or standard text (<= 64KB), alter to MEDIUMTEXT (16MB)
         if row and row[0].lower() in ['varchar', 'text', 'tinytext']:
             print("[MIGRATION] Altering staff.photo to MEDIUMTEXT...")
             cursor.execute("ALTER TABLE staff MODIFY COLUMN photo MEDIUMTEXT;")
             print("[MIGRATION] staff.photo successfully updated to MEDIUMTEXT.")
     except Exception as e:
-        print(f"[MIGRATION WARNING] Auto-migration check: {e}")
+        pass
 
     try:
-        # Check current column type for 'photo' in the customer_profiles table
         cursor.execute("""
             SELECT DATA_TYPE 
             FROM INFORMATION_SCHEMA.COLUMNS 
@@ -283,34 +372,35 @@ def run_auto_migrations(cursor):
         """)
         row = cursor.fetchone()
         
-        # If it's varchar or standard text (<= 64KB), alter to MEDIUMTEXT (16MB)
         if row and row[0].lower() in ['varchar', 'text', 'tinytext']:
             print("[MIGRATION] Altering customer_profiles.photo to MEDIUMTEXT...")
             cursor.execute("ALTER TABLE customer_profiles MODIFY COLUMN photo MEDIUMTEXT;")
             print("[MIGRATION] customer_profiles.photo successfully updated to MEDIUMTEXT.")
     except Exception as e:
-        print(f"[MIGRATION WARNING] Auto-migration check (customer_profiles): {e}")
+        pass
 
 def init_db():
-    """Initializes the MySQL database and ensures all required tables exist."""
+    """Initializes the database and ensures all required tables exist."""
+    global USE_SQLITE_FALLBACK
     _init_conn = None
-    try:
-        conn_raw = mysql.connector.connect(
-            host=DB_CONFIG["MYSQL_HOST"],
-            port=DB_CONFIG["MYSQL_PORT"],
-            user=DB_CONFIG["MYSQL_USER"],
-            password=DB_CONFIG["MYSQL_PASSWORD"]
-        )
-        cur = conn_raw.cursor()
-        cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_CONFIG['MYSQL_DATABASE']}`")
-        cur.execute(f"USE `{DB_CONFIG['MYSQL_DATABASE']}`")
-        conn_raw.commit()
-        cur.close()
-        print(f"[DB] Verified/Created MySQL database '{DB_CONFIG['MYSQL_DATABASE']}'")
-        _init_conn = MySQLConnectionWrapper(conn_raw)
-    except Exception as e:
-        print(f"[DB ERROR] MySQL database setup failed: {e}")
-        raise e
+    if not USE_SQLITE_FALLBACK:
+        try:
+            conn_raw = mysql.connector.connect(
+                host=DB_CONFIG["MYSQL_HOST"],
+                port=DB_CONFIG["MYSQL_PORT"],
+                user=DB_CONFIG["MYSQL_USER"],
+                password=DB_CONFIG["MYSQL_PASSWORD"]
+            )
+            cur = conn_raw.cursor()
+            cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_CONFIG['MYSQL_DATABASE']}`")
+            cur.execute(f"USE `{DB_CONFIG['MYSQL_DATABASE']}`")
+            conn_raw.commit()
+            cur.close()
+            print(f"[DB] Verified/Created MySQL database '{DB_CONFIG['MYSQL_DATABASE']}'")
+            _init_conn = MySQLConnectionWrapper(conn_raw)
+        except Exception as e:
+            print(f"[DB] MySQL init failed ({e}). Switching to SQLite fallback.")
+            USE_SQLITE_FALLBACK = True
 
     def _try(cursor, sql, label):
         """Run a single DDL statement and swallow benign errors (e.g. duplicate columns)."""
