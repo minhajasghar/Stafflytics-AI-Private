@@ -17,10 +17,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('PTZ-ONVIF')
 
 # Default Camera Settings
-CAMERA_IP   = "192.168.50.251"
-CAMERA_PORT = "80"
-CAMERA_USER = "admin"
-CAMERA_PASS = "L2DD2594"
+# NOTE: this relay runs ON the Edge PC (100.93.176.107) and reaches the
+# physical camera over the local LAN, so CAMERA_IP stays the camera's LAN IP.
+CAMERA_IP   = os.environ.get("CAMERA_IP", "192.168.50.251").strip()
+CAMERA_PORT = os.environ.get("CAMERA_PORT", "80").strip()
+CAMERA_USER = os.environ.get("CAMERA_USER", "admin").strip()
+CAMERA_PASS = os.environ.get("CAMERA_PASS", "L2DD2594").strip()
 
 # Cache ONVIF ProfileToken & Clock Offset
 _onvif_profile_token = None
@@ -119,22 +121,30 @@ def get_profile_token():
     return _onvif_profile_token
 
 
+@app.route('/', methods=['POST', 'GET'])
 @app.route('/ptz', methods=['POST', 'GET'])
 def ptz_relay():
-    action = request.args.get('action', '')
-    code = request.args.get('code', '')
+    action = request.args.get('action', '') or request.form.get('action', '')
+    code = request.args.get('code', '') or request.form.get('code', '')
 
     try:
         token = get_profile_token()
         
         pan_speed = 0.0
         tilt_speed = 0.0
+        zoom_speed = 0.0
         speed_scalar = 0.5  # Adjust between 0.1 and 1.0
         
         if code == 'Up': tilt_speed = speed_scalar
         elif code == 'Down': tilt_speed = -speed_scalar
         elif code == 'Left': pan_speed = -speed_scalar
         elif code == 'Right': pan_speed = speed_scalar
+        elif code == 'UpLeft': tilt_speed = speed_scalar; pan_speed = -speed_scalar
+        elif code == 'UpRight': tilt_speed = speed_scalar; pan_speed = speed_scalar
+        elif code == 'DownLeft': tilt_speed = -speed_scalar; pan_speed = -speed_scalar
+        elif code == 'DownRight': tilt_speed = -speed_scalar; pan_speed = speed_scalar
+        elif code == 'ZoomIn': zoom_speed = speed_scalar
+        elif code == 'ZoomOut': zoom_speed = -speed_scalar
         
         if action == 'start':
             body = f"""
@@ -142,6 +152,7 @@ def ptz_relay():
                 <ProfileToken>{token}</ProfileToken>
                 <Velocity>
                     <PanTilt xmlns="http://www.onvif.org/ver10/schema" x="{pan_speed}" y="{tilt_speed}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace"/>
+                    <Zoom xmlns="http://www.onvif.org/ver10/schema" x="{zoom_speed}" space="http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace"/>
                 </Velocity>
             </ContinuousMove>
             """

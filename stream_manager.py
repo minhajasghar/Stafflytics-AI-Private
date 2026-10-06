@@ -32,7 +32,7 @@ CAMERA_SOURCE_MODE = os.environ.get("CAMERA_SOURCE_MODE", "remote_rtsp").strip()
 if CAMERA_SOURCE_MODE == "imou":
     print("[STREAM MANAGER] 'imou' mode is disabled — forcing remote_rtsp.")
     CAMERA_SOURCE_MODE = "remote_rtsp"
-REMOTE_RTSP_URL    = os.environ.get("REMOTE_RTSP_URL", "").strip()
+REMOTE_RTSP_URL    = os.environ.get("REMOTE_RTSP_URL", "rtsp://100.93.176.107:8554/cam").strip()
 
 # Internal runtime mode (may be overridden by setup_* helpers at runtime).
 STREAM_MODE = CAMERA_SOURCE_MODE

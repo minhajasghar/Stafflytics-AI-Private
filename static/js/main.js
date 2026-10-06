@@ -474,10 +474,11 @@ async function diagnosePtz() {
         });
         alert('PTZ Diagnosis (generated ' + d.generated + ')\n\n' +
             lines.join('\n\n') +
-            '\n\nREACHABLE = server can open a TCP connection to the camera.\n' +
-            'CGI 200 = camera responds to PTZ commands. If the physical camera ' +
-            '(192.168.x.x) shows UNREACHABLE, approve the subnet route in the ' +
-            'Tailscale admin console and run "tailscale up --accept-routes" on this server.');
+            '\n\nREACHABLE = server can open a TCP connection to the target host.\n' +
+            'Primary route: VPS backend -> PTZ Relay on Edge PC (100.93.176.107:5003).\n' +
+            'If the PTZ relay shows UNREACHABLE, ensure the Edge PC is connected to ' +
+            'Tailscale and ptz_relay.py is running. Physical camera (192.168.50.251) ' +
+            'is contacted directly by the relay service on the Edge PC LAN.');
         st.style.display = 'none';
     } catch (e) {
         show('PTZ diagnosis failed', 'rgba(239,68,68,0.9)');

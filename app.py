@@ -117,7 +117,8 @@ camera_stream = None  # AI stream: cam_ai (H.264 640x480) — used by YOLO/visio
 display_stream = None # Display stream: cam (full HD relay) — used by video_feed
 
 # RTSP Camera Configuration
-_DEFAULT_PHYSICAL_RTSP_URL = "rtsp://admin:L2DD2594@192.168.50.251:554/cam/realmonitor?channel=1&subtype=0"
+EDGE_PC_IP = os.environ.get("EDGE_PC_IP", "100.93.176.107").strip()
+_DEFAULT_PHYSICAL_RTSP_URL = f"rtsp://admin:L2DD2594@{EDGE_PC_IP}:554/cam/realmonitor?channel=1&subtype=0"
 PHYSICAL_RTSP_URL = _DEFAULT_PHYSICAL_RTSP_URL
 RTSP_URL = "rtsp://127.0.0.1:8554/cam"   # AI stream: using /cam directly since WebRTC confirms it works
 DISPLAY_RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Display stream: full HD relay
@@ -757,17 +758,18 @@ def webrtc_status():
     })
 
 @app.route('/api/webrtc/whep', methods=['POST', 'OPTIONS'])
+@app.route('/api/whep', methods=['POST', 'OPTIONS'])
 @login_required
 def webrtc_whep_proxy():
-    """Proxy the WHEP SDP offer/answer exchange to MediaMTX.
+    """Proxy the WHEP SDP offer/answer exchange to MediaMTX on Edge PC.
 
     Tries in order:
-    1) 127.0.0.1:8889 — VPS-local MediaMTX (stream_manager manages this)
-    2) <remote_tailscale_host>:8889 — the Tailscale peer running MediaMTX
-       (parsed from REMOTE_RTSP_URL / the saved DB camera URL)
+    1) Edge PC Tailscale IP (100.93.176.107:8889/cam/whep or /cam_raw/whep)
+    2) <remote_tailscale_host>:8889 — parsed from REMOTE_RTSP_URL / saved DB camera URL
+    3) 127.0.0.1:8889 — VPS-local MediaMTX fallback
 
-    This avoids exposing port 8889 publicly and fixes mixed-content blocks
-    when the site is served over HTTPS.
+    This ensures the client browser calls VPS backend proxy instead of edge IP directly,
+    fixing CORS and mixed-content issues over HTTPS.
     """
     if request.method == 'OPTIONS':
         resp = Response('', status=204)
@@ -780,16 +782,14 @@ def webrtc_whep_proxy():
     if not sdp_offer:
         return jsonify({"error": "No SDP offer provided"}), 400
 
-    # Build list of MediaMTX hosts to try: local first, then the Tailscale peer
-    mediamtx_hosts = ['127.0.0.1']
+    # Build list of MediaMTX hosts to try: Edge PC first, then saved host, then local
+    mediamtx_hosts = [EDGE_PC_IP]
     try:
         import stream_manager
         remote_url = stream_manager.REMOTE_RTSP_URL
         if not remote_url:
-            # Fall back to the RTSP URL saved in the database
             remote_url = database.get_system_settings().get('rtsp_url', '')
         if remote_url:
-            # Parse host out of rtsp://[user:pass@]host[:port]/path
             m = re.match(r'rtsp://(?:[^@]+@)?([^:/]+)', remote_url)
             if m:
                 tailscale_host = m.group(1)
@@ -798,26 +798,32 @@ def webrtc_whep_proxy():
     except Exception as e:
         print(f"[WHEP PROXY] Could not resolve remote host: {e}")
 
+    if '127.0.0.1' not in mediamtx_hosts:
+        mediamtx_hosts.append('127.0.0.1')
+
+    whep_paths = ['/cam/whep', '/cam_raw/whep']
     last_err = None
+
     for host in mediamtx_hosts:
-        whep_url = f'http://{host}:8889/cam/whep'
-        try:
-            r = requests.post(
-                whep_url,
-                data=sdp_offer,
-                headers={'Content-Type': 'application/sdp'},
-                timeout=8
-            )
-            if r.ok:
-                print(f"[WHEP PROXY] Success via {host}")
-                resp = Response(r.text, status=r.status_code, mimetype='application/sdp')
-                resp.headers['Access-Control-Allow-Origin'] = '*'
-                return resp
-            print(f"[WHEP PROXY] {host} returned {r.status_code}: {r.text[:100]}")
-            last_err = f"HTTP {r.status_code} from {host}"
-        except Exception as e:
-            print(f"[WHEP PROXY] {host} unreachable: {e}")
-            last_err = str(e)
+        for path in whep_paths:
+            whep_url = f'http://{host}:8889{path}'
+            try:
+                r = requests.post(
+                    whep_url,
+                    data=sdp_offer,
+                    headers={'Content-Type': 'application/sdp'},
+                    timeout=8
+                )
+                if r.ok:
+                    print(f"[WHEP PROXY] Success via {whep_url}")
+                    resp = Response(r.text, status=r.status_code, mimetype='application/sdp')
+                    resp.headers['Access-Control-Allow-Origin'] = '*'
+                    return resp
+                print(f"[WHEP PROXY] {whep_url} returned {r.status_code}: {r.text[:100]}")
+                last_err = f"HTTP {r.status_code} from {whep_url}"
+            except Exception as e:
+                print(f"[WHEP PROXY] {whep_url} unreachable: {e}")
+                last_err = str(e)
 
     print(f"[WHEP PROXY] All hosts failed. Last error: {last_err}")
     return jsonify({"error": last_err or "MediaMTX unreachable"}), 502
@@ -1172,10 +1178,25 @@ def _get_onvif_connection():
     return None, None
 
 def _ptz_send(direction, action):
-    """Send a PTZ command via ONVIF with a CGI fallback, targeting the active
-    camera source (the remote RTSP host on the VPS, not a hardcoded local IP).
-    The Imou Open Platform API is NOT used."""
-    # --- ONVIF with CGI fallback ---
+    """Route Pan/Tilt/Zoom commands from VPS backend to PTZ Relay Server on Edge PC
+    at http://100.93.176.107:5003/ (and /ptz), with fallbacks to ONVIF & CGI."""
+    edge_ip = os.environ.get("EDGE_PC_IP", "100.93.176.107").strip()
+
+    # 1. Primary: PTZ Relay Server on Edge PC (http://100.93.176.107:5003/)
+    relay_urls = [
+        f"http://{edge_ip}:5003/ptz?action={action}&code={direction}",
+        f"http://{edge_ip}:5003/?action={action}&code={direction}"
+    ]
+    for url in relay_urls:
+        try:
+            r = requests.get(url, timeout=3)
+            print(f"[PTZ-RELAY] {url} -> status={r.status_code}")
+            if r.ok or 'OK' in r.text:
+                return True, ""
+        except Exception as e:
+            print(f"[PTZ-RELAY] {url} unreachable: {e}")
+
+    # 2. Fallback: Direct ONVIF connection to camera
     ptz, profile = _get_onvif_connection()
     if ptz and profile:
         try:
@@ -1205,6 +1226,7 @@ def _ptz_send(direction, action):
             _onvif_cache["ptz"] = None
             _onvif_cache["profile"] = None
 
+    # 3. Fallback: CGI endpoints
     last_err = ""
     for ip, user, pwd, _ in _camera_targets():
         for http_port in ['5003', '80', '8080']:
@@ -1228,7 +1250,7 @@ def _ptz_send(direction, action):
                         last_err = str(e)[:100]
                         continue
 
-    return False, f"ONVIF unavailable, CGI failed: {last_err}"
+    return False, f"PTZ relay on {edge_ip}:5003 and ONVIF/CGI failed: {last_err}"
 
 @app.route('/api/camera/ptz', methods=['POST'])
 @login_required
