@@ -414,6 +414,7 @@ class VisionEngine:
         self.last_activity_sync = time.time()
         self.visitor_logged = set() # track_ids that have been logged to visitor_log
         self.dwell_buffer = [] # (detection, timestamp) for persistence when YOLO briefly misses
+        self.latest_detections = []  # Most recent detections list — read by video_feed MJPEG overlay
         
         # Corridor Passage Counters (Left-to-Right and Right-to-Left)
         self.passage_counts = {"l_to_r": 0, "r_to_l": 0}

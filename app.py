@@ -477,6 +477,9 @@ def vision_engine_loop():
             th = camera_height or 480
             raw_frame, detections = engine.process_frame(frame, target_size=(tw, th), original_frame=frame)
             
+            # Persist latest detections on the engine so video_feed MJPEG overlay can draw boxes
+            engine.latest_detections = detections
+
             with processed_frame_lock:
                 latest_processed_frame = raw_frame.copy() if raw_frame is not None else None
             
