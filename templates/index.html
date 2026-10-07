@@ -112,6 +112,11 @@
                             <span class="webrtc-pulse-dot" id="webrtc-status-dot" style="width:8px; height:8px; background:#94a3b8; border-radius:50%; display:inline-block;"></span>
                             <span id="webrtc-status-text">Checking...</span>
                         </div>
+                        <!-- AI Status Badge Overlay -->
+                        <div id="ai-status-overlay" style="position:absolute; top:15px; right:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s;">
+                            <span class="webrtc-pulse-dot" id="ai-status-dot" style="width:8px; height:8px; background:#3b82f6; border-radius:50%; display:inline-block;"></span>
+                            <span id="ai-status-text">AI Initializing...</span>
+                        </div>
                         <!-- AI Detection Canvas Overlay (Z-index high but click-through) -->
                         <canvas id="detection-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:5;"></canvas>
                         <canvas id="zone-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none;"></canvas>
@@ -612,6 +617,34 @@
                 }
             }, 100);
         }
+
+        async function updateAiStatusIndicator() {
+            try {
+                const res = await fetch('/api/ai_status?t=' + Date.now());
+                if (!res.ok) return;
+                const data = await res.json();
+                const dot = document.getElementById('ai-status-dot');
+                const text = document.getElementById('ai-status-text');
+                if (!dot || !text) return;
+
+                if (data.model_loading_active) {
+                    text.innerText = 'AI Model Loading...';
+                    dot.style.background = '#eab308';
+                } else if (!data.model_loaded) {
+                    text.innerText = 'AI Model Offline';
+                    dot.style.background = '#ef4444';
+                } else if (!data.camera_online) {
+                    text.innerText = 'AI Camera Syncing...';
+                    dot.style.background = '#f97316';
+                } else {
+                    const count = data.active_detections || 0;
+                    text.innerText = count > 0 ? `AI Active (${count} detected)` : 'AI Vision Active';
+                    dot.style.background = '#22c55e';
+                }
+            } catch (e) {}
+        }
+        setInterval(updateAiStatusIndicator, 3000);
+        updateAiStatusIndicator();
 
         // The detection canvas fills the whole wrapper, but the <video> uses
         // object-fit:contain, so the visible picture is a letterboxed/pillarboxed

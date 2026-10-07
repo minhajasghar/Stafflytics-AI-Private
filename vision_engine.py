@@ -16,7 +16,11 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "2"
 os.environ["NUMEXPR_NUM_THREADS"] = "2"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-YOLO_MODEL_PATH = os.path.join(BASE_DIR, "models", "yolov8n.onnx")
+# Check root directory first (where yolov8n.onnx and yolov8n.pt are located), then models/ subfolder
+YOLO_MODEL_PATH = os.path.join(BASE_DIR, "yolov8n.onnx")
+if not os.path.exists(YOLO_MODEL_PATH):
+    YOLO_MODEL_PATH = os.path.join(BASE_DIR, "models", "yolov8n.onnx")
+
 TRACKER_PATH = os.path.join(BASE_DIR, "custom_bytetrack.yaml")
 
 # YOLO and face_recognition moved inside for lazy loading
@@ -40,26 +44,36 @@ def _start_model_load():
         try:
             from ultralytics import YOLO
             import torch
-            print(f"[AI] Attempting to load YOLO model from: {YOLO_MODEL_PATH}")
+
             device = 'cpu' if not torch.cuda.is_available() else 0
-            if os.path.exists(YOLO_MODEL_PATH):
-                model = YOLO(YOLO_MODEL_PATH, task='detect')
+
+            # Candidate model paths to probe in order of preference
+            onnx_candidates = [
+                os.path.join(BASE_DIR, "yolov8n.onnx"),
+                os.path.join(BASE_DIR, "models", "yolov8n.onnx"),
+                "yolov8n.onnx"
+            ]
+            pt_candidates = [
+                os.path.join(BASE_DIR, "yolov8n.pt"),
+                os.path.join(BASE_DIR, "models", "yolov8n.pt"),
+                "yolov8n.pt"
+            ]
+
+            target_onnx = next((p for p in onnx_candidates if os.path.exists(p)), None)
+            target_pt = next((p for p in pt_candidates if os.path.exists(p)), None)
+
+            if target_onnx:
+                print(f"[AI] Loading ONNX YOLO model from: {target_onnx}")
+                model = YOLO(target_onnx, task='detect')
+            elif target_pt:
+                print(f"[AI] Loading PyTorch YOLO model from: {target_pt}")
+                model = YOLO(target_pt, task='detect')
+                model.to(device)
             else:
-                pt_path = os.path.join(BASE_DIR, "models", "yolov8n.pt")
-                if not os.path.exists(pt_path):
-                    pt_path = "yolov8n.pt"
-                try:
-                    print(f"[AI] ONNX model not found at {YOLO_MODEL_PATH}. Exporting {pt_path} to ONNX format...")
-                    pt_model = YOLO(pt_path)
-                    pt_model.export(format="onnx")
-                    if os.path.exists(YOLO_MODEL_PATH):
-                        model = YOLO(YOLO_MODEL_PATH, task='detect')
-                    else:
-                        model = pt_model
-                except Exception as ex_export:
-                    print(f"[AI WARNING] ONNX export failed ({ex_export}), using PyTorch model fallback.")
-                    model = YOLO(pt_path, task='detect')
-                    model.to(device)
+                print(f"[AI WARNING] No local model file found. Falling back to default 'yolov8n.pt'")
+                model = YOLO("yolov8n.pt", task='detect')
+                model.to(device)
+
             print(f"[AI] Background Model Load Complete. Running on {device}")
         except Exception as e:
             import traceback

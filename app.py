@@ -110,6 +110,37 @@ def detection_poll():
     global last_detection_payload
     return Response(last_detection_payload, mimetype='application/json')
 
+@app.route('/api/ai_status', methods=['GET'])
+def ai_status():
+    """Diagnostic endpoint to check the live status of the AI vision pipeline."""
+    import vision_engine
+    import stream_manager
+    model_loaded = vision_engine.model is not None
+    model_loading = getattr(vision_engine, 'model_loading_active', False)
+    cam_online = camera_stream.online if camera_stream is not None else False
+    disp_online = display_stream.online if display_stream is not None else False
+    
+    last_payload = {}
+    try:
+        last_payload = json.loads(last_detection_payload)
+    except:
+        pass
+        
+    det_count = len(last_payload.get('detections', []))
+    
+    return jsonify({
+        "status": "online" if (model_loaded and cam_online) else "degraded",
+        "model_loaded": model_loaded,
+        "model_loading_active": model_loading,
+        "engine_initialized": engine is not None,
+        "camera_online": cam_online,
+        "display_stream_online": disp_online,
+        "websocket_clients": len(websocket_clients),
+        "stream_mode": getattr(stream_manager, 'STREAM_MODE', 'unknown'),
+        "rtsp_url": RTSP_URL,
+        "active_detections": det_count
+    })
+
 
 # Initialize database & Mailer
 engine = None         # Initialized asynchronously
@@ -270,6 +301,11 @@ class CameraStream:
 
             # 1) ALWAYS try the user's exact URL first (most important!)
             rtsp_variants.append(active_url)
+
+            if "localhost" in active_url or "127.0.0.1" in active_url:
+                local_alt = "rtsp://127.0.0.1:8554/cam_ai" if "/cam_ai" not in active_url else "rtsp://127.0.0.1:8554/cam"
+                if local_alt not in rtsp_variants:
+                    rtsp_variants.append(local_alt)
 
             # Only try camera-specific fallbacks if connecting to a remote camera directly
             if "localhost" not in active_url and "127.0.0.1" not in active_url:
