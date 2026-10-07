@@ -1009,18 +1009,31 @@ html { overflow-x: hidden; }
     .main-content {
         height: auto;
         padding: 0.75rem;
-        padding-bottom: calc(64px + 1.25rem);
+        padding-bottom: calc(64px + 6rem + env(safe-area-inset-bottom, 0px));
         gap: 1rem;
         overflow-y: visible;
     }
 
     .analytics-ticker {
-        height: 32px;
+        height: 36px;
         border-radius: 16px;
-        position: sticky;
-        top: 0;
+        position: relative;
     }
-    .ticker-item { font-size: 0.7rem; }
+    .ticker-item { font-size: 0.72rem; }
+
+    .view-section::after {
+        content: '';
+        display: block;
+        height: calc(64px + 4rem + env(safe-area-inset-bottom, 0px));
+        width: 100%;
+        flex-shrink: 0;
+    }
+
+    .monitor-scroll-spacer {
+        height: calc(64px + 4rem + env(safe-area-inset-bottom, 0px));
+        width: 100%;
+        flex-shrink: 0;
+    }
 
     /* --- Mobile bottom navigation bar --- */
     .mobile-bottom-nav {
@@ -1029,7 +1042,8 @@ html { overflow-x: hidden; }
         bottom: 0;
         left: 0;
         right: 0;
-        height: 64px;
+        height: calc(64px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: env(safe-area-inset-bottom, 0px);
         background: var(--surface);
         border-top: 1px solid var(--border);
         z-index: 1000;
@@ -1048,7 +1062,7 @@ html { overflow-x: hidden; }
     .mobile-bottom-nav .nav-item {
         flex: 0 0 20vw;
         width: 20vw;
-        height: 100%;
+        height: 64px;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -1080,7 +1094,7 @@ html { overflow-x: hidden; }
         border-left: none;
         border-top: 1px solid var(--border);
         padding: 1rem;
-        padding-bottom: calc(64px + 1rem); /* Space for bottom nav */
+        padding-bottom: calc(64px + 6rem + env(safe-area-inset-bottom, 0px)) !important; /* Generous space for bottom nav + FABs */
     }
 
     /* --- Top bar adjustments --- */
