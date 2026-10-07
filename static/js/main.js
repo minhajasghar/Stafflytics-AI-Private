@@ -89,6 +89,13 @@ function handleNavClick(element) {
     const targetId = sectionMap[title];
     if (targetId) {
         document.getElementById(targetId).classList.remove('hidden');
+        if (targetId === 'section-monitor') {
+            const rtc = document.getElementById('webrtc-video');
+            const hls = document.getElementById('hls-video');
+            if (rtc && rtc.style.display !== 'none' && rtc.paused) rtc.play().catch(() => {});
+            if (hls && hls.style.display !== 'none' && hls.paused) hls.play().catch(() => {});
+            if (typeof resizeCanvas === 'function') setTimeout(resizeCanvas, 50);
+        }
         if (targetId === 'section-staff') loadStaffDirectory();
         if (targetId === 'section-reporting') loadAttendanceReports();
         if (targetId === 'section-analytics') {
@@ -598,9 +605,6 @@ async function fetchStatus() {
         const data = await res.json();
         
         const splash = document.getElementById('init-splash');
-        const statusText = document.getElementById('init-status-text');
-        
-        if (data.init_status && statusText) statusText.innerText = data.init_status;
         
         if (data.initializing) {
             // Keep splash
@@ -633,6 +637,8 @@ async function fetchStatus() {
                 document.getElementById('stat-rtl').innerText = data.passage.r_to_l;
             }
         }
+
+        updateAnalyticsTicker(data);
         
         // Update Roster
         if (data.roster) renderShiftRoster(data.roster);
@@ -704,6 +710,26 @@ function acknowledgeAlert() {
     if (overlay) overlay.classList.add('hidden');
     if (audio) audio.pause();
     if (window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+function updateAnalyticsTicker(data) {
+    const track = document.getElementById('analytics-ticker-track');
+    if (!track || !data) return;
+    const items = [
+        ['fa-users-viewfinder', 'Active Staff', data.count ?? 0],
+        ['fa-clock', 'Customers Today', data.today_customers ?? 0],
+        ['fa-hourglass-half', 'Customer Minutes', data.today_customer_minutes ?? 0],
+        ['fa-arrow-right', 'Corridor L → R', data.passage?.l_to_r ?? 0],
+        ['fa-arrow-left', 'Corridor R → L', data.passage?.r_to_l ?? 0],
+        ['fa-bolt', 'Team Efficiency', `${data.avg_efficiency ?? 0}%`],
+        ['fa-crown', 'Repeat Visitors', data.repeat_customers ?? 0],
+        ['fa-shield-halved', 'Alerts', data.incidents_today ?? 0],
+        ['fa-users', 'Monthly Traffic', data.monthly_customers ?? 0]
+    ];
+    const html = items.map(([icon, label, value]) =>
+        `<span class="ticker-item"><i class="fas ${icon}"></i>${label}: <strong>${value}</strong></span>`
+    ).join('');
+    track.innerHTML = html + html;
 }
 
 function skipInitialization() {
@@ -1301,6 +1327,7 @@ if (canvas) {
 
 document.addEventListener('DOMContentLoaded', () => {
     updateClock(); setInterval(updateClock, 1000);
+    fetchStatus();
     setInterval(fetchStatus, 1500);
     setInterval(loadAttendanceReports, 10000);
     

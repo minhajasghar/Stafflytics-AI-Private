@@ -62,13 +62,13 @@ def _start_model_load():
             target_onnx = next((p for p in onnx_candidates if os.path.exists(p)), None)
             target_pt = next((p for p in pt_candidates if os.path.exists(p)), None)
 
-            if target_onnx:
-                print(f"[AI] Loading ONNX YOLO model from: {target_onnx}")
-                model = YOLO(target_onnx, task='detect')
-            elif target_pt:
+            if target_pt:
                 print(f"[AI] Loading PyTorch YOLO model from: {target_pt}")
                 model = YOLO(target_pt, task='detect')
                 model.to(device)
+            elif target_onnx:
+                print(f"[AI] Loading ONNX YOLO model from: {target_onnx}")
+                model = YOLO(target_onnx, task='detect')
             else:
                 print(f"[AI WARNING] No local model file found. Falling back to default 'yolov8n.pt'")
                 model = YOLO("yolov8n.pt", task='detect')
@@ -1175,7 +1175,8 @@ class VisionEngine:
                     results = None
             
             num_boxes = len(results[0].boxes) if results and len(results) > 0 and results[0].boxes is not None else 0
-            print(f"[VISION DEBUG] Raw YOLO detections: {num_boxes}")
+            if self.frame_count % 90 == 0:
+                print(f"[VISION DEBUG] Raw YOLO detections: {num_boxes}")
             
             if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
                 raw_boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -1571,21 +1572,15 @@ class VisionEngine:
                     # (>= 5 seconds). Prevents brief detections / shadows from inflating counts.
                     if tid not in self.visitor_logged:
                         state = self.person_states[tid]
-                        track_lifetime = current_time - state.get("last_sync", current_time - 999)
+                        track_lifetime = current_time - state.get("first_seen", current_time)
                         db_id = state.get("db_id")
                         zone = state.get("zone", "Main Hall")
 
-                        # For unknown anonymous faces: require at least 20 "Unknown" consensus
-                        # votes so a face was genuinely detected and failed to match (not a shadow).
-                        if db_id is None:
-                            consensus = self.recognition_consensus.get(tid, [])
-                            unknown_votes = consensus.count("Unknown")
-                            if unknown_votes < 15:
-                                # Not enough face evidence — skip logging this track
-                                del self.person_states[tid]
-                                if tid in self.recognition_consensus: del self.recognition_consensus[tid]
-                                if tid in self.track_identities: del self.track_identities[tid]
-                                continue
+                        if track_lifetime < 5:
+                            del self.person_states[tid]
+                            if tid in self.recognition_consensus: del self.recognition_consensus[tid]
+                            if tid in self.track_identities: del self.track_identities[tid]
+                            continue
 
                         self.visitor_logged.add(tid)
                         if db_id and not str(db_id).startswith("C_"):

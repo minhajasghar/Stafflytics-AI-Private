@@ -60,9 +60,11 @@ body {
 /* Layout */
 .dashboard {
     display: grid;
-    grid-template-columns: 80px 1fr 350px;
+    grid-template-columns: 80px minmax(0, 1fr) minmax(240px, 320px);
     height: 100vh;
-    width: 100vw;
+    height: 100dvh;
+    width: 100%;
+    max-width: 100vw;
     overflow: hidden;
 }
 
@@ -135,6 +137,7 @@ body {
     background: var(--bg);
     padding: var(--section-gap);
     height: 100vh;
+    height: 100dvh;
     overflow-y: auto;
     overflow-x: hidden;
     min-width: 0; 
@@ -160,14 +163,95 @@ body {
     flex: 1;
     min-height: 0;
     max-width: none;
-    gap: 0;
+    gap: 0.75rem;
     padding: 0;
+}
+
+.monitor-scroll-spacer {
+    height: 1.5rem;
+    width: 100%;
+    flex-shrink: 0;
+}
+
+.analytics-ticker {
+    position: relative;
+    z-index: 50;
+    overflow: hidden;
+    background: var(--surface);
+    color: var(--text);
+    height: 44px;
+    display: flex;
+    align-items: center;
+    border-radius: 16px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.06);
+    backdrop-filter: blur(12px);
+    mask-image: linear-gradient(90deg, transparent 0%, #000 3%, #000 97%, transparent 100%);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 3%, #000 97%, transparent 100%);
+}
+
+.analytics-ticker-track {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    white-space: nowrap;
+    width: max-content;
+    animation: ticker-rtl 28s linear infinite;
+    padding-left: 1rem;
+}
+
+.analytics-ticker-track:hover {
+    animation-play-state: paused;
+}
+
+.ticker-item {
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--nav-hover);
+    padding: 6px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    transition: transform 0.2s, background 0.2s;
+}
+
+.ticker-item:hover {
+    transform: translateY(-1px);
+    background: var(--bg);
+}
+
+.ticker-item i {
+    color: var(--accent);
+    font-size: 0.85rem;
+}
+
+.ticker-item strong {
+    font-weight: 800;
+    color: var(--primary);
+}
+
+@keyframes ticker-rtl {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+}
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.5rem;
+    margin-bottom: var(--section-gap);
 }
 
 .top-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .top-bar h1 {
@@ -188,6 +272,7 @@ body {
     flex-direction: column;
     width: 100%;
     aspect-ratio: 16 / 9;
+    max-height: min(62vh, calc(100dvh - 280px));
     flex-shrink: 0;
     margin-bottom: 1rem;
 }
@@ -196,6 +281,8 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
     padding: 12px 16px;
     background: rgba(0,0,0,0.7);
     color: white;
@@ -247,7 +334,7 @@ body {
 
 .stats-bar {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 1.5rem;
 }
 
@@ -261,6 +348,12 @@ body {
     gap: 1.25rem;
     border: 1px solid rgba(0,0,0,0.02);
     transition: 0.3s;
+    min-width: 0;
+}
+
+.stat-info {
+    min-width: 0;
+    overflow: hidden;
 }
 
 .stat-pill:hover {
@@ -339,6 +432,8 @@ body {
     gap: var(--section-gap);
     overflow-y: auto;
     height: 100vh;
+    height: 100dvh;
+    min-width: 0;
 }
 
 .right-monitor .section {
@@ -719,7 +814,10 @@ input:focus {
 .camera-canvas:fullscreen {
     border-radius: 0;
     border: none;
-    max-height: none;
+    max-height: none !important;
+    width: 100%;
+    height: 100%;
+    aspect-ratio: auto;
 }
 .camera-canvas:fullscreen .video-wrapper {
     height: calc(100vh - 60px);
@@ -822,25 +920,56 @@ input:focus {
 
 
 /* ===========================================================================
-   Laptop responsiveness — 1440px and 1366px
+   Laptop responsiveness — 1440px, 1366px, and 1280px
    =========================================================================== */
 @media (max-width: 1440px) {
     .dashboard {
-        grid-template-columns: 75px 1fr 260px;
+        grid-template-columns: 72px minmax(0, 1fr) minmax(210px, 260px);
         height: 100vh;
+        height: 100dvh;
         overflow: hidden;
     }
-    #analytics-grid { grid-template-columns: repeat(2, 1fr) !important; }
+    .main-content { padding: 1rem; gap: 1rem; }
+    .right-monitor { padding: 1rem; }
+    #analytics-grid, .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
     .analytics-cols, #daily-report-summary { grid-template-columns: repeat(2, 1fr) !important; }
     .analytics-cols > div:last-child { grid-column: span 2; }
     .camera-canvas {
         aspect-ratio: 16 / 9;
+        max-height: min(52vh, calc(100dvh - 240px));
     }
+    .stats-bar { gap: 0.85rem; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .stat-pill { padding: 0.85rem 1rem; gap: 0.8rem; }
+    .stat-info div { font-size: 1.25rem; }
+    .stat-info span { font-size: 0.7rem; }
+}
+
+@media (max-width: 1280px) {
+    .dashboard { grid-template-columns: 68px minmax(0, 1fr) 220px; }
+    .stats-bar { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; }
+    .stat-pill { padding: 0.75rem 0.85rem; gap: 0.7rem; }
+    .stat-info div { font-size: 1.15rem; }
+    .stat-info span { font-size: 0.65rem; }
 }
 
 @media (max-width: 1024px) {
-    .dashboard { grid-template-columns: 80px 1fr; }
-    .right-monitor { display: none; }
+    .dashboard {
+        grid-template-columns: 64px minmax(0, 1fr);
+        grid-template-rows: 1fr auto;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+    .sidebar { height: auto; min-height: 100dvh; }
+    .main-content { height: auto; min-height: 100dvh; overflow-y: visible; }
+    .right-monitor {
+        display: flex;
+        height: auto;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        grid-column: 1 / -1;
+    }
+    .camera-canvas { max-height: min(48vh, 520px); }
+    .stats-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* ===========================================================================
@@ -880,9 +1009,18 @@ html { overflow-x: hidden; }
     .main-content {
         height: auto;
         padding: 0.75rem;
+        padding-bottom: calc(64px + 1.25rem);
         gap: 1rem;
         overflow-y: visible;
     }
+
+    .analytics-ticker {
+        height: 32px;
+        border-radius: 16px;
+        position: sticky;
+        top: 0;
+    }
+    .ticker-item { font-size: 0.7rem; }
 
     /* --- Mobile bottom navigation bar --- */
     .mobile-bottom-nav {
@@ -961,7 +1099,7 @@ html { overflow-x: hidden; }
     .camera-canvas {
         aspect-ratio: 16 / 9;
         height: auto;
-        max-height: none;
+        max-height: min(42vh, 360px);
         flex: 0 0 auto;
         margin-bottom: 0.75rem;
         border-width: 2px;
@@ -1076,6 +1214,11 @@ html { overflow-x: hidden; }
     .fab:hover { transform: none; }
 }
 
+@media (max-height: 800px) {
+    .camera-canvas { max-height: min(46vh, calc(100dvh - 210px)); }
+    .main-content { padding: 1rem; gap: 1rem; }
+}
+
 /* ===========================================================================
    Extra small phones (iPhone SE, Galaxy A-series, etc.)
    =========================================================================== */
@@ -1088,7 +1231,8 @@ html { overflow-x: hidden; }
     .stat-info div { font-size: 1.05rem; }
     .stat-pill i { width: 30px; height: 30px; font-size: 0.8rem; flex-shrink: 0; }
 
-    .camera-canvas { aspect-ratio: 16 / 9; border-radius: 12px; }
+    .camera-canvas { aspect-ratio: 16 / 9; max-height: min(38vh, 280px); border-radius: 12px; }
+    .analytics-ticker { height: 30px; }
     .btn-zone { padding: 4px 8px; }
     .btn-zone i { margin-right: 0; }
     .video-header .btn-zone { font-size: 0.6rem; }

@@ -151,7 +151,7 @@ display_stream = None # Display stream: cam (full HD relay) — used by video_fe
 EDGE_PC_IP = os.environ.get("EDGE_PC_IP", "100.93.176.107").strip()
 _DEFAULT_PHYSICAL_RTSP_URL = f"rtsp://admin:L2DD2594@{EDGE_PC_IP}:554/cam/realmonitor?channel=1&subtype=0"
 PHYSICAL_RTSP_URL = _DEFAULT_PHYSICAL_RTSP_URL
-RTSP_URL = "rtsp://127.0.0.1:8554/cam"   # AI stream: using /cam directly since WebRTC confirms it works
+RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"  # AI stream: H.264 transcode for YOLO / bounding boxes
 DISPLAY_RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Display stream: full HD relay
 
 def sync_camera_config():
@@ -175,8 +175,8 @@ def sync_camera_config():
             stream_manager.setup_remote_rtsp_stream()
             if stream_manager.REMOTE_RTSP_URL:
                 PHYSICAL_RTSP_URL = stream_manager.REMOTE_RTSP_URL
-        RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Read directly from H.264 cam path
-        print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {stream_manager.REMOTE_RTSP_URL}")
+        RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"
+        print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {stream_manager.REMOTE_RTSP_URL} (AI via cam_ai)")
         return
 
 
@@ -203,7 +203,7 @@ def sync_camera_config():
     stream_manager.setup_mediamtx(PHYSICAL_RTSP_URL)
 
     # AI processing reads from the H.264 transcoded path — stable, no HEVC decode errors
-    RTSP_URL = "rtsp://127.0.0.1:8554/cam"
+    RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"
     print(f"[SYSTEM] RTSP_URL for AI set to: '{RTSP_URL}' (H.264 transcoded)")
 QUALITY_PRESETS = {
     "480p": {"size": (640, 480), "jpeg": 85, "label": "Standard (480p)"},
@@ -271,9 +271,10 @@ class CameraStream:
         self.rtsp_override = rtsp_override  # If set, use this URL instead of global RTSP_URL
         
     def start(self):
-        # Start the background update thread immediately
-        if not any(t.name == "CameraUpdateThread" for t in threading.enumerate()):
-            threading.Thread(target=self.update, daemon=True, name="CameraUpdateThread").start()
+        # Each CameraStream instance needs its own grab thread (AI vs display).
+        thread_name = "CameraUpdateThread-display" if self.rtsp_override else "CameraUpdateThread-ai"
+        if not any(t.name == thread_name for t in threading.enumerate()):
+            threading.Thread(target=self.update, daemon=True, name=thread_name).start()
         return self
 
     def _attempt_connection(self):
@@ -303,9 +304,12 @@ class CameraStream:
             rtsp_variants.append(active_url)
 
             if "localhost" in active_url or "127.0.0.1" in active_url:
-                local_alt = "rtsp://127.0.0.1:8554/cam_ai" if "/cam_ai" not in active_url else "rtsp://127.0.0.1:8554/cam"
-                if local_alt not in rtsp_variants:
-                    rtsp_variants.append(local_alt)
+                if "/cam_ai" in active_url:
+                    if "rtsp://127.0.0.1:8554/cam" not in rtsp_variants:
+                        rtsp_variants.append("rtsp://127.0.0.1:8554/cam")
+                else:
+                    # Prefer the H.264 AI path so YOLO actually receives decodable frames
+                    rtsp_variants.insert(0, "rtsp://127.0.0.1:8554/cam_ai")
 
             # Only try camera-specific fallbacks if connecting to a remote camera directly
             if "localhost" not in active_url and "127.0.0.1" not in active_url:
@@ -376,10 +380,10 @@ class CameraStream:
                         print(f"[RTSP PROBE ERROR] {e}")
                         continue
 
-        # Fallback to local camera indices — legacy RTSP-mode behaviour only.
-        # In Imou mode the source is the Imou HLS -> cam_ai relay; we must NOT
-        # silently switch to a webcam, otherwise camera_online would be a lie.
-        if stream_manager.STREAM_MODE != "imou":
+        # Fallback to local camera indices — legacy local-RTSP mode only.
+        # Remote RTSP / Imou must never silently switch to a webcam or YOLO
+        # would track the wrong picture while WebRTC still shows the store.
+        if stream_manager.STREAM_MODE == "rtsp":
             for idx in self.indices:
                 for be in self.backeneds:
                     if self.stopped: return False
@@ -821,8 +825,10 @@ def webrtc_whep_proxy():
     if not sdp_offer:
         return jsonify({"error": "No SDP offer provided"}), 400
 
-    # Build list of MediaMTX hosts to try: Edge PC first, then saved host, then local
-    mediamtx_hosts = [EDGE_PC_IP]
+    # Build list of MediaMTX hosts to try: Local MediaMTX first (instant <5ms response), then Edge PC / remote host
+    mediamtx_hosts = ['127.0.0.1']
+    if EDGE_PC_IP and EDGE_PC_IP not in mediamtx_hosts:
+        mediamtx_hosts.append(EDGE_PC_IP)
     try:
         import stream_manager
         remote_url = stream_manager.REMOTE_RTSP_URL
@@ -837,9 +843,6 @@ def webrtc_whep_proxy():
     except Exception as e:
         print(f"[WHEP PROXY] Could not resolve remote host: {e}")
 
-    if '127.0.0.1' not in mediamtx_hosts:
-        mediamtx_hosts.append('127.0.0.1')
-
     whep_paths = ['/cam/whep', '/cam_raw/whep']
     last_err = None
 
@@ -851,7 +854,7 @@ def webrtc_whep_proxy():
                     whep_url,
                     data=sdp_offer,
                     headers={'Content-Type': 'application/sdp'},
-                    timeout=8
+                    timeout=2
                 )
                 if r.ok:
                     print(f"[WHEP PROXY] Success via {whep_url}")

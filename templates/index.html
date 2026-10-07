@@ -10,7 +10,7 @@
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <!-- Cache buster to ensure mobile layout fixes are loaded -->
-    <link rel="stylesheet" href="/static/css/style.css?v=15">
+    <link rel="stylesheet" href="/static/css/style.css?v=16">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -57,9 +57,9 @@
         <div class="coin-wrapper">
             <img src="{{ url_for('static', filename='img/logo-circle-140.png') }}" alt="Loading" style="width: 100%; height: 100%; object-fit: cover;">
         </div>
-        <h2 style="font-weight:800; letter-spacing:-1px;">Stafflytics Intelligence</h2>
-        <p id="init-status-text" style="opacity:0.7; font-size:0.9rem; margin-top:10px;">Synchronizing AI Models & Hardware...</p>
-        <button id="skip-init-btn" onclick="skipInitialization()" style="display:none; margin-top:30px; background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.3); color:white; padding:10px 20px; border-radius:50px; font-family:inherit; font-weight:600; cursor:pointer;">Taking too long? Skip to Dashboard</button>
+        <h2 style="font-weight:800; font-size:2.2rem; letter-spacing:-1px; margin:0; background:linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">Stafflytics AI</h2>
+        <p style="margin-top:10px; font-size:0.85rem; font-weight:700; color:rgba(255,255,255,0.85); letter-spacing:1px; text-transform:uppercase;">AI Business Intelligence & Real-Time Analytics</p>
+        <button id="skip-init-btn" onclick="skipInitialization()" style="display:none; margin-top:30px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.25); color:white; padding:12px 28px; border-radius:50px; font-family:inherit; font-weight:700; font-size:0.88rem; cursor:pointer; backdrop-filter:blur(8px); transition:0.3s; box-shadow:0 8px 20px rgba(0,0,0,0.2);">Enter Dashboard <i class="fas fa-arrow-right" style="margin-left:6px; font-size:0.8rem;"></i></button>
     </div>
     <div class="dashboard">
     <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
@@ -84,6 +84,11 @@
 
 
         <main class="main-content">
+            <div class="analytics-ticker" id="analytics-ticker" aria-label="Today's live analytics">
+                <div class="analytics-ticker-track" id="analytics-ticker-track">
+                    <span class="ticker-item"><i class="fas fa-spinner fa-spin"></i> Loading today's analytics…</span>
+                </div>
+            </div>
             <div id="section-monitor" class="view-section">
                 <header class="top-bar">
                     <div><h1>Stafflytics Monitor</h1><p id="clock" style="color:var(--text-muted); font-size:0.85rem; font-weight:600;">Loading...</p></div>
@@ -102,10 +107,10 @@
                     <div class="video-wrapper">
                         <!-- Imou Open Platform HLS Video Feed (primary) -->
                         <video id="hls-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none;"></video>
-                        <!-- WebRTC Video Feed (legacy local-RTSP deployment; disabled in Imou mode) -->
-                        <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none;"></video>
-                        <!-- Fallback MJPEG Image Feed -->
-                        <img src="{{ url_for('video_feed') }}" id="video-feed" alt="Live Feed" style="width:100%; height:100%; object-fit:contain; display:block;">
+                        <!-- WebRTC live feed — seamlessly takes over once connected -->
+                        <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none; background:#000;"></video>
+                        <!-- Fallback & Instant Stream Feed (shows instantly on dashboard load so there is zero black screen) -->
+                        <img id="video-feed" alt="Live Feed" src="{{ url_for('video_feed') }}" data-src="{{ url_for('video_feed') }}" style="width:100%; height:100%; object-fit:contain; display:block;">
                         
                         <!-- Stream Status Overlay -->
                         <div id="webrtc-status-overlay" style="position:absolute; top:15px; left:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s;">
@@ -151,7 +156,7 @@
                     <div class="stat-pill"><i class="fas fa-shield-halved stat-red"></i><div class="stat-info"><span>Alerts</span><div id="incidents-today">0</div></div></div>
                     <div class="stat-pill"><i class="fas fa-users-viewfinder stat-blue" style="color:var(--accent);"></i><div class="stat-info"><span>Monthly Traffic</span><div id="monthly-customers">0</div></div></div>
                 </section>
-                <div style="height: 5rem; width: 100%; flex-shrink:0;"></div> <!-- Permanent Scroll Spacer -->
+                <div class="monitor-scroll-spacer"></div>
             </div>
             
             <div id="section-analytics" class="view-section hidden">
@@ -164,7 +169,7 @@
                 </header>
 
                 <!-- Visitor Metrics Cards -->
-                <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: var(--section-gap);">
+                <div class="metrics-grid">
                     <div class="stat-card-big"><span class="stat-label">Unique Visitors</span><div class="stat-value" id="visitor-total">—</div></div>
                     <div class="stat-card-big"><span class="stat-label">New Faces</span><div class="stat-value accent" id="visitor-new">—</div></div>
                     <div class="stat-card-big"><span class="stat-label">Returning</span><div class="stat-value green" id="visitor-returning">—</div></div>
@@ -210,7 +215,7 @@
                 </div>
 
                 <!-- Existing Synergy / Engagement / Wellbeing / Loyalty -->
-                <div id="analytics-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: var(--section-gap);"></div>
+                <div id="analytics-grid" class="metrics-grid"></div>
 
                 <div class="analytics-cols" style="display: grid; gap: var(--section-gap); align-items: stretch;">
                     <div class="standard-card">
@@ -554,7 +559,7 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/hls.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/main.js', v=7) }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js', v=8) }}"></script>
     
     <script>
         let webrtcPeerConnection = null;
@@ -563,11 +568,12 @@
         let detectionPollInterval = null;
 
         function initDetectionWebSocket() {
+            // Always poll as well — reverse proxies often accept the WebSocket
+            // upgrade then silently drop messages, which left bounding boxes empty.
+            startDetectionPolling();
+
             if (detectionSocket && (detectionSocket.readyState === WebSocket.OPEN || detectionSocket.readyState === WebSocket.CONNECTING)) {
                 return;
-            }
-            if (detectionPollInterval !== null) {
-                return; // Already polling
             }
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -588,17 +594,15 @@
                 
                 detectionSocket.onclose = (event) => {
                     console.warn("[WebSocket] Connection lost or rejected.", event.code);
-                    // If connection fails immediately or gets a 400 (which often results in a quick close), fallback to HTTP polling
-                    startDetectionPolling();
+                    detectionSocket = null;
+                    setTimeout(initDetectionWebSocket, 4000);
                 };
                 
                 detectionSocket.onerror = (err) => {
-                    console.error("[WebSocket] Connection error. Falling back to polling...", err);
-                    startDetectionPolling();
+                    console.error("[WebSocket] Connection error.", err);
                 };
             } catch (err) {
-                console.error("[WebSocket] Failed to instantiate WebSocket. Falling back to polling...", err);
-                startDetectionPolling();
+                console.error("[WebSocket] Failed to instantiate WebSocket.", err);
             }
         }
 
@@ -738,56 +742,49 @@
             }
             if (!detections || detections.length === 0) return;
 
-            // Coordinates from backend are in the native detection frame space.
-            // Map them into the visible (contain-fit) video rect only.
-            // Use uniform scale to prevent box distortion when detection and
-            // display frame aspect ratios differ slightly.
+            // Coordinates from backend are in the native detection frame space (frameW x frameH).
+            // Map them into the visible (contain-fit) video rect (fit.w x fit.h at offset fit.x, fit.y).
             const fit = videoFitRect;
             const fitReady = fit.w > 10 && fit.h > 10;
             const baseW = fitReady ? fit.w : canvas.width;
             const baseH = fitReady ? fit.h : canvas.height;
             const offX = fitReady ? fit.x : 0;
             const offY = fitReady ? fit.y : 0;
+
             const scaleX = baseW / frameW;
             const scaleY = baseH / frameH;
-            const scale = Math.min(scaleX, scaleY);
-            // Center the mapped detection area within the fit rect
-            const mappedW = frameW * scale;
-            const mappedH = frameH * scale;
-            const mapOffX = offX + (baseW - mappedW) / 2;
-            const mapOffY = offY + (baseH - mappedH) / 2;
 
             detections.forEach(det => {
-                const x1 = det.box[0] * scale + mapOffX;
-                const y1 = det.box[1] * scale + mapOffY;
-                const x2 = det.box[2] * scale + mapOffX;
-                const y2 = det.box[3] * scale + mapOffY;
+                const x1 = (det.box[0] / frameW) * baseW + offX;
+                const y1 = (det.box[1] / frameH) * baseH + offY;
+                const x2 = (det.box[2] / frameW) * baseW + offX;
+                const y2 = (det.box[3] / frameH) * baseH + offY;
                 const w = x2 - x1;
                 const h = y2 - y1;
 
                 // Draw outer bounding box
-                ctx.strokeStyle = det.color;
-                ctx.lineWidth = 2;
+                ctx.strokeStyle = det.color || '#3b82f6';
+                ctx.lineWidth = 2.5;
                 ctx.strokeRect(x1, y1, w, h);
 
                 // Draw label background flag
-                ctx.fillStyle = det.color;
-                ctx.font = '600 11px Outfit, sans-serif';
-                const labelText = det.label;
+                ctx.fillStyle = det.color || '#3b82f6';
+                ctx.font = '700 11px Outfit, sans-serif';
+                const labelText = det.label || 'Person';
                 const textWidth = ctx.measureText(labelText).width;
                 
                 // Adjust label position so it stays inside canvas boundaries
-                const labelHeight = 18;
+                const labelHeight = 20;
                 let labelY = y1 - labelHeight;
                 if (labelY < 0) {
                     labelY = y1 + 2;
                 }
                 
-                ctx.fillRect(x1 - 1, labelY, textWidth + 10, labelHeight);
+                ctx.fillRect(x1 - 1, labelY, textWidth + 12, labelHeight);
 
                 // Draw label text
                 ctx.fillStyle = '#ffffff';
-                ctx.fillText(labelText, x1 + 4, labelY + 13);
+                ctx.fillText(labelText, x1 + 5, labelY + 14);
             });
         }
 
@@ -801,13 +798,22 @@
         let hlsRecovering = false;
         const HLS_FREEZE_SECONDS = 12;
 
+        function enableMjpegFallback() {
+            const fallbackImg = document.getElementById('video-feed');
+            if (!fallbackImg) return;
+            const src = fallbackImg.getAttribute('data-src') || '/video_feed';
+            if (!fallbackImg.src || !fallbackImg.src.includes('video_feed')) {
+                fallbackImg.src = src;
+            }
+            fallbackImg.style.display = 'block';
+        }
+
         async function initVideoStream() {
-            const video = document.getElementById('hls-video');
             const fallbackImg = document.getElementById('video-feed');
             const dot = document.getElementById('webrtc-status-dot');
             const label = document.getElementById('webrtc-status-text');
             const overlay = document.getElementById('webrtc-status-overlay');
-            if (!video || !fallbackImg || !dot || !label || !overlay) return;
+            if (!fallbackImg || !dot || !label || !overlay) return;
 
             fallbackImg.addEventListener('load', () => { updateVideoAspect(); resizeCanvas(); });
 
@@ -826,9 +832,8 @@
                     return;
                 }
             } catch (err) {
-                console.warn("[Video] Status check failed, using WebRTC fallback.", err);
+                console.warn("[Video] Status check failed, using WebRTC.", err);
             }
-            // Legacy deployment (no Imou bridge) => WebRTC player.
             initWebRTCStream();
         }
 
@@ -886,7 +891,7 @@
 
             function hlsFallback(msg) {
                 video.style.display = 'none';
-                fallbackImg.style.display = 'block';
+                enableMjpegFallback();
                 setStatus(msg, '#ef4444', false);
                 updateVideoAspect(); resizeCanvas();
             }
@@ -967,7 +972,10 @@
             }
         }
 
-        async function initWebRTCStream() {
+        let _webrtcConnecting = false;
+        let _iceDisconnectTimer = null;
+
+        async function initWebRTCStream(isBackgroundReconnect = false) {
             const video = document.getElementById('webrtc-video');
             const fallbackImg = document.getElementById('video-feed');
             const dot = document.getElementById('webrtc-status-dot');
@@ -975,6 +983,8 @@
             const overlay = document.getElementById('webrtc-status-overlay');
 
             if (!video || !fallbackImg || !dot || !label || !overlay) return;
+            if (_webrtcConnecting) return;
+            _webrtcConnecting = true;
 
             function setStatus(text, color, pulse = true) {
                 label.innerText = text;
@@ -988,36 +998,29 @@
             }
 
             try {
-                const statusRes = await fetch('/api/webrtc/status');
-                const statusData = await statusRes.json();
-
-                if (!statusData.complete) {
-                    if (statusData.status && statusData.status.includes('Error')) {
-                        setStatus('WebRTC Error: ' + (statusData.error || 'Setup failed'), '#ef4444', false);
-                    } else {
-                        setStatus(statusData.status || 'Downloading Media Server...', '#eab308');
-                        setTimeout(initWebRTCStream, 3000);
-                    }
-                    return;
+                if (!isBackgroundReconnect) {
+                    setStatus('Live connecting…', '#3b82f6');
                 }
 
-                setStatus('Connecting WebRTC...', '#3b82f6');
-
-                if (webrtcPeerConnection) {
-                    webrtcPeerConnection.ontrack = null;
-                    webrtcPeerConnection.oniceconnectionstatechange = null;
-                    try { webrtcPeerConnection.close(); } catch(e) {}
-                    webrtcPeerConnection = null;
-                }
+                const oldPc = webrtcPeerConnection;
 
                 if (window._videoFreezeWatchdog) {
                     clearInterval(window._videoFreezeWatchdog);
+                    window._videoFreezeWatchdog = null;
+                }
+                if (_iceDisconnectTimer) {
+                    clearTimeout(_iceDisconnectTimer);
+                    _iceDisconnectTimer = null;
                 }
 
-                // Always use STUN servers to bypass mDNS local IP obfuscation on strict browsers (Safari/iOS)
-                let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+                // Multiple STUN servers to bypass mDNS and strict NATs
+                let iceServers = [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ];
 
-                const pc = new RTCPeerConnection({ iceServers });
+                const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
                 webrtcPeerConnection = pc;
 
                 pc.addTransceiver('video', { direction: 'recvonly' });
@@ -1031,7 +1034,6 @@
                         video.play().catch(e => console.warn("[WebRTC] play() failed:", e));
                         
                         // Seamless Zero-Black-Screen Handover:
-                        // Only show WebRTC video after actual video frames are actively playing
                         function onFirstFrameRendered() {
                             if (video.currentTime > 0 || video.readyState >= 2) {
                                 video.style.display = 'block';
@@ -1041,6 +1043,12 @@
                                 setStatus('WebRTC Live', '#22c55e', false);
                                 video.removeEventListener('playing', onFirstFrameRendered);
                                 video.removeEventListener('timeupdate', onFirstFrameRendered);
+                                
+                                // Clean up old peer connection after new stream is active
+                                if (oldPc && oldPc !== pc) {
+                                    try { oldPc.close(); } catch(e) {}
+                                }
+
                                 setTimeout(() => {
                                     if (label.innerText === 'WebRTC Live') {
                                         overlay.style.opacity = '0';
@@ -1052,15 +1060,17 @@
                         video.addEventListener('playing', onFirstFrameRendered);
                         video.addEventListener('timeupdate', onFirstFrameRendered);
 
-                        // Watchdog to check if video froze silently
+                        // Watchdog to check if video froze silently (8s limit with 4s play nudge)
                         let lastTime = -1;
                         let freezeCount = 0;
                         window._videoFreezeWatchdog = setInterval(() => {
-                            if (video.readyState >= 3 && !video.paused) {
+                            if (!video.paused) {
                                 if (video.currentTime === lastTime) {
                                     freezeCount++;
-                                    if (freezeCount >= 4) { // 4 seconds frozen
-                                        console.warn("[WebRTC] Video froze silently. Forcing reconnect...");
+                                    if (freezeCount === 4) {
+                                        video.play().catch(() => {});
+                                    } else if (freezeCount >= 8) { // 8 seconds frozen
+                                        console.warn("[WebRTC] Video froze for 8s. Forcing background reconnect...");
                                         clearInterval(window._videoFreezeWatchdog);
                                         handleWebRTCFallback('WebRTC Frozen (Reconnecting...)');
                                     }
@@ -1074,9 +1084,29 @@
                 };
 
                 pc.oniceconnectionstatechange = () => {
-                    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
-                        console.warn("[WebRTC] Connection lost. State: " + pc.iceConnectionState);
-                        handleWebRTCFallback('WebRTC Disconnected (Reconnecting...)');
+                    console.log("[WebRTC] ICE state changed to:", pc.iceConnectionState);
+                    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                        if (_iceDisconnectTimer) {
+                            clearTimeout(_iceDisconnectTimer);
+                            _iceDisconnectTimer = null;
+                        }
+                    } else if (pc.iceConnectionState === 'disconnected') {
+                        // 7-second Grace Period before declaring failure to allow ICE recovery
+                        if (!_iceDisconnectTimer) {
+                            console.warn("[WebRTC] Disconnected state — starting 7s grace period...");
+                            _iceDisconnectTimer = setTimeout(() => {
+                                if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+                                    console.warn("[WebRTC] Grace period expired. Reconnecting...");
+                                    handleWebRTCFallback('WebRTC Disconnected (Reconnecting...)');
+                                }
+                            }, 7000);
+                        }
+                    } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+                        if (_iceDisconnectTimer) {
+                            clearTimeout(_iceDisconnectTimer);
+                            _iceDisconnectTimer = null;
+                        }
+                        handleWebRTCFallback('WebRTC Connection Failed');
                     }
                 };
 
@@ -1087,9 +1117,7 @@
                     if (pc.iceGatheringState === 'complete') {
                         resolve();
                     } else {
-                        // Timeout after 5s — on local networks with no STUN servers
-                        // icegatheringstatechange may never fire 'complete', hanging forever.
-                        const timer = setTimeout(resolve, 5000);
+                        const timer = setTimeout(resolve, 350);
                         function checkState() {
                             if (pc.iceGatheringState === 'complete') {
                                 clearTimeout(timer);
@@ -1101,9 +1129,7 @@
                     }
                 });
 
-                // Proxy the WHEP SDP exchange through Flask (/api/webrtc/whep -> localhost:8889/cam/whep).
-                // Direct port 8889 access fails from remote domains: port may not be publicly
-                // open, and http:// fetches from an https:// page are blocked as mixed content.
+                // Proxy the WHEP SDP exchange through Flask (/api/webrtc/whep)
                 const response = await fetch('/api/webrtc/whep', {
                     method: 'POST',
                     body: pc.localDescription.sdp,
@@ -1123,52 +1149,58 @@
             } catch (err) {
                 console.error("[WebRTC Setup Error]", err);
                 handleWebRTCFallback('WebRTC Offline (MJPEG Fallback)');
+            } finally {
+                _webrtcConnecting = false;
             }
 
             function handleWebRTCFallback(msg) {
-                video.style.display = 'none';
-                fallbackImg.style.display = 'block';
-                setStatus(msg, '#ef4444', false);
-                
-                if (webrtcPeerConnection) {
-                    try { webrtcPeerConnection.close(); } catch(e) {}
-                    webrtcPeerConnection = null;
-                }
-                
                 if (window.webrtcRetryTimer) {
                     clearTimeout(window.webrtcRetryTimer);
                 }
 
-                // Don't retry if video is currently playing (avoids false disconnect triggers)
-                if (video.readyState >= 3 && !video.paused) {
-                    return;
+                // If video is currently playing, do NOT collapse to image fallback immediately
+                const isStillPlaying = video.readyState >= 3 && !video.paused && video.currentTime > 0;
+                if (!isStillPlaying) {
+                    video.style.display = 'none';
+                    enableMjpegFallback();
+                    setStatus(msg, '#ef4444', false);
+                } else {
+                    setStatus(`${msg} — syncing background`, '#f97316', false);
                 }
 
-                // Retry consistently every 4 seconds when disconnected
-                console.log(`[WebRTC] Reconnecting in 4s...`);
-                setStatus(`${msg} — retrying...`, '#f97316', false);
+                console.log(`[WebRTC] Reconnecting in 3s...`);
                 window.webrtcRetryTimer = setTimeout(() => {
-                    initWebRTCStream();
-                }, 4000);
+                    initWebRTCStream(true);
+                }, 3000);
             }
         }
 
+        // Auto-recover WebRTC playback when user returns to tab
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                const video = document.getElementById('webrtc-video');
+                if (video && video.style.display !== 'none') {
+                    if (video.paused || video.readyState < 2) {
+                        console.log("[WebRTC] Tab became visible. Resuming stream...");
+                        video.play().catch(() => initWebRTCStream(true));
+                    }
+                }
+            }
+        });
+
         window.addEventListener('DOMContentLoaded', () => {
             loadSavedTheme();
-            setTimeout(() => {
-                initVideoStream();
-                resizeCanvas();
-                initDetectionWebSocket();
-                
-                // Hook ResizeObserver to automatically adjust canvas overlay bounds on layout changes
-                const canvas = document.getElementById('detection-canvas');
-                if (canvas) {
-                    const resizeObserver = new ResizeObserver(() => {
-                        resizeCanvas();
-                    });
-                    resizeObserver.observe(canvas.parentElement);
-                }
-            }, 1500);
+            initVideoStream();
+            resizeCanvas();
+            initDetectionWebSocket();
+
+            const canvas = document.getElementById('detection-canvas');
+            if (canvas && canvas.parentElement) {
+                const resizeObserver = new ResizeObserver(() => {
+                    resizeCanvas();
+                });
+                resizeObserver.observe(canvas.parentElement);
+            }
         });
     </script>
 

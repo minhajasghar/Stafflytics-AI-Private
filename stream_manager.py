@@ -231,11 +231,14 @@ webrtcAddress: :8889
 webrtcAllowOrigin: "*"
 webrtcICEServers2:
   - url: stun:stun.l.google.com:19302
+  - url: stun:stun1.l.google.com:19302
+  - url: stun:stun2.l.google.com:19302
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s
 
-readTimeout: 30s
+readTimeout: 60s
+writeTimeout: 60s
 
 rtmp: no
 hls: no
@@ -246,6 +249,8 @@ paths:
     # Pull directly from the remote RTSP peer (e.g. Tailscale MediaMTX node).
     source: {remote_url}
     rtspTransport: tcp
+    sourceOnDemand: no
+    overridePublisher: yes
 
   cam_ai:
     # H.264 transcoded stream for OpenCV / YOLO AI processing.
