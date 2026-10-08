@@ -745,6 +745,9 @@ def generate_frames():
                     res = src.read()
                     if res[0] is not None:
                         display_frame = res[0]
+                        if engine and hasattr(engine, 'latest_detections') and engine.latest_detections:
+                            from vision_engine import draw_detections_on_frame
+                            display_frame = draw_detections_on_frame(display_frame, engine.latest_detections, 640, 480)
                 if display_frame is None:
                     time.sleep(0.02)
                     continue

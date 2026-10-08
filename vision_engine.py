@@ -1281,12 +1281,17 @@ class VisionEngine:
             confirmed_track_ids = []
             confirmed_kps = []
 
-            for f_box, t_id, kp in zip(filtered_boxes, filtered_track_ids, filtered_kps):
-                if t_id == -1:
-                    continue
+            # If tracker did not provide ID, assign a fallback ID so detections are not dropped
+            resolved_track_ids = []
+            for b_idx, tid in enumerate(filtered_track_ids):
+                if tid is None or tid < 0:
+                    resolved_track_ids.append(1000 + b_idx)
+                else:
+                    resolved_track_ids.append(int(tid))
 
-                # Track consecutive hits
-                if t_id in self.track_last_seen and self.track_last_seen[t_id] == self.frame_count - 1:
+            for f_box, t_id, kp in zip(filtered_boxes, resolved_track_ids, filtered_kps):
+                # Track consecutive hits (allow small frame gap so single dropped frame does not reset count)
+                if t_id in self.track_last_seen and (self.frame_count - self.track_last_seen[t_id] <= 2):
                     self.track_hit_counts[t_id] = self.track_hit_counts.get(t_id, 0) + 1
                 else:
                     self.track_hit_counts[t_id] = 1
@@ -1689,8 +1694,6 @@ class VisionEngine:
                     if tid in self.recognition_consensus: del self.recognition_consensus[tid]
                     if tid in self.track_identities: del self.track_identities[tid]
 
-            self.frame_count += 1
-            
             # Periodic Active Time Sync (every 10 seconds)
             if current_time - self.last_activity_sync > 10:
                 for staff_id, seconds in self.activity_buffer.items():
