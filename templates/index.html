@@ -9,7 +9,7 @@
     <link rel="icon" href="{{ url_for('static', filename='img/favicon-16.png') }}" type="image/png" sizes="16x16">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css?v=20">
+    <link rel="stylesheet" href="/static/css/style.css?v=25">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -60,7 +60,7 @@
         <p style="margin-top:10px; font-size:0.85rem; font-weight:700; color:rgba(255,255,255,0.85); letter-spacing:1px; text-transform:uppercase; text-align:center; padding:0 20px; max-width:90vw; line-height:1.5;">AI Business Intelligence & Real-Time Analytics</p>
         <button id="skip-init-btn" onclick="skipInitialization()" style="display:none; margin-top:30px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.25); color:white; padding:12px 28px; border-radius:50px; font-family:inherit; font-weight:700; font-size:0.88rem; cursor:pointer; backdrop-filter:blur(8px); transition:0.3s; box-shadow:0 8px 20px rgba(0,0,0,0.2);">Enter Dashboard <i class="fas fa-arrow-right" style="margin-left:6px; font-size:0.8rem;"></i></button>
     </div>
-    <div class="dashboard">
+    <div class="dashboard is-monitor">
     <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
         <nav class="sidebar">
             <div class="sidebar-brand">
@@ -611,7 +611,7 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/hls.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/main.js', v=12) }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js', v=25) }}"></script>
     
     <script>
         let webrtcPeerConnection = null;
@@ -1289,15 +1289,17 @@
             const curActive = document.querySelector('.view-section:not(.hidden)');
             const rightMon = document.querySelector('.right-monitor');
             const dash = document.querySelector('.dashboard');
+            const isMonActive = (curActive && curActive.id === 'section-monitor') || (!curActive);
+            if (dash) {
+                dash.classList.toggle('is-monitor', isMonActive);
+                dash.classList.toggle('no-right-panel', !isMonActive);
+            }
             if (rightMon) {
-                if (curActive && curActive.id === 'section-monitor') {
-                    rightMon.classList.remove('hidden');
-                    rightMon.style.display = '';
-                    if (dash) dash.classList.remove('no-right-panel');
+                rightMon.classList.toggle('hidden', !isMonActive);
+                if (isMonActive) {
+                    rightMon.style.removeProperty('display');
                 } else {
-                    rightMon.classList.add('hidden');
-                    rightMon.style.display = 'none';
-                    if (dash) dash.classList.add('no-right-panel');
+                    rightMon.style.setProperty('display', 'none', 'important');
                 }
             }
         });

@@ -100,15 +100,17 @@ function handleNavClick(element) {
         // Right panel (Trackers, Roster, Security Activity) ONLY appears in Monitor section!
         const rightMonitor = document.querySelector('.right-monitor');
         const dashboard = document.querySelector('.dashboard');
+        const isMonitor = (targetId === 'section-monitor');
+        if (dashboard) {
+            dashboard.classList.toggle('is-monitor', isMonitor);
+            dashboard.classList.toggle('no-right-panel', !isMonitor);
+        }
         if (rightMonitor) {
-            if (targetId === 'section-monitor') {
-                rightMonitor.classList.remove('hidden');
-                rightMonitor.style.display = '';
-                if (dashboard) dashboard.classList.remove('no-right-panel');
+            rightMonitor.classList.toggle('hidden', !isMonitor);
+            if (isMonitor) {
+                rightMonitor.style.removeProperty('display');
             } else {
-                rightMonitor.classList.add('hidden');
-                rightMonitor.style.display = 'none';
-                if (dashboard) dashboard.classList.add('no-right-panel');
+                rightMonitor.style.setProperty('display', 'none', 'important');
             }
         }
 
