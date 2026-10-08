@@ -45,34 +45,56 @@ def _start_model_load():
             from ultralytics import YOLO
             import torch
 
-            device = 'cpu' if not torch.cuda.is_available() else 0
+            is_cuda = torch.cuda.is_available()
+            device = 0 if is_cuda else 'cpu'
 
-            # Candidate model paths to probe in order of preference
-            onnx_candidates = [
-                os.path.join(BASE_DIR, "yolov8n.onnx"),
-                os.path.join(BASE_DIR, "models", "yolov8n.onnx"),
-                "yolov8n.onnx"
-            ]
-            pt_candidates = [
-                os.path.join(BASE_DIR, "yolov8n.pt"),
-                os.path.join(BASE_DIR, "models", "yolov8n.pt"),
-                "yolov8n.pt"
-            ]
-
-            target_onnx = next((p for p in onnx_candidates if os.path.exists(p)), None)
-            target_pt = next((p for p in pt_candidates if os.path.exists(p)), None)
-
-            if target_pt:
-                print(f"[AI] Loading PyTorch YOLO model from: {target_pt}")
-                model = YOLO(target_pt, task='detect')
-                model.to(device)
-            elif target_onnx:
-                print(f"[AI] Loading ONNX YOLO model from: {target_onnx}")
-                model = YOLO(target_onnx, task='detect')
+            if is_cuda:
+                print(f"[AI] GPU detected. Loading yolo11m for TensorRT/CUDA...")
+                engine_path = os.path.join(BASE_DIR, "yolo11m.engine")
+                if os.path.exists(engine_path):
+                    model = YOLO(engine_path, task='detect')
+                else:
+                    m_base = YOLO("yolo11m.pt", task='detect')
+                    try:
+                        print("[AI] Exporting yolo11m to TensorRT with half=True...")
+                        engine_path = m_base.export(format='engine', half=True, imgsz=960)
+                        model = YOLO(engine_path, task='detect')
+                    except Exception as e_trt:
+                        print(f"[AI] TensorRT export skipped ({e_trt}). Running yolo11m.pt on GPU with half=True")
+                        m_base.to(device)
+                        model = m_base
             else:
-                print(f"[AI WARNING] No local model file found. Falling back to default 'yolov8n.pt'")
-                model = YOLO("yolov8n.pt", task='detect')
-                model.to(device)
+                print(f"[AI] CPU detected. Checking OpenVINO/ONNX models...")
+                openvino_dir = os.path.join(BASE_DIR, "yolo11s_openvino_model")
+                onnx_path = os.path.join(BASE_DIR, "yolo11s.onnx")
+                pt_path = os.path.join(BASE_DIR, "yolo11s.pt")
+
+                if os.path.exists(openvino_dir):
+                    print(f"[AI] Loading OpenVINO YOLO model from: {openvino_dir}")
+                    model = YOLO(openvino_dir, task='detect')
+                elif os.path.exists(onnx_path):
+                    print(f"[AI] Loading ONNX YOLO model from: {onnx_path}")
+                    model = YOLO(onnx_path, task='detect')
+                elif os.path.exists(pt_path):
+                    print(f"[AI] Loading yolo11s.pt and exporting to OpenVINO...")
+                    m_pt = YOLO(pt_path, task='detect')
+                    try:
+                        ov_dir = m_pt.export(format='openvino', imgsz=640)
+                        model = YOLO(ov_dir, task='detect')
+                    except Exception:
+                        try:
+                            ox_path = m_pt.export(format='onnx', imgsz=640)
+                            model = YOLO(ox_path, task='detect')
+                        except Exception:
+                            model = m_pt
+                else:
+                    print(f"[AI] Downloading yolo11s.pt...")
+                    m_pt = YOLO("yolo11s.pt", task='detect')
+                    try:
+                        ov_dir = m_pt.export(format='openvino', imgsz=640)
+                        model = YOLO(ov_dir, task='detect')
+                    except Exception:
+                        model = m_pt
 
             print(f"[AI] Background Model Load Complete. Running on {device}")
         except Exception as e:
@@ -419,6 +441,14 @@ class VisionEngine:
         self.last_valid_raw_boxes = [] # Full list of boxes for skipped frames
         self.last_valid_raw_kps = []
         self.last_valid_track_ids = []
+        
+        self.track_hit_counts = {}        # track_id -> int (consecutive frame hits)
+        self.track_last_seen = {}         # track_id -> int (last frame_count seen)
+        self.ema_boxes = {}               # track_id -> np.ndarray([x1, y1, x2, y2])
+        self.confirmed_track_ids = set()  # set of confirmed track_ids (>= 3 consecutive hits)
+        self.last_raw_count = 0
+        self.last_filtered_count = 0
+        self.last_confirmed_count = 0
         
         self.recent_guest_embeddings = [] # Short-term memory for returning guests: [{"name": name, "db_id": db_id, "encs": list, "last_seen": timestamp}]
         self.reid_appearance_cache = {} # Person Re-ID Appearance Cache: identity_id -> {"name": name, "role": role, "reid_vec": vec, "last_seen": timestamp}
@@ -1122,7 +1152,7 @@ class VisionEngine:
                     with self.lock:
                         self.processing_tracks.discard(track_id)
 
-    def process_frame(self, frame, target_size=(640, 480), original_frame=None):
+    def process_frame(self, frame, target_size=(640, 480), original_frame=None, frame_timestamp=None):
         try:
             global model, model_loading_active
             if model is None:
@@ -1157,30 +1187,31 @@ class VisionEngine:
             self.frame_count += 1
             results = None
             try:
-                tracker = TRACKER_PATH if os.path.exists(TRACKER_PATH) else "bytetrack.yaml"
+                import torch
+                is_cuda = torch.cuda.is_available()
+                inference_imgsz = 960 if is_cuda else 640
+                tracker = TRACKER_PATH if os.path.exists(TRACKER_PATH) else "custom_bytetrack.yaml"
                 results = model.track(
                     small_frame,
                     persist=True,
                     tracker=tracker,
-                    conf=0.20,
+                    conf=0.45,
                     iou=0.5,
                     classes=[0],
-                    imgsz=480,
+                    imgsz=inference_imgsz,
                     verbose=False
                 )
             except Exception as e_trk:
                 try:
-                    # Fallback to direct model inference (without unsupported persist argument)
-                    results = model(small_frame, conf=0.20, iou=0.5, verbose=False, classes=[0], imgsz=480)
+                    import torch
+                    is_cuda = torch.cuda.is_available()
+                    inference_imgsz = 960 if is_cuda else 640
+                    results = model(small_frame, conf=0.45, iou=0.5, verbose=False, classes=[0], imgsz=inference_imgsz)
                 except Exception:
-                    try:
-                        results = model(small_frame, conf=0.20, iou=0.5, verbose=False, imgsz=480)
-                    except Exception:
-                        results = None
+                    results = None
             
-            num_boxes = len(results[0].boxes) if results and len(results) > 0 and results[0].boxes is not None else 0
-            if self.frame_count % 90 == 0:
-                print(f"[VISION DEBUG] Raw YOLO detections: {num_boxes}")
+            raw_cnt = len(results[0].boxes) if results and len(results) > 0 and results[0].boxes is not None else 0
+            self.last_raw_count = raw_cnt
             
             if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
                 res_boxes = results[0].boxes
@@ -1220,336 +1251,377 @@ class VisionEngine:
             # Scale factors for output_frame
             scale_x = float(w_out) / float(max(1, w_orig))
             scale_y = float(h_out) / float(max(1, h_orig))
-            
-            if len(raw_boxes) > 0:
-                boxes = []
-                valid_kps = []
-                track_ids = []
+
+            # Filter: drop boxes smaller than 0.3% of frame area
+            frame_area = float(w_orig * h_orig)
+            min_box_area = 0.003 * frame_area
+
+            filtered_boxes = []
+            filtered_track_ids = []
+            filtered_kps = []
+
+            for b_idx, r_box in enumerate(raw_boxes):
+                x1, y1, x2, y2 = map(float, r_box)
+                box_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+                if box_area < min_box_area:
+                    continue  # Drop boxes smaller than 0.3% of frame area
+
+                t_id = raw_track_ids[b_idx] if (raw_track_ids is not None and b_idx < len(raw_track_ids)) else -1
+                filtered_boxes.append([x1, y1, x2, y2])
+                filtered_track_ids.append(t_id)
+                if raw_kps is not None and b_idx < len(raw_kps):
+                    filtered_kps.append(raw_kps[b_idx])
+                else:
+                    filtered_kps.append(None)
+
+            self.last_filtered_count = len(filtered_boxes)
+
+            # Tracking: 3 consecutive confirmed hits and EMA smoothing (alpha=0.6)
+            confirmed_boxes = []
+            confirmed_track_ids = []
+            confirmed_kps = []
+
+            for f_box, t_id, kp in zip(filtered_boxes, filtered_track_ids, filtered_kps):
+                if t_id == -1:
+                    continue
+
+                # Track consecutive hits
+                if t_id in self.track_last_seen and self.track_last_seen[t_id] == self.frame_count - 1:
+                    self.track_hit_counts[t_id] = self.track_hit_counts.get(t_id, 0) + 1
+                else:
+                    self.track_hit_counts[t_id] = 1
+                self.track_last_seen[t_id] = self.frame_count
+
+                # EMA coordinate smoothing (alpha 0.6)
+                curr_box_arr = np.array(f_box, dtype=np.float32)
+                if t_id in self.ema_boxes:
+                    smoothed_box = 0.6 * curr_box_arr + 0.4 * self.ema_boxes[t_id]
+                else:
+                    smoothed_box = curr_box_arr
+                self.ema_boxes[t_id] = smoothed_box
+
+                # Show/count a person only after 3 consecutive confirmed hits
+                if self.track_hit_counts[t_id] >= 3:
+                    self.confirmed_track_ids.add(t_id)
+                    confirmed_boxes.append(smoothed_box)
+                    confirmed_track_ids.append(t_id)
+                    confirmed_kps.append(kp)
+
+            self.last_confirmed_count = len(confirmed_track_ids)
+
+            # Cleanup stale tracks
+            stale_tids = [tid for tid, lf in self.track_last_seen.items() if self.frame_count - lf > 45]
+            for tid in stale_tids:
+                self.track_hit_counts.pop(tid, None)
+                self.track_last_seen.pop(tid, None)
+                self.ema_boxes.pop(tid, None)
+                self.confirmed_track_ids.discard(tid)
+
+            boxes = np.array(confirmed_boxes, dtype=np.float32) if confirmed_boxes else np.empty((0, 4), dtype=np.float32)
+            track_ids = np.array(confirmed_track_ids, dtype=np.int32) if confirmed_track_ids else np.empty((0,), dtype=np.int32)
+            all_kps = confirmed_kps
+                
+            # Process active tracks
+            for i, (box, track_id) in enumerate(zip(boxes, track_ids)):
+                x1, y1, x2, y2 = map(int, box)
+                center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+                
+                # Scaled coordinates for drawing on the HD output frame
+                x1_out = int(x1 * scale_x)
+                y1_out = int(y1 * scale_y)
+                x2_out = int(x2 * scale_x)
+                y2_out = int(y2 * scale_y)
                 
                 with self.lock:
-                    for b_idx, r_box in enumerate(raw_boxes):
-                        x1, y1, x2, y2 = map(int, r_box)
-                        # Reject unreasonably tiny noise boxes
-                        if (x2 - x1) < 14 or (y2 - y1) < 18:
-                            continue
+                    if track_id not in self.person_states:
+                        self.person_states[track_id] = {
+                            "id": f"Track #{track_id}", "name": "Guest", "db_id": None, "zone": "Main Hall", 
+                            "first_seen": current_time,
+                            "last_active": current_time, "last_sync": 0, "role": "None",
+                            "identity_locked": False, "consecutive_matches": 0, "pending_id": None
+                        }
+                    state = self.person_states[track_id]
+                    state["last_active"] = current_time
+                
+                # Zone Detection
+                current_zone = "Main Hall"
+                for zone in self.zones:
+                    if zone.is_inside(center):
+                        current_zone = zone.name
+                        break
+                with self.lock:
+                    state["zone"] = current_zone
+
+                # Bidirectional Corridor Passage Counting (Top Glass Hallway)
+                from collections import deque
+                if track_id not in self.track_trajectories:
+                    self.track_trajectories[track_id] = deque(maxlen=40)
+                self.track_trajectories[track_id].append((center[0], center[1], current_time))
+
+                # Check if movement is in the upper corridor area (Y <= 50% of frame height)
+                if center[1] <= int(h_orig * 0.50):
+                    pts = list(self.track_trajectories[track_id])
+                    if len(pts) >= 8 and track_id not in self.counted_passages:
+                        x_start, x_end = pts[0][0], pts[-1][0]
+                        delta_x = x_end - x_start
+                        # 65px horizontal displacement indicates clear deliberate passage
+                        if delta_x >= 65:
+                            self.passage_counts["l_to_r"] += 1
+                            self.counted_passages.add(track_id)
+                            try: database.log_passage("L_TO_R", track_id)
+                            except: pass
+                            print(f"[CORRIDOR PASSAGE] Track #{track_id} moved LEFT ➔ RIGHT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
+                        elif delta_x <= -65:
+                            self.passage_counts["r_to_l"] += 1
+                            self.counted_passages.add(track_id)
+                            try: database.log_passage("R_TO_L", track_id)
+                            except: pass
+                            print(f"[CORRIDOR PASSAGE] Track #{track_id} moved RIGHT ➔ LEFT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
+                
+                # Pose & Action Analysis
+                keypoints = all_kps[i] if (all_kps is not None and i < len(all_kps)) else None
+                pose_label = "NEUTRAL"
+                pose_multiplier = 1.0
+                
+                if keypoints is not None and len(keypoints) > 10:
+                    try:
+                        l_shoulder, r_shoulder = keypoints[5], keypoints[6]
+                        l_wrist, r_wrist = keypoints[9], keypoints[10]
+                        l_hip, r_hip = keypoints[11], keypoints[12]
                         
-                        boxes.append(r_box)
-                        if raw_kps is not None and b_idx < len(raw_kps):
-                            valid_kps.append(raw_kps[b_idx])
-                        else:
-                            valid_kps.append(None)
-                            
-                        # Use Track ID or fallback to deterministic index when ID is None / warming up
-                        if raw_track_ids is not None and b_idx < len(raw_track_ids) and raw_track_ids[b_idx] != -1:
-                            t_id = int(raw_track_ids[b_idx])
-                        else:
-                            t_id = b_idx + 1
-                            
-                        track_ids.append(t_id)
-                        self.last_boxes[t_id] = [x1, y1, x2, y2]
-                        self.last_positions[t_id] = (int((x1+x2)/2), int((y1+y2)/2))
-                
-                boxes = np.array(boxes, dtype=np.float32) if boxes else np.empty((0, 4), dtype=np.float32)
-                track_ids = np.array(track_ids, dtype=np.int32) if track_ids else np.empty((0,), dtype=np.int32)
-                all_kps = valid_kps
-                
-                # Process active tracks
-                for i, (box, track_id) in enumerate(zip(boxes, track_ids)):
-                    x1, y1, x2, y2 = map(int, box)
-                    center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-                    
-                    # Scaled coordinates for drawing on the HD output frame
-                    x1_out = int(x1 * scale_x)
-                    y1_out = int(y1 * scale_y)
-                    x2_out = int(x2 * scale_x)
-                    y2_out = int(y2 * scale_y)
-                    
-                    with self.lock:
-                        if track_id not in self.person_states:
-                            self.person_states[track_id] = {
-                                "id": f"Track #{track_id}", "name": "Guest", "db_id": None, "zone": "Main Hall", 
-                                "first_seen": current_time,
-                                "last_active": current_time, "last_sync": 0, "role": "None",
-                                "identity_locked": False, "consecutive_matches": 0, "pending_id": None
-                            }
-                        state = self.person_states[track_id]
-                        state["last_active"] = current_time
-                    
-                    # Zone Detection
-                    current_zone = "Main Hall"
-                    for zone in self.zones:
-                        if zone.is_inside(center):
-                            current_zone = zone.name
-                            break
-                    with self.lock:
-                        state["zone"] = current_zone
-
-                    # Bidirectional Corridor Passage Counting (Top Glass Hallway)
-                    from collections import deque
-                    if track_id not in self.track_trajectories:
-                        self.track_trajectories[track_id] = deque(maxlen=40)
-                    self.track_trajectories[track_id].append((center[0], center[1], current_time))
-
-                    # Check if movement is in the upper corridor area (Y <= 50% of frame height)
-                    if center[1] <= int(h_orig * 0.50):
-                        pts = list(self.track_trajectories[track_id])
-                        if len(pts) >= 8 and track_id not in self.counted_passages:
-                            x_start, x_end = pts[0][0], pts[-1][0]
-                            delta_x = x_end - x_start
-                            # 65px horizontal displacement indicates clear deliberate passage
-                            if delta_x >= 65:
-                                self.passage_counts["l_to_r"] += 1
-                                self.counted_passages.add(track_id)
-                                try: database.log_passage("L_TO_R", track_id)
-                                except: pass
-                                print(f"[CORRIDOR PASSAGE] Track #{track_id} moved LEFT ➔ RIGHT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
-                            elif delta_x <= -65:
-                                self.passage_counts["r_to_l"] += 1
-                                self.counted_passages.add(track_id)
-                                try: database.log_passage("R_TO_L", track_id)
-                                except: pass
-                                print(f"[CORRIDOR PASSAGE] Track #{track_id} moved RIGHT ➔ LEFT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
-                    
-                    # Pose & Action Analysis
-                    keypoints = all_kps[i] if (all_kps is not None and i < len(all_kps)) else None
-                    pose_label = "NEUTRAL"
-                    pose_multiplier = 1.0
-                    
-                    if keypoints is not None and len(keypoints) > 10:
-                        try:
-                            l_shoulder, r_shoulder = keypoints[5], keypoints[6]
-                            l_wrist, r_wrist = keypoints[9], keypoints[10]
-                            l_hip, r_hip = keypoints[11], keypoints[12]
-                            
-                            hip_y = (l_hip[1] + r_hip[1]) / 2
-                            shoulder_y = (l_shoulder[1] + r_shoulder[1]) / 2
-                            torso_height = abs(hip_y - shoulder_y)
-                            
-                            hands_active = l_wrist[1] < (hip_y - 0.1*torso_height) or r_wrist[1] < (hip_y - 0.1*torso_height)
-                            is_leaning = abs(l_shoulder[0] - l_hip[0]) > (0.15 * torso_height)
-                            hands_at_side = abs(l_wrist[1] - l_hip[1]) < (0.1 * torso_height) and abs(r_wrist[1] - r_hip[1]) < (0.1 * torso_height)
-                            
-                            if hands_active:
-                                pose_label = "ACTIVE"
-                                pose_multiplier = 1.3
-                            elif is_leaning:
-                                pose_label = "ENGAGED"
-                                pose_multiplier = 1.1
-                            elif hands_at_side:
-                                pose_label = "RELAXED"
-                                pose_multiplier = 0.5
-                            
-                            with self.lock:
-                                state["pose_multiplier"] = pose_multiplier
-                                state["pose_label"] = pose_label
-                        except: pass
-
-                    # 2. Track-to-Identity Caching Map
-                    with self.lock:
-                        t_ident = self.track_identities.get(track_id)
-                        is_verified = (t_ident is not None and t_ident.get("verified", False))
-                        if is_verified:
-                            state["name"] = t_ident["name"]
-                            state["db_id"] = t_ident.get("db_id")
-                            state["role"] = t_ident.get("role", "None")
-                            state["identity_locked"] = True
-                        db_id = state.get("db_id")
-                        is_processing = track_id in self.processing_tracks
-
-                    # Fast path: Identity already verified for this active track
-                    if is_verified:
-                        pass
-                    else:
-                        # Recognition path: Run ArcFace only until identity is locked
-                        last_attempt = self.last_rec_attempt.get(track_id, 0)
-                        check_interval = 0.35
-                        if not is_processing and (current_time - last_attempt > check_interval):
-                            self.last_rec_attempt[track_id] = current_time
-
-                            # Compute scale from DETECTION (640x480) to face_source (native camera res)
-                            fs_scale_x = fw / DETECTION_WIDTH
-                            fs_scale_y = fh / DETECTION_HEIGHT
-
-                            # 1. Crop Head Region for InsightFace (Fixes "Face Not Detected")
-                            # Map YOLO track bounding box to native frame
-                            track_box_native = (
-                                int(x1 * fs_scale_x),
-                                int(y1 * fs_scale_y),
-                                int(x2 * fs_scale_x),
-                                int(y2 * fs_scale_y)
-                            )
-                            x1_orig, y1_orig, x2_orig, y2_orig = map(int, track_box_native)
-                            h_orig = y2_orig - y1_orig
-                            # Focus strictly on the upper body/head (top 40% head region)
-                            head_y2 = int(y1_orig + (h_orig * 0.40))
-                            head_crop = face_source[max(0, y1_orig):min(fh, head_y2), max(0, x1_orig):min(fw, x2_orig)] if (x2_orig > x1_orig and head_y2 > y1_orig) else None
-
-                            # Quality check: head crop available for InsightFace
-                            is_good_quality = (head_crop is not None and head_crop.shape[0] >= 30 and head_crop.shape[1] >= 30)
-
-                            # Extract full body crop for Person Re-ID (appearance embedding)
-                            x1b = max(0, x1_orig)
-                            y1b = max(0, y1_orig)
-                            x2b = min(fw, x2_orig)
-                            y2b = min(fh, y2_orig)
-                            body_crop = face_source[y1b:y2b, x1b:x2b] if (x2b > x1b and y2b > y1b) else None
-                            has_valid_body = body_crop is not None and body_crop.shape[0] >= 60 and body_crop.shape[1] >= 30
-
-                            if is_good_quality or has_valid_body:
-                                with self.lock:
-                                    self.processing_tracks.add(track_id)
-                                self.recognition_queue.put((
-                                    track_id, 
-                                    head_crop.copy() if is_good_quality else None, 
-                                    body_crop.copy() if has_valid_body else None, 
-                                    current_zone, 
-                                    current_time
-                                ))
-                    # Sync presence heartbeat (only for confirmed staff, not customers)
-                    with self.lock:
-                        last_sync = state.get("last_sync", 0)
-                    if current_time - last_sync > self.heartbeat_interval:
-                        if db_id and not str(db_id).startswith("C_"):
-                            database.record_attendance(db_id)
+                        hip_y = (l_hip[1] + r_hip[1]) / 2
+                        shoulder_y = (l_shoulder[1] + r_shoulder[1]) / 2
+                        torso_height = abs(hip_y - shoulder_y)
+                        
+                        hands_active = l_wrist[1] < (hip_y - 0.1*torso_height) or r_wrist[1] < (hip_y - 0.1*torso_height)
+                        is_leaning = abs(l_shoulder[0] - l_hip[0]) > (0.15 * torso_height)
+                        hands_at_side = abs(l_wrist[1] - l_hip[1]) < (0.1 * torso_height) and abs(r_wrist[1] - r_hip[1]) < (0.1 * torso_height)
+                        
+                        if hands_active:
+                            pose_label = "ACTIVE"
+                            pose_multiplier = 1.3
+                        elif is_leaning:
+                            pose_label = "ENGAGED"
+                            pose_multiplier = 1.1
+                        elif hands_at_side:
+                            pose_label = "RELAXED"
+                            pose_multiplier = 0.5
+                        
                         with self.lock:
-                            state["last_sync"] = current_time
-                        
-                    # Path Context & Exact Efficiency Logic
-                    with self.lock:
-                        db_id = state["db_id"]
-                        role = state["role"]
-                        
+                            state["pose_multiplier"] = pose_multiplier
+                            state["pose_label"] = pose_label
+                    except: pass
+
+                # 2. Track-to-Identity Caching Map
+                with self.lock:
+                    t_ident = self.track_identities.get(track_id)
+                    is_verified = (t_ident is not None and t_ident.get("verified", False))
+                    if is_verified:
+                        state["name"] = t_ident["name"]
+                        state["db_id"] = t_ident.get("db_id")
+                        state["role"] = t_ident.get("role", "None")
+                        state["identity_locked"] = True
+                    db_id = state.get("db_id")
+                    is_processing = track_id in self.processing_tracks
+
+                # Fast path: Identity already verified for this active track
+                if is_verified:
+                    pass
+                else:
+                    # Recognition path: Run ArcFace only until identity is locked
+                    last_attempt = self.last_rec_attempt.get(track_id, 0)
+                    check_interval = 0.35
+                    if not is_processing and (current_time - last_attempt > check_interval):
+                        self.last_rec_attempt[track_id] = current_time
+
+                        # Compute scale from DETECTION (640x480) to face_source (native camera res)
+                        fs_scale_x = fw / DETECTION_WIDTH
+                        fs_scale_y = fh / DETECTION_HEIGHT
+
+                        # 1. Crop Head Region for InsightFace (Fixes "Face Not Detected")
+                        # Map YOLO track bounding box to native frame
+                        track_box_native = (
+                            int(x1 * fs_scale_x),
+                            int(y1 * fs_scale_y),
+                            int(x2 * fs_scale_x),
+                            int(y2 * fs_scale_y)
+                        )
+                        x1_orig, y1_orig, x2_orig, y2_orig = map(int, track_box_native)
+                        h_orig = y2_orig - y1_orig
+                        # Focus strictly on the upper body/head (top 40% head region)
+                        head_y2 = int(y1_orig + (h_orig * 0.40))
+                        head_crop = face_source[max(0, y1_orig):min(fh, head_y2), max(0, x1_orig):min(fw, x2_orig)] if (x2_orig > x1_orig and head_y2 > y1_orig) else None
+
+                        # Quality check: head crop available for InsightFace
+                        is_good_quality = (head_crop is not None and head_crop.shape[0] >= 30 and head_crop.shape[1] >= 30)
+
+                        # Extract full body crop for Person Re-ID (appearance embedding)
+                        x1b = max(0, x1_orig)
+                        y1b = max(0, y1_orig)
+                        x2b = min(fw, x2_orig)
+                        y2b = min(fh, y2_orig)
+                        body_crop = face_source[y1b:y2b, x1b:x2b] if (x2b > x1b and y2b > y1b) else None
+                        has_valid_body = body_crop is not None and body_crop.shape[0] >= 60 and body_crop.shape[1] >= 30
+
+                        if is_good_quality or has_valid_body:
+                            with self.lock:
+                                self.processing_tracks.add(track_id)
+                            self.recognition_queue.put((
+                                track_id, 
+                                head_crop.copy() if is_good_quality else None, 
+                                body_crop.copy() if has_valid_body else None, 
+                                current_zone, 
+                                current_time
+                            ))
+                # Sync presence heartbeat (only for confirmed staff, not customers)
+                with self.lock:
+                    last_sync = state.get("last_sync", 0)
+                if current_time - last_sync > self.heartbeat_interval:
                     if db_id and not str(db_id).startswith("C_"):
-                        prev_pos = self.last_positions.get(track_id)
-                        if prev_pos:
-                            dist = np.sqrt((center[0]-prev_pos[0])**2 + (center[1]-prev_pos[1])**2)
-                            
-                            # 1. Base Multiplier (Idle check)
-                            multiplier = 0.0
-                            if dist > 3: # Some movement detected
-                                multiplier = 1.0
-                            
-                            # 2. Zone Precision check (Anti-Fake)
-                            authorized_zones = self.role_work_zones.get(role, ["Main Hall"])
-                            if current_zone not in authorized_zones:
-                                multiplier *= 0.1 # Severe penalty for being in unauthorized areas
-                            elif current_zone == "Main Hall":
-                                multiplier *= 0.3 # Low value for walking in halls
-                            
-                            # 3. Service Engagement (Customer Proximity)
-                            is_near_customer = False
-                            with self.lock:
-                                for other_tid, other_state in self.person_states.items():
-                                    if other_tid != track_id and str(other_state.get("db_id", "")).startswith("C_"):
-                                        other_pos = self.last_positions.get(other_tid)
-                                        if other_pos:
-                                            p_dist = np.sqrt((center[0]-other_pos[0])**2 + (center[1]-other_pos[1])**2)
-                                            if p_dist < 150: # Proximity to a registered customer (approx 5ft)
-                                                is_near_customer = True
-                                                break
-                            
-                            if is_near_customer:
-                                multiplier *= 2.0 # DOUBLE efficiency for guest interaction
-                            
-                            # 4. Pose-Based Action Refinement
-                            with self.lock:
-                                p_mult = state.get("pose_multiplier", 1.0)
-                            multiplier *= p_mult
-                            
-                            # 5. Stationary Work Check
-                            if dist <= 3 and current_zone in authorized_zones and current_zone != "Main Hall":
-                                multiplier = 0.3
-                            
-                            self.activity_buffer[db_id] = self.activity_buffer.get(db_id, 0) + multiplier
-                        
-                    self.last_positions[track_id] = center
-                    
-                    # RESTRICTED / SAFE ZONE MONITORING
-                    in_unauth_zone = False
-                    is_staff = db_id and not str(db_id).startswith("C_")
-                    for zone in self.zones:
-                        if zone.unauthorized_roles and zone.is_inside(center):
-                            is_unauth = False
-                            if role and role in zone.unauthorized_roles:
-                                is_unauth = True
-                            elif not is_staff and ("Customer" in zone.unauthorized_roles or "Guest" in zone.unauthorized_roles or "None" in zone.unauthorized_roles or "Unknown" in zone.unauthorized_roles or "All" in zone.unauthorized_roles or len(zone.unauthorized_roles) > 0):
-                                is_unauth = True
-                                
-                            if is_unauth:
-                                in_unauth_zone = True
-                                if (track_id, zone.name) not in self.alerted_tracks:
-                                    person_label = state.get("name", "Unknown Person")
-                                    try: database.log_activity(db_id or f"Track_{track_id}", zone.name, "Security Alert", f"Unauthorized entry ({person_label}) detected in {zone.name}.")
-                                    except: pass
-                                    with self.lock:
-                                        state["needs_security_email"] = zone.name
-                                    self.alerted_tracks.add((track_id, zone.name))
-                                    print(f"[SECURITY ALERT] Unauthorized entry by {person_label} in {zone.name}!")
-                                break
-                    
-                    if not in_unauth_zone:
-                        # Clear alerts for zones this track is no longer in
-                        self.alerted_tracks = {(tid, zname) for tid, zname in self.alerted_tracks if tid != track_id}
-
-                    # CUSTOMER INTELLIGENCE (Track every non-staff person as a customer)
-                    if not is_staff:
-                        if track_id not in self.customer_timers:
-                            c_id = int(str(db_id).split("_")[1]) if db_id and str(db_id).startswith("C_") else None
-                            self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": c_id}
-                        elif db_id and str(db_id).startswith("C_") and self.customer_timers[track_id].get("c_id") is None:
-                            self.customer_timers[track_id]["c_id"] = int(str(db_id).split("_")[1])
-                    elif track_id in self.customer_timers:
-                        # Person confirmed as staff — remove any stale customer timer
-                        del self.customer_timers[track_id]
-
-                    # Visuals (Bounding Boxes for EVERYONE)
+                        database.record_attendance(db_id)
                     with self.lock:
-                        db_id = state.get("db_id")
-                        state_id = state.get("id")
-                        state_name = state.get("name", "Unknown")
-                        state_role = state.get("role", "None")
-                        status = state.get("pose_label", "NEUTRAL")
-                        track_age = current_time - state.get("first_seen", current_time)
-                        
-                    if not db_id:
-                        color_hex = "#f97316"  # Amber for Unknown
-                        cv2_color = (6, 119, 217)
-                        label = "HUMAN"
-                    elif str(db_id).startswith("C_"):
-                        visits = state.get("visits", 1)
-                        cv2_color = (0, 215, 255) # Gold for Guests
-                        if visits <= 1:
-                            color_hex = "#f97316"  # Orange for New Customer (first visit)
-                            label = "New Customer (1st visit)"
-                        else:
-                            color_hex = "#eab308"  # Yellow for Regular Guest
-                            suffix = "th" if visits >= 4 else ({1:"st",2:"nd",3:"rd"}.get(visits, "th"))
-                            label = f"Regular Customer ({visits}{suffix} visit)"
-                    else:
-                        color_hex = "#3b82f6"  # Blue for Enrolled Staff (Type 3)
-                        cv2_color = (229, 70, 79) # Indigo for Staff
-                        role_tag = f" ({state_role})" if state_role and state_role != "None" else ""
-                        status = state.get("pose_label", "NEUTRAL")
-                        label = f"STAFF: {state_name} [{status}]"
+                        state["last_sync"] = current_time
                     
-                    # Draw Box overlay directly onto video stream frame
-                    cv2.rectangle(output_frame, (int(x1_out), int(y1_out)), (int(x2_out), int(y2_out)), cv2_color, 2)
-                    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                    cv2.rectangle(output_frame, (int(x1_out), int(y1_out) - th - 10), (int(x1_out) + tw + 10, int(y1_out)), cv2_color, -1)
-                    cv2.putText(output_frame, label, (int(x1_out) + 5, int(y1_out) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                # Path Context & Exact Efficiency Logic
+                with self.lock:
+                    db_id = state["db_id"]
+                    role = state["role"]
+                    
+                if db_id and not str(db_id).startswith("C_"):
+                    prev_pos = self.last_positions.get(track_id)
+                    if prev_pos:
+                        dist = np.sqrt((center[0]-prev_pos[0])**2 + (center[1]-prev_pos[1])**2)
+                        
+                        # 1. Base Multiplier (Idle check)
+                        multiplier = 0.0
+                        if dist > 3: # Some movement detected
+                            multiplier = 1.0
+                        
+                        # 2. Zone Precision check (Anti-Fake)
+                        authorized_zones = self.role_work_zones.get(role, ["Main Hall"])
+                        if current_zone not in authorized_zones:
+                            multiplier *= 0.1 # Severe penalty for being in unauthorized areas
+                        elif current_zone == "Main Hall":
+                            multiplier *= 0.3 # Low value for walking in halls
+                        
+                        # 3. Service Engagement (Customer Proximity)
+                        is_near_customer = False
+                        with self.lock:
+                            for other_tid, other_state in self.person_states.items():
+                                if other_tid != track_id and str(other_state.get("db_id", "")).startswith("C_"):
+                                    other_pos = self.last_positions.get(other_tid)
+                                    if other_pos:
+                                        p_dist = np.sqrt((center[0]-other_pos[0])**2 + (center[1]-other_pos[1])**2)
+                                        if p_dist < 150: # Proximity to a registered customer (approx 5ft)
+                                            is_near_customer = True
+                                            break
+                        
+                        if is_near_customer:
+                            multiplier *= 2.0 # DOUBLE efficiency for guest interaction
+                        
+                        # 4. Pose-Based Action Refinement
+                        with self.lock:
+                            p_mult = state.get("pose_multiplier", 1.0)
+                        multiplier *= p_mult
+                        
+                        # 5. Stationary Work Check
+                        if dist <= 3 and current_zone in authorized_zones and current_zone != "Main Hall":
+                            multiplier = 0.3
+                        
+                        self.activity_buffer[db_id] = self.activity_buffer.get(db_id, 0) + multiplier
+                    
+                self.last_positions[track_id] = center
+                
+                # RESTRICTED / SAFE ZONE MONITORING
+                in_unauth_zone = False
+                is_staff = db_id and not str(db_id).startswith("C_")
+                for zone in self.zones:
+                    if zone.unauthorized_roles and zone.is_inside(center):
+                        is_unauth = False
+                        if role and role in zone.unauthorized_roles:
+                            is_unauth = True
+                        elif not is_staff and ("Customer" in zone.unauthorized_roles or "Guest" in zone.unauthorized_roles or "None" in zone.unauthorized_roles or "Unknown" in zone.unauthorized_roles or "All" in zone.unauthorized_roles or len(zone.unauthorized_roles) > 0):
+                            is_unauth = True
+                            
+                        if is_unauth:
+                            in_unauth_zone = True
+                            if (track_id, zone.name) not in self.alerted_tracks:
+                                person_label = state.get("name", "Unknown Person")
+                                try: database.log_activity(db_id or f"Track_{track_id}", zone.name, "Security Alert", f"Unauthorized entry ({person_label}) detected in {zone.name}.")
+                                except: pass
+                                with self.lock:
+                                    state["needs_security_email"] = zone.name
+                                self.alerted_tracks.add((track_id, zone.name))
+                                print(f"[SECURITY ALERT] Unauthorized entry by {person_label} in {zone.name}!")
+                            break
+                
+                if not in_unauth_zone:
+                    # Clear alerts for zones this track is no longer in
+                    self.alerted_tracks = {(tid, zname) for tid, zname in self.alerted_tracks if tid != track_id}
 
-                    # Store last box in state for carry-forward during brief YOLO misses
-                    state["last_box"] = [float(x1), float(y1), float(x2), float(y2)]
-                    state["last_label"] = label
-                    state["last_color"] = color_hex
-                    # Compile detection metadata for canvas rendering
-                    detections.append({
-                        "track_id": int(track_id),
-                        "staff_id": db_id if (db_id and not str(db_id).startswith("C_")) else None,
-                        "box": state["last_box"],
-                        "label": label,
-                        "color": color_hex
-                    })
+                # CUSTOMER INTELLIGENCE (Track every non-staff person as a customer)
+                if not is_staff:
+                    if track_id not in self.customer_timers:
+                        c_id = int(str(db_id).split("_")[1]) if db_id and str(db_id).startswith("C_") else None
+                        self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": c_id}
+                    elif db_id and str(db_id).startswith("C_") and self.customer_timers[track_id].get("c_id") is None:
+                        self.customer_timers[track_id]["c_id"] = int(str(db_id).split("_")[1])
+                elif track_id in self.customer_timers:
+                    # Person confirmed as staff — remove any stale customer timer
+                    del self.customer_timers[track_id]
+
+                # Visuals (Bounding Boxes for EVERYONE)
+                with self.lock:
+                    db_id = state.get("db_id")
+                    state_id = state.get("id")
+                    state_name = state.get("name", "Unknown")
+                    state_role = state.get("role", "None")
+                    status = state.get("pose_label", "NEUTRAL")
+                    track_age = current_time - state.get("first_seen", current_time)
+                    
+                real_class_name = "person"
+                if model is not None and hasattr(model, 'names') and model.names:
+                    real_class_name = model.names.get(0, "person")
+                
+                if not db_id:
+                    color_hex = "#f97316"  # Amber for Unknown
+                    cv2_color = (6, 119, 217)
+                    label = f"{real_class_name.upper()} #{track_id}"
+                elif str(db_id).startswith("C_"):
+                    visits = state.get("visits", 1)
+                    cv2_color = (0, 215, 255) # Gold for Guests
+                    if visits <= 1:
+                        color_hex = "#f97316"  # Orange for New Customer (first visit)
+                        label = "New Customer (1st visit)"
+                    else:
+                        color_hex = "#eab308"  # Yellow for Regular Guest
+                        suffix = "th" if visits >= 4 else ({1:"st",2:"nd",3:"rd"}.get(visits, "th"))
+                        label = f"Regular Customer ({visits}{suffix} visit)"
+                else:
+                    color_hex = "#3b82f6"  # Blue for Enrolled Staff (Type 3)
+                    cv2_color = (229, 70, 79) # Indigo for Staff
+                    role_tag = f" ({state_role})" if state_role and state_role != "None" else ""
+                    status = state.get("pose_label", "NEUTRAL")
+                    label = f"STAFF: {state_name} [{status}]"
+                
+                # Draw Box overlay directly onto video stream frame
+                cv2.rectangle(output_frame, (int(x1_out), int(y1_out)), (int(x2_out), int(y2_out)), cv2_color, 2)
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                cv2.rectangle(output_frame, (int(x1_out), int(y1_out) - th - 10), (int(x1_out) + tw + 10, int(y1_out)), cv2_color, -1)
+                cv2.putText(output_frame, label, (int(x1_out) + 5, int(y1_out) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+                # Store last box in state for carry-forward during brief YOLO misses
+                state["last_box"] = [float(x1), float(y1), float(x2), float(y2)]
+                state["last_label"] = label
+                state["last_color"] = color_hex
+                # Compile detection metadata for canvas rendering
+                detections.append({
+                    "track_id": int(track_id),
+                    "staff_id": db_id if (db_id and not str(db_id).startswith("C_")) else None,
+                    "box": state["last_box"],
+                    "label": label,
+                    "color": color_hex
+                })
 
             # STRICT 1-TO-1 DEDUPLICATION: Ensure no two boxes display the same staff identity
             staff_tracker = {}
@@ -1652,11 +1724,17 @@ class VisionEngine:
                     s = self.person_states[tid]
                     db_id = s.get("db_id")
                     st_id = db_id if (db_id and not str(db_id).startswith("C_")) else None
+                    real_class_name = "person"
+                    if model is not None and hasattr(model, 'names') and model.names:
+                        real_class_name = model.names.get(0, "person")
+                    lbl = s.get("last_label")
+                    if not lbl or lbl == "HUMAN":
+                        lbl = f"{real_class_name.upper()} #{tid}"
                     detections.append({
                         "track_id": int(tid),
                         "staff_id": st_id,
                         "box": s["last_box"],
-                        "label": s.get("last_label", "HUMAN"),
+                        "label": lbl,
                         "color": s.get("last_color", "#f97316")
                     })
 
@@ -1681,8 +1759,9 @@ class VisionEngine:
         with self.lock:
             for tid, state in self.person_states.items():
                 db_id = state.get("db_id")
-                # Only include enrolled staff — skip None (unknown) and C_xxx (customers)
-                if (time.time() - state["last_active"] < 8
+                # Only include enrolled staff from confirmed tracks — skip None and customers
+                if (tid in self.confirmed_track_ids
+                        and time.time() - state["last_active"] < 8
                         and db_id is not None
                         and not str(db_id).startswith("C_")):
                     active_dict[db_id] = {

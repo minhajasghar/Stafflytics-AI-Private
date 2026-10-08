@@ -1,7 +1,7 @@
 import threading
 import os
 # Suppress FFmpeg/HEVC decoder noise before any OpenCV/FFmpeg init
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|max_delay;2000000"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["FFREPORT"] = "level=quiet"
 from dotenv import load_dotenv
@@ -52,12 +52,62 @@ _wz_logger.addHandler(_logging.StreamHandler(_sys.stdout))
 _wz_logger.setLevel(_logging.INFO)
 
 
+class MetricsCollector:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.last_log_time = time.time()
+        self.capture_frames = 0
+        self.inference_times = []
+        self.e2e_latencies = []
+        self.raw_counts = []
+        self.filtered_counts = []
+        self.confirmed_counts = []
+        self.latest_metrics_line = ""
+
+    def record_capture(self):
+        with self.lock:
+            self.capture_frames += 1
+
+    def record_inference(self, infer_ms, e2e_ms, raw_cnt, filt_cnt, conf_cnt):
+        with self.lock:
+            self.inference_times.append(infer_ms)
+            self.e2e_latencies.append(e2e_ms)
+            self.raw_counts.append(raw_cnt)
+            self.filtered_counts.append(filt_cnt)
+            self.confirmed_counts.append(conf_cnt)
+            
+            now = time.time()
+            elapsed = now - self.last_log_time
+            if elapsed >= 5.0:
+                fps = self.capture_frames / max(elapsed, 0.001)
+                avg_inf = (sum(self.inference_times) / len(self.inference_times)) if self.inference_times else 0.0
+                avg_e2e = (sum(self.e2e_latencies) / len(self.e2e_latencies)) if self.e2e_latencies else 0.0
+                raw = int(self.raw_counts[-1]) if self.raw_counts else 0
+                filt = int(self.filtered_counts[-1]) if self.filtered_counts else 0
+                conf = int(self.confirmed_counts[-1]) if self.confirmed_counts else 0
+                
+                log_line = f"[AI METRICS] Capture FPS: {fps:.1f} | Inference: {avg_inf:.1f} ms/frame | E2E Latency: {avg_e2e:.1f} ms | Raw: {raw} | After-Filter: {filt} | Confirmed Tracks: {conf}"
+                print(log_line, flush=True)
+                self.latest_metrics_line = log_line
+                
+                self.last_log_time = now
+                self.capture_frames = 0
+                self.inference_times.clear()
+                self.e2e_latencies.clear()
+                self.raw_counts.clear()
+                self.filtered_counts.clear()
+                self.confirmed_counts.clear()
+
+metrics_collector = MetricsCollector()
+
 websocket_clients = set()
 websocket_lock = threading.Lock()
-last_detection_payload = json.dumps({"detections": [], "frame_w": 640, "frame_h": 480, "passage": {"l_to_r": 0, "r_to_l": 0}})
+last_detection_payload = json.dumps({"detections": [], "frame_w": 640, "frame_h": 480, "passage": {"l_to_r": 0, "r_to_l": 0}, "timestamp": time.time()})
 
-def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None):
+def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None, timestamp=None):
     global last_detection_payload
+    if timestamp is None:
+        timestamp = time.time()
     if passage is None and engine is not None:
         try:
             passage = engine.get_passage_counts()
@@ -76,7 +126,8 @@ def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None):
         "detections": detections, 
         "frame_w": frame_w, 
         "frame_h": frame_h,
-        "passage": passage or {"l_to_r": 0, "r_to_l": 0}
+        "passage": passage or {"l_to_r": 0, "r_to_l": 0},
+        "timestamp": float(timestamp)
     }, default=_json_serial)
     last_detection_payload = payload
     with websocket_lock:
@@ -259,11 +310,10 @@ class CameraStream:
         self.stream = None
         self.frame = None
         self.frame_id = 0
+        self.frame_timestamp = 0.0
         self.stopped = False
         self.online = False
         self.lock = threading.Lock()
-        self.frame_buffer = deque(maxlen=5)
-        self.latest_frame_time = 0
         self.indices = [0, 1, 2] # Try multiple camera indices
         self.backeneds = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
         self.actual_width = 640
@@ -280,8 +330,8 @@ class CameraStream:
     def _attempt_connection(self):
         global camera_online
         import stream_manager
-        # Zero-buffer streaming configuration to drop queued frames and eliminate positional latency
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|max_delay;500000"
+        # Zero-buffer streaming configuration with nobuffer and low_delay
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
         # Use override URL if specified (display_stream uses cam, camera_stream uses cam_ai)
         active_url = self.rtsp_override if self.rtsp_override else RTSP_URL
         
@@ -450,10 +500,12 @@ class CameraStream:
                     continue
                 
                 retry_count = 0
+                now_ts = time.time()
+                metrics_collector.record_capture()
                 with self.lock:
-                    self.frame = frame
+                    self.frame = frame  # Dedicated reader thread keeps ONLY the latest frame
                     self.frame_id += 1
-                    self.frame_buffer.append((frame.copy(), self.frame_id))
+                    self.frame_timestamp = now_ts
                 # Heartbeat for the Imou bridge watchdog (HLS stall detection).
                 try:
                     import stream_manager
@@ -473,18 +525,15 @@ class CameraStream:
 
     def read(self):
         with self.lock:
-            return (self.frame.copy(), self.frame_id) if self.frame is not None else (None, 0)
+            if self.frame is not None:
+                return (self.frame, self.frame_id, self.frame_timestamp)
+            return (None, 0, 0.0)
 
     def read_buffered(self):
-        with self.lock:
-            if self.frame_buffer:
-                f, fid = self.frame_buffer[-1]
-                return (f.copy(), fid)
-            return (self.frame.copy(), self.frame_id) if self.frame is not None else (None, 0)
+        return self.read()
 
     def get_buffer_fill(self):
-        with self.lock:
-            return len(self.frame_buffer)
+        return 1 if self.frame is not None else 0
 
     def stop(self):
         self.stopped = True
@@ -497,41 +546,61 @@ def vision_engine_loop():
     while True:
         try:
             if camera_stream is None or not camera_stream.online or engine is None:
-                time.sleep(0.5)
+                time.sleep(0.05)
                 continue
             
             res = camera_stream.read()
             if res[0] is None:
-                time.sleep(0.1)
+                time.sleep(0.005)
                 continue
                 
-            frame, frame_id = res
+            frame, frame_id, frame_ts = res
+            # Inference thread always takes latest frame and drops older ones; no queues
             if frame_id == last_processed_frame_id:
-                time.sleep(0.01)
+                time.sleep(0.005)
                 continue
                 
             last_processed_frame_id = frame_id
             
-            # Use user-selected resolution — honor the setting rather than capping to camera native
             tw = camera_width or 640
             th = camera_height or 480
-            raw_frame, detections = engine.process_frame(frame, target_size=(tw, th), original_frame=frame)
+            t_infer_start = time.perf_counter()
+            # Draw boxes server-side on the SAME frame that was inferred
+            annotated_frame, detections = engine.process_frame(
+                frame, 
+                target_size=(tw, th), 
+                original_frame=frame,
+                frame_timestamp=frame_ts
+            )
+            t_infer_ms = (time.perf_counter() - t_infer_start) * 1000.0
+            e2e_latency_ms = (time.time() - frame_ts) * 1000.0
             
-            # Persist latest detections on the engine so video_feed MJPEG overlay can draw boxes
+            # Log metrics
+            metrics_collector.record_inference(
+                t_infer_ms, 
+                e2e_latency_ms, 
+                getattr(engine, 'last_raw_count', len(detections)), 
+                getattr(engine, 'last_filtered_count', len(detections)), 
+                getattr(engine, 'last_confirmed_count', len(detections))
+            )
+
+            # Persist latest detections
             engine.latest_detections = detections
 
             with processed_frame_lock:
-                latest_processed_frame = raw_frame.copy() if raw_frame is not None else None
+                latest_processed_frame = annotated_frame
             
-            # Broadcast detection coordinates to all websocket clients.
-            # frame_w/frame_h = the native detection space (cam_ai res, 16:9),
-            # so the browser canvas can scale boxes to the video exactly.
-            broadcast_detections(detections, frame_w=frame.shape[1], frame_h=frame.shape[0])
-            # Sleep small interval to yield CPU and maintain smooth ~30 FPS tracking with lightweight YOLOv8n
-            time.sleep(0.01)
+            # Broadcast detection coordinates with frame timestamp
+            broadcast_detections(
+                detections, 
+                frame_w=frame.shape[1], 
+                frame_h=frame.shape[0],
+                passage=engine.get_passage_counts(),
+                timestamp=frame_ts
+            )
         except Exception as e:
             print(f"[VISION LOOP ERROR] {e}")
-            time.sleep(1)
+            time.sleep(0.05)
 
 # --- ASYNCHRONOUS INITIALIZATION ---
 def background_system_init():
@@ -665,56 +734,20 @@ def generate_frames():
                 time.sleep(1); continue
 
 
-            # Prefer the full-res display_stream frame for a sharp MJPEG feed.
-            # latest_processed_frame comes from cam_ai (640x480) and is blurry
-            # when upscaled — only use it if display_stream is unavailable.
-            display_frame = None
-            buf_frame_id = -1
-
-            if display_stream is not None and display_stream.online:
-                res, fid = display_stream.read_buffered()
-                if res is not None:
-                    if fid == last_sent_frame_id:
-                        time.sleep(0.01)
-                        continue
-                    display_frame = res
-                    buf_frame_id = fid
+            # Stream the server-side annotated frame directly
+            with processed_frame_lock:
+                if latest_processed_frame is not None:
+                    display_frame = latest_processed_frame.copy()
 
             if display_frame is None:
-                # Fall back to processed frame (may be low-res) if display stream not ready
-                with processed_frame_lock:
-                    display_frame = latest_processed_frame.copy() if latest_processed_frame is not None else None
-
-            # Last resort: read from any online stream
-            if display_frame is None:
-                src = next((s for s in streams if s.online), None)
-                if src:
-                    res, fid = src.read_buffered()
-                    if res is not None:
-                        if fid == last_sent_frame_id:
-                            time.sleep(0.01)
-                            continue
-                        display_frame = res
-                        buf_frame_id = fid
-                    else:
-                        time.sleep(0.05)
-                        continue
-                else:
-                    time.sleep(0.05)
+                src = camera_stream or display_stream
+                if src and src.online:
+                    res = src.read()
+                    if res[0] is not None:
+                        display_frame = res[0]
+                if display_frame is None:
+                    time.sleep(0.02)
                     continue
-            
-            # Overlay Bounding Boxes on the raw display feed
-            if engine and hasattr(engine, 'latest_detections') and engine.latest_detections:
-                try:
-                    from vision_engine import draw_detections_on_frame
-                    # Ensure camera_stream is defined; use its dims for scaling detection coordinates
-                    if 'camera_stream' in globals() and camera_stream is not None and getattr(camera_stream, 'actual_width', None) and getattr(camera_stream, 'actual_height', None):
-                        src_w, src_h = camera_stream.actual_width, camera_stream.actual_height
-                    else:
-                        src_w, src_h = 640, 480 # Fallback
-                    display_frame = draw_detections_on_frame(display_frame, engine.latest_detections, src_w, src_h)
-                except Exception as e:
-                    pass
 
             elapsed = time.time() - last_yield_time
             if elapsed < min_frame_interval:
