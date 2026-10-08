@@ -9,7 +9,7 @@
     <link rel="icon" href="{{ url_for('static', filename='img/favicon-16.png') }}" type="image/png" sizes="16x16">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css?v=19">
+    <link rel="stylesheet" href="/static/css/style.css?v=20">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -161,7 +161,6 @@
                     <div class="stat-pill"><i class="fas fa-shield-halved stat-red"></i><div class="stat-info"><span>Alerts</span><div id="incidents-today">0</div></div></div>
                     <div class="stat-pill"><i class="fas fa-users-viewfinder stat-blue" style="color:var(--accent);"></i><div class="stat-info"><span>Monthly Traffic</span><div id="monthly-customers">0</div></div></div>
                 </section>
-                <div class="monitor-scroll-spacer"></div>
             </div>
             
             <div id="section-analytics" class="view-section hidden">
@@ -612,7 +611,7 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/hls.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/main.js', v=11) }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js', v=12) }}"></script>
     
     <script>
         let webrtcPeerConnection = null;
@@ -1284,6 +1283,22 @@
                     resizeCanvas();
                 });
                 resizeObserver.observe(canvas.parentElement);
+            }
+
+            // Sync Right Monitor panel visibility with active section
+            const curActive = document.querySelector('.view-section:not(.hidden)');
+            const rightMon = document.querySelector('.right-monitor');
+            const dash = document.querySelector('.dashboard');
+            if (rightMon) {
+                if (curActive && curActive.id === 'section-monitor') {
+                    rightMon.classList.remove('hidden');
+                    rightMon.style.display = '';
+                    if (dash) dash.classList.remove('no-right-panel');
+                } else {
+                    rightMon.classList.add('hidden');
+                    rightMon.style.display = 'none';
+                    if (dash) dash.classList.add('no-right-panel');
+                }
             }
         });
     </script>

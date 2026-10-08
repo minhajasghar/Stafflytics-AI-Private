@@ -96,6 +96,22 @@ function handleNavClick(element) {
     const targetId = sectionMap[title];
     if (targetId) {
         document.getElementById(targetId).classList.remove('hidden');
+
+        // Right panel (Trackers, Roster, Security Activity) ONLY appears in Monitor section!
+        const rightMonitor = document.querySelector('.right-monitor');
+        const dashboard = document.querySelector('.dashboard');
+        if (rightMonitor) {
+            if (targetId === 'section-monitor') {
+                rightMonitor.classList.remove('hidden');
+                rightMonitor.style.display = '';
+                if (dashboard) dashboard.classList.remove('no-right-panel');
+            } else {
+                rightMonitor.classList.add('hidden');
+                rightMonitor.style.display = 'none';
+                if (dashboard) dashboard.classList.add('no-right-panel');
+            }
+        }
+
         if (targetId === 'section-monitor') {
             const rtc = document.getElementById('webrtc-video');
             const hls = document.getElementById('hls-video');
@@ -710,14 +726,14 @@ function renderShiftRoster(roster) {
                 <div class="roster-avatar">${initials}</div>
                 <div class="roster-details">
                     <div class="roster-name" title="${r.name}">${r.name}</div>
-                    <div class="roster-role">${r.role || 'Staff'}</div>
+                    <div class="roster-role" title="${r.role || 'Staff'}">${r.role || 'Staff'}</div>
                 </div>
                 <div class="roster-meta">
                     <div class="roster-shift-tag">
                         <span class="shift-pill shift-pill-${shiftLower}">${r.shift}</span>
                         <span class="roster-status-dot ${isOnFloor ? 'status-online' : 'status-offline'}" title="${isOnFloor ? 'On floor' : 'Not arrived'}"></span>
                     </div>
-                    <div class="roster-time">${r.time ? 'Starts: ' + r.time : ''}</div>
+                    <div class="roster-time">${r.time ? (r.time.toLowerCase().includes('start') ? r.time : r.time) : ''}</div>
                 </div>
             </div>
         `;
