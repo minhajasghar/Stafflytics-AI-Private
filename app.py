@@ -708,7 +708,7 @@ def generate_frames():
                 try:
                     from vision_engine import draw_detections_on_frame
                     # Ensure camera_stream is defined; use its dims for scaling detection coordinates
-                    if 'camera_stream' in globals() and camera_stream.actual_width and camera_stream.actual_height:
+                    if 'camera_stream' in globals() and camera_stream is not None and getattr(camera_stream, 'actual_width', None) and getattr(camera_stream, 'actual_height', None):
                         src_w, src_h = camera_stream.actual_width, camera_stream.actual_height
                     else:
                         src_w, src_h = 640, 480 # Fallback
@@ -1724,9 +1724,21 @@ def test_camera():
     return jsonify({"status": "error", "message": "Camera not reachable. Check: 1) Camera powered on  2) IP correct  3) RTSP enabled in Imou app  4) No firewall blocking port 554  5) Try subtype=1 for H.264 sub-stream"})
 
 if __name__ == '__main__':
-    raw_port = str(os.environ.get('STAFFLYTICS_PORT', '5000')).strip().split()[0]
+    raw_port = str(os.environ.get('STAFFLYTICS_PORT', '5050')).strip().split()[0]
     try:
-        port = int(raw_port)
+        preferred_port = int(raw_port)
     except ValueError:
-        port = 5000
-    app.run(host='0.0.0.0', debug=False, port=port, threaded=True, use_reloader=False)
+        preferred_port = 5050
+
+    candidate_ports = [preferred_port, 5050, 5001, 8080]
+    seen = set()
+    ports_to_try = [p for p in candidate_ports if not (p in seen or seen.add(p))]
+
+    for port in ports_to_try:
+        try:
+            os.environ['STAFFLYTICS_PORT'] = str(port)
+            print(f"[SYSTEM] Starting Stafflytics Web Server on http://localhost:{port} (http://127.0.0.1:{port})...")
+            app.run(host='0.0.0.0', debug=False, port=port, threaded=True, use_reloader=False)
+            break
+        except OSError as e:
+            print(f"[SYSTEM WARNING] Port {port} unavailable ({e}). Trying next port...")

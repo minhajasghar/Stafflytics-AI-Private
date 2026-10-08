@@ -21,7 +21,7 @@ start /b py -3.12 app.py
 echo.
 echo =========================================================
 echo   All services started! Keep this window open.
-echo   Main App:  http://localhost:5000
+echo   Main App:  http://localhost:5050
 echo   Recording: E:\Stafflytics Recording
 echo =========================================================
 echo.

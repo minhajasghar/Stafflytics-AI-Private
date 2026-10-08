@@ -33,9 +33,9 @@ paths:
   cam_ai:
     # H.264 transcoded stream for OpenCV / YOLO AI processing.
     # scale=640:-2 preserves source aspect ratio (no forced 4:3 stretch).
-    runOnInit: '"D:\Desktop\TNT Innov\stafflytics-ai-private\bin\ffmpeg.exe" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:-2" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    runOnInit: '"C:\Users\admin\Desktop\stafflytics-ai-private\bin\ffmpeg.exe" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:-2" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
     runOnInitRestart: yes
 
   mystream:
-    runOnDemand: '"D:\Desktop\TNT Innov\stafflytics-ai-private\bin\ffmpeg.exe" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=1280:720" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
+    runOnDemand: '"C:\Users\admin\Desktop\stafflytics-ai-private\bin\ffmpeg.exe" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=1280:720" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
     runOnDemandRestart: yes

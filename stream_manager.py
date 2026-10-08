@@ -67,7 +67,7 @@ def get_hls_proxy_url():
     segment URLs (``/api/stream/segment?u=...``) are rejected by FFmpeg's HLS
     demuxer (allowed_segment_extensions check). The bridge reads the raw Imou
     HLS URL directly instead (see get_imou_live_url)."""
-    port = os.environ.get("STAFFLYTICS_PORT", "5000")
+    port = os.environ.get("STAFFLYTICS_PORT", "5050")
     return "http://127.0.0.1:%s/api/stream/playlist" % port
 
 def get_imou_live_url():

@@ -275,6 +275,8 @@ class SQLiteCursorWrapper:
 
     def execute(self, query, params=None):
         q = query.replace("MEDIUMTEXT", "TEXT").replace("AUTO_INCREMENT", "AUTOINCREMENT")
+        q = q.replace("GREATEST(", "MAX(").replace("LEAST(", "MIN(").replace("%s", "?")
+        q = q.replace("UNIX_TIMESTAMP(NOW())", "strftime('%s', 'now')").replace("UNIX_TIMESTAMP(", "strftime('%s', ")
         q = re.sub(r"ALTER TABLE \w+ MODIFY COLUMN \w+ MEDIUMTEXT;", "", q, flags=re.IGNORECASE)
         if not q.strip():
             return

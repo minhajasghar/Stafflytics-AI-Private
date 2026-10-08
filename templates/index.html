@@ -9,8 +9,7 @@
     <link rel="icon" href="{{ url_for('static', filename='img/favicon-16.png') }}" type="image/png" sizes="16x16">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-    <!-- Cache buster to ensure mobile layout fixes are loaded -->
-    <link rel="stylesheet" href="/static/css/style.css?v=16">
+    <link rel="stylesheet" href="/static/css/style.css?v=19">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -26,8 +25,8 @@
         .chat-input input:focus { outline: none; }
         .btn-delete { background: #fee2e2; color: #b91c1c; border: none; padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 0.7rem; font-weight: 800; }
         
-        #init-splash { position: fixed; inset: 0; background: var(--primary); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; transition: 0.5s opacity; }
-        .coin-wrapper { width: 140px; height: 140px; margin-bottom: 30px; border-radius: 50%; overflow: hidden; animation: coinFlip 1.5s infinite linear; display: flex; align-items: center; justify-content: center; }
+        #init-splash { position: fixed; inset: 0; background: radial-gradient(circle at 50% 45%, #11151f 0%, #05070a 100%); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; transition: 0.5s opacity; padding: 20px; box-sizing: border-box; text-align: center; }
+        .coin-wrapper { width: 140px; height: 140px; margin-bottom: 25px; border-radius: 50%; overflow: hidden; animation: coinFlip 1.5s infinite linear; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
         @keyframes coinFlip { 0% { transform: perspective(400px) rotateY(0deg); } 100% { transform: perspective(400px) rotateY(360deg); } }
         
         .webrtc-pulse-dot { animation: webrtc-pulse 1.5s infinite ease-in-out; }
@@ -57,28 +56,34 @@
         <div class="coin-wrapper">
             <img src="{{ url_for('static', filename='img/logo-circle-140.png') }}" alt="Loading" style="width: 100%; height: 100%; object-fit: cover;">
         </div>
-        <h2 style="font-weight:800; font-size:2.2rem; letter-spacing:-1px; margin:0; background:linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">Stafflytics AI</h2>
-        <p style="margin-top:10px; font-size:0.85rem; font-weight:700; color:rgba(255,255,255,0.85); letter-spacing:1px; text-transform:uppercase;">AI Business Intelligence & Real-Time Analytics</p>
+        <h2 style="font-weight:800; font-size:2.2rem; letter-spacing:-1px; margin:0; text-align:center; background:linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">Stafflytics AI</h2>
+        <p style="margin-top:10px; font-size:0.85rem; font-weight:700; color:rgba(255,255,255,0.85); letter-spacing:1px; text-transform:uppercase; text-align:center; padding:0 20px; max-width:90vw; line-height:1.5;">AI Business Intelligence & Real-Time Analytics</p>
         <button id="skip-init-btn" onclick="skipInitialization()" style="display:none; margin-top:30px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.25); color:white; padding:12px 28px; border-radius:50px; font-family:inherit; font-weight:700; font-size:0.88rem; cursor:pointer; backdrop-filter:blur(8px); transition:0.3s; box-shadow:0 8px 20px rgba(0,0,0,0.2);">Enter Dashboard <i class="fas fa-arrow-right" style="margin-left:6px; font-size:0.8rem;"></i></button>
     </div>
     <div class="dashboard">
     <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
         <nav class="sidebar">
-            <div class="logo-icon" style="background: none; box-shadow: none; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:50%; width:46px; height:46px;">
-                <img src="{{ url_for('static', filename='img/logo-circle-46.png') }}" alt="Stafflytics" style="width: 100%; height: 100%; object-fit: cover;">
+            <div class="sidebar-brand">
+                <div class="logo-icon" style="background: none; box-shadow: none; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:50%; width:38px; height:38px; flex-shrink:0;">
+                    <img src="{{ url_for('static', filename='img/logo-circle-46.png') }}" alt="Stafflytics" style="width: 100%; height: 100%; object-fit: cover;">
+                </div>
+                <div class="brand-text">
+                    <span class="brand-title">Stafflytics</span>
+                    <span class="brand-badge">AI Suite</span>
+                </div>
             </div>
             <div class="sidebar-nav">
-                <div class="nav-item active" title="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i></div>
-                <div class="nav-item" title="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i></div>
-                <div class="nav-item" title="Staff List" onclick="handleNavClick(this)"><i class="fas fa-user-friends"></i></div>
-                <div class="nav-item" title="Reporting" onclick="handleNavClick(this)"><i class="fas fa-file-invoice"></i></div>
-                <div class="nav-item" title="Performance" onclick="handleNavClick(this)"><i class="fas fa-bolt"></i></div>
-                <div class="nav-item" title="ROI Analysis" onclick="handleNavClick(this)"><i class="fas fa-hand-holding-dollar"></i></div>
-                <div class="nav-item" title="Shift Optimizer" onclick="handleNavClick(this)"><i class="fas fa-calendar-check"></i></div>
-                <div class="nav-item" title="Settings" onclick="handleNavClick(this)"><i class="fas fa-cog"></i></div>
+                <div class="nav-item active" data-section="Monitor" onclick="handleNavClick(this)"><i class="fas fa-desktop"></i><span>Monitor</span></div>
+                <div class="nav-item" data-section="Analytics" onclick="handleNavClick(this)"><i class="fas fa-chart-pie"></i><span>Analytics</span></div>
+                <div class="nav-item" data-section="Staff List" onclick="handleNavClick(this)"><i class="fas fa-user-friends"></i><span>Staff List</span></div>
+                <div class="nav-item" data-section="Reporting" onclick="handleNavClick(this)"><i class="fas fa-file-invoice"></i><span>Reporting</span></div>
+                <div class="nav-item" data-section="Performance" onclick="handleNavClick(this)"><i class="fas fa-bolt"></i><span>Performance</span></div>
+                <div class="nav-item" data-section="ROI Analysis" onclick="handleNavClick(this)"><i class="fas fa-hand-holding-dollar"></i><span>ROI Analysis</span></div>
+                <div class="nav-item" data-section="Shift Optimizer" onclick="handleNavClick(this)"><i class="fas fa-calendar-check"></i><span>Shift Optimizer</span></div>
+                <div class="nav-item" data-section="Settings" onclick="handleNavClick(this)"><i class="fas fa-cog"></i><span>Settings</span></div>
+                <div class="nav-item" data-section="Toggle Theme" id="theme-toggle" onclick="toggleTheme()" style="color: var(--accent);"><i class="fas fa-sun"></i><span>Light Mode</span></div>
+                <div class="nav-item" data-section="Logout" onclick="handleLogout()" style="color: #ef4444;"><i class="fas fa-sign-out-alt"></i><span>Logout</span></div>
             </div>
-            <div class="nav-item" title="Toggle Theme" id="theme-toggle" onclick="toggleTheme()" style="color: var(--accent);"><i class="fas fa-moon"></i></div>
-            <div class="nav-item" title="Logout" onclick="handleLogout()" style="color: #ef4444;"><i class="fas fa-sign-out-alt"></i></div>
         </nav>
 
 
@@ -428,7 +433,7 @@
                             <!-- Populated by JS -->
                             <div style="text-align:center; padding:1rem; color:var(--text-muted); font-size:0.8rem;">Loading zones...</div>
                         </div>
-                        <button onclick="handleNavClick(document.querySelector('.nav-item[title=\'Monitor\']')); setTimeout(toggleZoneEditor, 300);" class="btn-primary" style="width:100%; justify-content:center; background:var(--accent);"><i class="fas fa-plus"></i> Draw New Zone</button>
+                        <button onclick="handleNavClick(document.querySelector('.nav-item[data-section=\'Monitor\'], .nav-item[title=\'Monitor\']')); setTimeout(toggleZoneEditor, 300);" class="btn-primary" style="width:100%; justify-content:center; background:var(--accent);"><i class="fas fa-plus"></i> Draw New Zone</button>
                     </div>
 
                 </div>
@@ -436,12 +441,60 @@
         </main>
 
         <aside class="right-monitor">
-            <div class="section"><div class="section-header"><h2>Trackers</h2><span id="person-count">0 ACTIVE</span></div><div id="active-staff-list" class="staff-badges"></div></div>
-            <div class="section" style="margin-top:1rem;">
-                <div class="section-header"><h2>Today's Roster</h2></div>
-                <div id="shift-roster-list" class="event-list"></div>
+            <!-- 1. Trackers Card -->
+            <div class="monitor-card card-trackers">
+                <div class="card-header">
+                    <div class="card-title">
+                        <i class="fas fa-eye"></i>
+                        <span>Trackers</span>
+                    </div>
+                    <span id="person-count" class="tracker-pill is-muted">
+                        <span class="tracker-dot"></span>
+                        <span class="tracker-val">0 Active</span>
+                    </span>
+                </div>
+                <div id="active-staff-list" class="tracker-list">
+                    <div class="trackers-empty">No active personnel detected</div>
+                </div>
             </div>
-            <div class="section" style="margin-top:1rem;"><h2>Security Activity</h2><div id="recent-alerts" class="event-list"></div></div>
+
+            <!-- 2. Today's Roster Card -->
+            <div class="monitor-card card-roster">
+                <div class="card-header">
+                    <div class="card-title">
+                        <i class="fas fa-calendar-check"></i>
+                        <span>Today's Roster</span>
+                    </div>
+                    <button class="roster-enroll-btn" onclick="showEnrollModal()" title="Enroll Staff" aria-label="Enroll Staff">
+                        <i class="fas fa-plus"></i>
+                    </button>
+                </div>
+                <div class="roster-segmented-control">
+                    <button class="roster-tab active" data-filter="all" onclick="filterRosterTab('all', this)">All</button>
+                    <button class="roster-tab" data-filter="morning" onclick="filterRosterTab('morning', this)">Morning</button>
+                    <button class="roster-tab" data-filter="evening" onclick="filterRosterTab('evening', this)">Evening</button>
+                </div>
+                <div id="shift-roster-list" class="roster-list">
+                    <div class="trackers-empty" style="text-align:center; padding:16px;">No staff scheduled</div>
+                </div>
+            </div>
+
+            <!-- 3. Security Activity Card -->
+            <div class="monitor-card card-security">
+                <div class="card-header">
+                    <div class="card-title">
+                        <i class="fas fa-shield-halved"></i>
+                        <span>Security Activity</span>
+                    </div>
+                    <a href="#" class="security-view-all" onclick="handleNavClick(document.querySelector('.nav-item[data-section=\'Reporting\']')); return false;">View all</a>
+                </div>
+                <div id="recent-alerts" class="security-list">
+                    <div class="security-empty">
+                        <i class="fas fa-shield-halved"></i>
+                        <span>No security events</span>
+                    </div>
+                </div>
+            </div>
         </aside>
     </div>
 
@@ -559,7 +612,7 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/hls.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/main.js', v=8) }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js', v=11) }}"></script>
     
     <script>
         let webrtcPeerConnection = null;
@@ -658,29 +711,37 @@
         let videoAspect = 16 / 9;
         let lastFitRectUpdate = 0;
 
-        function updateVideoAspect() {
+        function updateVideoAspect(fw, fh) {
             const hlsEl = document.getElementById('hls-video');
             const rtcEl = document.getElementById('webrtc-video');
             const imgEl = document.getElementById('video-feed');
             let vw = 0, vh = 0;
             if (hlsEl && hlsEl.style.display !== 'none' && hlsEl.videoWidth) { vw = hlsEl.videoWidth; vh = hlsEl.videoHeight; }
             else if (rtcEl && rtcEl.style.display !== 'none' && rtcEl.videoWidth) { vw = rtcEl.videoWidth; vh = rtcEl.videoHeight; }
-            else if (imgEl && imgEl.complete && imgEl.naturalWidth) { vw = imgEl.naturalWidth; vh = imgEl.naturalHeight; }
-            if (vw && vh) videoAspect = vw / vh;
+            else if (imgEl && imgEl.style.display !== 'none' && imgEl.naturalWidth) { vw = imgEl.naturalWidth; vh = imgEl.naturalHeight; }
+            else if (rtcEl && rtcEl.videoWidth) { vw = rtcEl.videoWidth; vh = rtcEl.videoHeight; }
+            else if (imgEl && imgEl.naturalWidth) { vw = imgEl.naturalWidth; vh = imgEl.naturalHeight; }
+            
+            if (vw > 0 && vh > 0) {
+                videoAspect = vw / vh;
+            } else if (fw && fh) {
+                videoAspect = fw / fh;
+            }
         }
 
-        function resizeCanvas() {
+        function resizeCanvas(fw, fh) {
             const canvas = document.getElementById('detection-canvas');
             if (!canvas) return;
             const container = canvas.parentElement;
+            if (!container) return;
             const cw = container.clientWidth;
             const ch = container.clientHeight;
             if (cw === 0 || ch === 0) return;
-            canvas.width = cw;
-            canvas.height = ch;
-            updateVideoAspect();
-            // Compute the largest centered rect with the video aspect that fits
-            // the canvas — mirrors what object-fit:contain renders.
+            if (canvas.width !== cw || canvas.height !== ch) {
+                canvas.width = cw;
+                canvas.height = ch;
+            }
+            updateVideoAspect(fw, fh);
             const ar = videoAspect;
             let dw = cw, dh = cw / ar;
             if (dh > ch) { dh = ch; dw = ch * ar; }
@@ -688,22 +749,22 @@
             lastFitRectUpdate = Date.now();
         }
 
-        window.addEventListener('resize', resizeCanvas);
+        window.addEventListener('resize', () => resizeCanvas());
 
         let detectionDwellBuffer = []; // { detections, frameW, frameH, timestamp }
         function drawDetections(data) {
             const canvas = document.getElementById('detection-canvas');
             if (!canvas) return;
+            const container = canvas.parentElement;
+            if (!container) return;
+
+            let frameW = (data && data.frame_w) || 640;
+            let frameH = (data && data.frame_h) || 480;
 
             // Auto-resize canvas if it was never sized or container changed
-            if (canvas.width === 0 || canvas.height === 0 ||
-                Math.abs(canvas.width - canvas.parentElement.clientWidth) > 4 ||
-                Math.abs(canvas.height - canvas.parentElement.clientHeight) > 4) {
-                resizeCanvas();
-            }
-            // Periodically refresh the fit rect (every 2s) to catch video source changes
-            if (Date.now() - lastFitRectUpdate > 2000) {
-                resizeCanvas();
+            if (canvas.width !== container.clientWidth || canvas.height !== container.clientHeight ||
+                !videoFitRect.w || !videoFitRect.h || Date.now() - lastFitRectUpdate > 1500) {
+                resizeCanvas(frameW, frameH);
             }
 
             const ctx = canvas.getContext('2d');
@@ -712,9 +773,17 @@
             let detections = data && data.detections ? data.detections : null;
             
             // Update Trackers count using total people detected
-            if (document.getElementById('person-count')) {
+            const pillEl = document.getElementById('person-count');
+            if (pillEl) {
                 const count = detections ? detections.length : 0;
-                document.getElementById('person-count').innerText = `${count} ACTIVE`;
+                pillEl.innerHTML = `<span class="tracker-dot"></span><span class="tracker-val">${count} Active</span>`;
+                if (count > 0) {
+                    pillEl.classList.add('is-active');
+                    pillEl.classList.remove('is-muted');
+                } else {
+                    pillEl.classList.remove('is-active');
+                    pillEl.classList.add('is-muted');
+                }
             }
 
             if (data && data.passage) {
@@ -723,13 +792,10 @@
                 if (statLtr && data.passage.l_to_r !== undefined) statLtr.innerText = data.passage.l_to_r;
                 if (statRtl && data.passage.r_to_l !== undefined) statRtl.innerText = data.passage.r_to_l;
             }
-            // Detection frame space from the backend (native cam_ai res).
-            let frameW = (data && data.frame_w) || 640;
-            let frameH = (data && data.frame_h) || 480;
 
             const now = Date.now();
             if (!detections || detections.length === 0) {
-                detectionDwellBuffer = detectionDwellBuffer.filter(d => now - d.ts < 1200);
+                detectionDwellBuffer = detectionDwellBuffer.filter(d => now - d.ts < 1500);
                 if (detectionDwellBuffer.length > 0) {
                     const last = detectionDwellBuffer[detectionDwellBuffer.length - 1];
                     detections = last.dets;
@@ -742,8 +808,8 @@
             }
             if (!detections || detections.length === 0) return;
 
-            // Coordinates from backend are in the native detection frame space (frameW x frameH).
-            // Map them into the visible (contain-fit) video rect (fit.w x fit.h at offset fit.x, fit.y).
+            // Coordinates from backend are in native detection frame space (frameW x frameH).
+            // Map them into the visible contain-fit video rect.
             const fit = videoFitRect;
             const fitReady = fit.w > 10 && fit.h > 10;
             const baseW = fitReady ? fit.w : canvas.width;
@@ -751,40 +817,58 @@
             const offX = fitReady ? fit.x : 0;
             const offY = fitReady ? fit.y : 0;
 
-            const scaleX = baseW / frameW;
-            const scaleY = baseH / frameH;
-
             detections.forEach(det => {
+                if (!det.box || det.box.length < 4) return;
                 const x1 = (det.box[0] / frameW) * baseW + offX;
                 const y1 = (det.box[1] / frameH) * baseH + offY;
                 const x2 = (det.box[2] / frameW) * baseW + offX;
                 const y2 = (det.box[3] / frameH) * baseH + offY;
                 const w = x2 - x1;
                 const h = y2 - y1;
+                if (w <= 0 || h <= 0) return;
 
-                // Draw outer bounding box
-                ctx.strokeStyle = det.color || '#3b82f6';
+                const color = det.color || '#3b82f6';
+
+                // Semi-transparent target fill
+                ctx.fillStyle = color.startsWith('#') ? color + '18' : 'rgba(59, 130, 246, 0.1)';
+                ctx.fillRect(x1, y1, w, h);
+
+                // Outer bounding box
+                ctx.strokeStyle = color;
                 ctx.lineWidth = 2.5;
                 ctx.strokeRect(x1, y1, w, h);
 
-                // Draw label background flag
-                ctx.fillStyle = det.color || '#3b82f6';
+                // High-tech corner bracket accents
+                const cornerLen = Math.min(12, Math.min(w, h) / 3);
+                ctx.lineWidth = 3.5;
+                ctx.beginPath();
+                // Top-left
+                ctx.moveTo(x1, y1 + cornerLen); ctx.lineTo(x1, y1); ctx.lineTo(x1 + cornerLen, y1);
+                // Top-right
+                ctx.moveTo(x2 - cornerLen, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + cornerLen);
+                // Bottom-left
+                ctx.moveTo(x1, y2 - cornerLen); ctx.lineTo(x1, y2); ctx.lineTo(x1 + cornerLen, y2);
+                // Bottom-right
+                ctx.moveTo(x2 - cornerLen, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - cornerLen);
+                ctx.stroke();
+
+                // Label background flag
+                ctx.fillStyle = color;
                 ctx.font = '700 11px Outfit, sans-serif';
-                const labelText = det.label || 'Person';
+                const labelText = det.label || 'HUMAN';
                 const textWidth = ctx.measureText(labelText).width;
                 
-                // Adjust label position so it stays inside canvas boundaries
                 const labelHeight = 20;
                 let labelY = y1 - labelHeight;
                 if (labelY < 0) {
                     labelY = y1 + 2;
                 }
                 
-                ctx.fillRect(x1 - 1, labelY, textWidth + 12, labelHeight);
+                ctx.fillRect(x1 - 1, labelY, textWidth + 14, labelHeight);
 
                 // Draw label text
                 ctx.fillStyle = '#ffffff';
-                ctx.fillText(labelText, x1 + 5, labelY + 14);
+                ctx.fillText(labelText, x1 + 6, labelY + 14);
             });
         }
 

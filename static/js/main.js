@@ -6,9 +6,16 @@ const ctx = canvas ? canvas.getContext('2d') : null;
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('stafflytics-theme', theme);
-    const btns = document.querySelectorAll('[title="Toggle Theme"]');
+    const btns = document.querySelectorAll('[title="Toggle Theme"], [data-section="Toggle Theme"], #theme-toggle, #mob-nav-8');
     btns.forEach(btn => {
-        btn.innerHTML = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+        const isMobile = btn.closest('.mobile-bottom-nav') !== null;
+        const iconHtml = theme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+        const labelText = theme === 'dark' ? 'Light Mode' : 'Dark Mode';
+        if (isMobile) {
+            btn.innerHTML = `${iconHtml}<span>Theme</span>`;
+        } else {
+            btn.innerHTML = `${iconHtml}<span>${labelText}</span>`;
+        }
     });
 }
 
@@ -31,8 +38,8 @@ function toggleMobileMenu() {
 }
 
 function loadSavedTheme() {
-    const saved = localStorage.getItem('stafflytics-theme');
-    if (saved) applyTheme(saved);
+    const saved = localStorage.getItem('stafflytics-theme') || 'dark';
+    applyTheme(saved);
 }
 
 function renderEmptyState(containerId, message, icon = 'fa-chart-bar') {
@@ -73,7 +80,7 @@ function handleLogout() {
 function handleNavClick(element) {
     document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
     element.classList.add('active');
-    const title = element.getAttribute('title');
+    const title = element.getAttribute('data-section') || element.getAttribute('title') || element.querySelector('span')?.innerText?.trim();
     document.querySelectorAll('.view-section').forEach(s => s.classList.add('hidden'));
 
     const sectionMap = { 
@@ -645,32 +652,105 @@ async function fetchStatus() {
 
         // Update Active Staff Badges
         const activeList = document.getElementById('active-staff-list');
-        if (activeList && data.active_list) {
-            activeList.innerHTML = data.active_list.map(s => `
-                <div class="staff-badge">
-                    <i class="fas fa-circle" style="color:var(--green)"></i>
-                    ${s.name} <span style="opacity:0.6; font-size:0.6rem;">(${s.zone})</span>
-                </div>
-            `).join('');
+        if (activeList) {
+            if (data.active_list && data.active_list.length > 0) {
+                activeList.innerHTML = data.active_list.map(s => {
+                    const initials = s.name ? s.name.split(' ').map(p => p[0]).slice(0, 2).join('').toUpperCase() : '??';
+                    return `
+                        <div class="tracker-row">
+                            <div class="tracker-avatar">${initials}</div>
+                            <div class="tracker-info">
+                                <span class="tracker-name" title="${s.name}">${s.name}</span>
+                                <span class="tracker-meta"><i class="fas fa-circle tracker-live-dot"></i> ${s.zone || 'Floor'}</span>
+                            </div>
+                            <div class="tracker-time">${s.time_ago || 'just now'}</div>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                activeList.innerHTML = `<div class="trackers-empty">No active personnel detected</div>`;
+            }
         }
 
         if (data.new_alert) triggerSecurityAlert(data.alert_details);
     } catch (e) {}
 }
 
+let currentRosterData = [];
+let currentRosterFilter = 'all';
+
+function filterRosterTab(filter, btn) {
+    currentRosterFilter = filter;
+    document.querySelectorAll('.right-monitor .roster-tab').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    renderShiftRoster(currentRosterData);
+}
+
 function renderShiftRoster(roster) {
+    if (Array.isArray(roster)) currentRosterData = roster;
     const list = document.getElementById('shift-roster-list');
     if (!list) return;
-    list.innerHTML = roster.map(r => `
-        <div class="shift-card shift-${r.shift.toLowerCase()}">
-            <div>
-                <div style="font-weight:800; font-size:0.85rem;">${r.name}</div>
-                <div style="font-size:0.7rem; opacity:0.8;">${r.role}</div>
+
+    let filtered = currentRosterData;
+    if (currentRosterFilter !== 'all') {
+        filtered = currentRosterData.filter(r => (r.shift || '').toLowerCase() === currentRosterFilter);
+    }
+
+    if (!filtered || filtered.length === 0) {
+        list.innerHTML = `<div class="trackers-empty" style="text-align:center; padding:16px;">No staff scheduled</div>`;
+        return;
+    }
+
+    list.innerHTML = filtered.map(r => {
+        const initials = r.name ? r.name.split(' ').map(p => p[0]).slice(0, 2).join('').toUpperCase() : '??';
+        const shiftLower = (r.shift || 'morning').toLowerCase();
+        const isOnFloor = r.on_floor !== undefined ? r.on_floor : (r.status === 'active' || r.is_active);
+        return `
+            <div class="roster-row shift-${shiftLower}" data-shift="${shiftLower}">
+                <div class="roster-avatar">${initials}</div>
+                <div class="roster-details">
+                    <div class="roster-name" title="${r.name}">${r.name}</div>
+                    <div class="roster-role">${r.role || 'Staff'}</div>
+                </div>
+                <div class="roster-meta">
+                    <div class="roster-shift-tag">
+                        <span class="shift-pill shift-pill-${shiftLower}">${r.shift}</span>
+                        <span class="roster-status-dot ${isOnFloor ? 'status-online' : 'status-offline'}" title="${isOnFloor ? 'On floor' : 'Not arrived'}"></span>
+                    </div>
+                    <div class="roster-time">${r.time ? 'Starts: ' + r.time : ''}</div>
+                </div>
             </div>
-            <div style="text-align:right;">
-                <div style="font-weight:800; font-size:0.7rem; color:var(--primary);">${r.shift}</div>
-                <div style="font-size:0.65rem; opacity:0.8;">Starts: ${r.time}</div>
+        `;
+    }).join('');
+}
+
+let recentSecurityEvents = [];
+
+function addSecurityActivityEvent(event) {
+    recentSecurityEvents.unshift(event);
+    if (recentSecurityEvents.length > 5) recentSecurityEvents.pop();
+    renderSecurityActivity();
+}
+
+function renderSecurityActivity() {
+    const list = document.getElementById('recent-alerts');
+    if (!list) return;
+    if (recentSecurityEvents.length === 0) {
+        list.innerHTML = `
+            <div class="security-empty">
+                <i class="fas fa-shield-halved"></i>
+                <span>No security events</span>
             </div>
+        `;
+        return;
+    }
+    list.innerHTML = recentSecurityEvents.slice(0, 5).map(e => `
+        <div class="security-row">
+            <div class="security-chip chip-${e.type || 'info'}">
+                <i class="fas ${e.icon || (e.type === 'alert' ? 'fa-triangle-exclamation' : e.type === 'warning' ? 'fa-circle-exclamation' : 'fa-circle-info')}"></i>
+            </div>
+            <div class="security-text" title="${e.text}">${e.text}</div>
+            <div class="security-time">${e.time || 'now'}</div>
         </div>
     `).join('');
 }
@@ -681,6 +761,14 @@ function triggerSecurityAlert(details) {
     const detailsDiv = document.getElementById('breach-details');
     
     if (details && detailsDiv) detailsDiv.innerHTML = `Tracked Item: <b>${details.name}</b><br>Zone: <b>${details.zone}</b>`;
+    if (details) {
+        addSecurityActivityEvent({
+            type: 'alert',
+            text: `Unauthorized entry in ${details.zone || 'Restricted Area'}: ${details.name || 'Unknown'}`,
+            time: 'just now',
+            icon: 'fa-triangle-exclamation'
+        });
+    }
     if (overlay) overlay.classList.remove('hidden');
     if (audio) { audio.currentTime = 0; audio.play().catch(e => console.log("Audio play blocked")); }
     

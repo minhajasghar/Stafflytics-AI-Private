@@ -1155,38 +1155,56 @@ class VisionEngine:
             raw_kps = None
             
             self.frame_count += 1
+            results = None
             try:
                 tracker = TRACKER_PATH if os.path.exists(TRACKER_PATH) else "bytetrack.yaml"
                 results = model.track(
                     small_frame,
                     persist=True,
                     tracker=tracker,
-                    conf=0.25,
+                    conf=0.20,
                     iou=0.5,
                     classes=[0],
                     imgsz=480,
                     verbose=False
                 )
-            except Exception:
+            except Exception as e_trk:
                 try:
-                    # Fallback to direct model inference if tracking subsystem encounters any issue
-                    results = model(small_frame, persist=True, conf=0.25, iou=0.5, verbose=False, classes=[0], imgsz=480)
+                    # Fallback to direct model inference (without unsupported persist argument)
+                    results = model(small_frame, conf=0.20, iou=0.5, verbose=False, classes=[0], imgsz=480)
                 except Exception:
-                    results = None
+                    try:
+                        results = model(small_frame, conf=0.20, iou=0.5, verbose=False, imgsz=480)
+                    except Exception:
+                        results = None
             
             num_boxes = len(results[0].boxes) if results and len(results) > 0 and results[0].boxes is not None else 0
             if self.frame_count % 90 == 0:
                 print(f"[VISION DEBUG] Raw YOLO detections: {num_boxes}")
             
             if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
-                raw_boxes = results[0].boxes.xyxy.cpu().numpy()
-                try:
-                    if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                        raw_track_ids = results[0].boxes.id.int().cpu().tolist()
-                    else:
+                res_boxes = results[0].boxes
+                # Robustly isolate humans / class 0 (person in standard YOLO models)
+                if hasattr(res_boxes, 'cls') and res_boxes.cls is not None:
+                    try:
+                        person_mask = (res_boxes.cls == 0).cpu().numpy().astype(bool)
+                        raw_boxes = res_boxes.xyxy.cpu().numpy()[person_mask]
+                        if hasattr(res_boxes, 'id') and res_boxes.id is not None:
+                            raw_track_ids = res_boxes.id.int().cpu().numpy()[person_mask].tolist()
+                        else:
+                            raw_track_ids = [-1] * len(raw_boxes)
+                    except Exception:
+                        raw_boxes = res_boxes.xyxy.cpu().numpy()
                         raw_track_ids = [-1] * len(raw_boxes)
-                except Exception:
-                    raw_track_ids = [-1] * len(raw_boxes)
+                else:
+                    raw_boxes = res_boxes.xyxy.cpu().numpy()
+                    try:
+                        if hasattr(res_boxes, 'id') and res_boxes.id is not None:
+                            raw_track_ids = res_boxes.id.int().cpu().tolist()
+                        else:
+                            raw_track_ids = [-1] * len(raw_boxes)
+                    except Exception:
+                        raw_track_ids = [-1] * len(raw_boxes)
  
                 try:
                     if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
@@ -1199,9 +1217,9 @@ class VisionEngine:
                     self.last_valid_track_ids = raw_track_ids
                     self.last_valid_raw_kps = raw_kps
 
-            # Detection boxes stay in native pixel space (scale = 1.0).
-            scale_x = 1.0
-            scale_y = 1.0
+            # Scale factors for output_frame
+            scale_x = float(w_out) / float(max(1, w_orig))
+            scale_y = float(h_out) / float(max(1, h_orig))
             
             if len(raw_boxes) > 0:
                 boxes = []
@@ -1211,8 +1229,8 @@ class VisionEngine:
                 with self.lock:
                     for b_idx, r_box in enumerate(raw_boxes):
                         x1, y1, x2, y2 = map(int, r_box)
-                        # Reject unreasonably tiny boxes (< 25px)
-                        if (x2 - x1) < 25 or (y2 - y1) < 30:
+                        # Reject unreasonably tiny noise boxes
+                        if (x2 - x1) < 14 or (y2 - y1) < 18:
                             continue
                         
                         boxes.append(r_box)
@@ -1282,12 +1300,14 @@ class VisionEngine:
                             if delta_x >= 65:
                                 self.passage_counts["l_to_r"] += 1
                                 self.counted_passages.add(track_id)
-                                database.log_passage("L_TO_R", track_id)
+                                try: database.log_passage("L_TO_R", track_id)
+                                except: pass
                                 print(f"[CORRIDOR PASSAGE] Track #{track_id} moved LEFT ➔ RIGHT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
                             elif delta_x <= -65:
                                 self.passage_counts["r_to_l"] += 1
                                 self.counted_passages.add(track_id)
-                                database.log_passage("R_TO_L", track_id)
+                                try: database.log_passage("R_TO_L", track_id)
+                                except: pass
                                 print(f"[CORRIDOR PASSAGE] Track #{track_id} moved RIGHT ➔ LEFT (L->R: {self.passage_counts['l_to_r']}, R->L: {self.passage_counts['r_to_l']})")
                     
                     # Pose & Action Analysis
@@ -1459,7 +1479,8 @@ class VisionEngine:
                                 in_unauth_zone = True
                                 if (track_id, zone.name) not in self.alerted_tracks:
                                     person_label = state.get("name", "Unknown Person")
-                                    database.log_activity(db_id or f"Track_{track_id}", zone.name, "Security Alert", f"Unauthorized entry ({person_label}) detected in {zone.name}.")
+                                    try: database.log_activity(db_id or f"Track_{track_id}", zone.name, "Security Alert", f"Unauthorized entry ({person_label}) detected in {zone.name}.")
+                                    except: pass
                                     with self.lock:
                                         state["needs_security_email"] = zone.name
                                     self.alerted_tracks.add((track_id, zone.name))
@@ -1512,10 +1533,10 @@ class VisionEngine:
                         label = f"STAFF: {state_name} [{status}]"
                     
                     # Draw Box overlay directly onto video stream frame
-                    cv2.rectangle(output_frame, (int(x1), int(y1)), (int(x2), int(y2)), cv2_color, 2)
+                    cv2.rectangle(output_frame, (int(x1_out), int(y1_out)), (int(x2_out), int(y2_out)), cv2_color, 2)
                     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                    cv2.rectangle(output_frame, (int(x1), int(y1) - th - 10), (int(x1) + tw + 10, int(y1)), cv2_color, -1)
-                    cv2.putText(output_frame, label, (int(x1) + 5, int(y1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                    cv2.rectangle(output_frame, (int(x1_out), int(y1_out) - th - 10), (int(x1_out) + tw + 10, int(y1_out)), cv2_color, -1)
+                    cv2.putText(output_frame, label, (int(x1_out) + 5, int(y1_out) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
                     # Store last box in state for carry-forward during brief YOLO misses
                     state["last_box"] = [float(x1), float(y1), float(x2), float(y2)]
@@ -1564,12 +1585,11 @@ class VisionEngine:
                     if tid in self.customer_timers:
                         duration = current_time - self.customer_timers[tid]["start"]
                         if duration > 15:
-                            database.record_customer_session("Auto-Table", duration, self.customer_timers[tid]["c_id"])
+                            try: database.record_customer_session("Auto-Table", duration, self.customer_timers[tid]["c_id"])
+                            except: pass
                         del self.customer_timers[tid]
                     
                     # Log visitor detection for analytics (once per track lifetime)
-                    # GUARD: Only log if the track lived long enough to be a real person
-                    # (>= 5 seconds). Prevents brief detections / shadows from inflating counts.
                     if tid not in self.visitor_logged:
                         state = self.person_states[tid]
                         track_lifetime = current_time - state.get("first_seen", current_time)
@@ -1583,13 +1603,15 @@ class VisionEngine:
                             continue
 
                         self.visitor_logged.add(tid)
-                        if db_id and not str(db_id).startswith("C_"):
-                            database.log_visitor_detection(None, False, staff_id=db_id, zone=zone)
-                        elif db_id and str(db_id).startswith("C_"):
-                            c_id = int(str(db_id).split("_")[1])
-                            database.log_visitor_detection(c_id, False, zone=zone)
-                        else:
-                            database.log_visitor_detection(None, True, zone=zone)
+                        try:
+                            if db_id and not str(db_id).startswith("C_"):
+                                database.log_visitor_detection(None, False, staff_id=db_id, zone=zone)
+                            elif db_id and str(db_id).startswith("C_"):
+                                c_id = int(str(db_id).split("_")[1])
+                                database.log_visitor_detection(c_id, False, zone=zone)
+                            else:
+                                database.log_visitor_detection(None, True, zone=zone)
+                        except: pass
                     
                     del self.person_states[tid]
                     if tid in self.recognition_consensus: del self.recognition_consensus[tid]
@@ -1601,7 +1623,8 @@ class VisionEngine:
             if current_time - self.last_activity_sync > 10:
                 for staff_id, seconds in self.activity_buffer.items():
                     if seconds > 0:
-                        database.update_active_time(staff_id, seconds)
+                        try: database.update_active_time(staff_id, seconds)
+                        except: pass
                 self.activity_buffer = {}
                 self.last_activity_sync = current_time
 
@@ -1648,6 +1671,8 @@ class VisionEngine:
             return output_frame, detections
         except Exception as e:
             print(f"[VISION ERROR] {e}")
+            if 'detections' in locals() and detections:
+                return output_frame if 'output_frame' in locals() else cv2.resize(frame, target_size), detections
             return cv2.resize(frame, target_size), []
 
     def get_active_staff(self):
