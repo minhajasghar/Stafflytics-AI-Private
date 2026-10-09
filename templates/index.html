@@ -115,7 +115,7 @@
                         <!-- WebRTC live feed — seamlessly takes over once connected -->
                         <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none; background:#000;"></video>
                         <!-- Fallback & Instant Stream Feed (shows instantly on dashboard load so there is zero black screen) -->
-                        <img id="video-feed" alt="Live Feed" src="{{ url_for('video_feed') }}" data-src="{{ url_for('video_feed') }}" style="width:100%; height:100%; object-fit:contain; display:block;">
+                        <img id="video-feed" alt="Live Feed" src="/api/stream/video" data-src="/api/stream/video" style="width:100%; height:100%; object-fit:contain; display:block;">
                         
                         <!-- Stream Status Overlay -->
                         <div id="webrtc-status-overlay" style="position:absolute; top:15px; left:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s;">
@@ -398,9 +398,9 @@
                         <div class="form-group" style="margin-bottom:10px;">
                             <label>RTSP Camera URL</label>
                             <div class="cam-url-row" style="display:flex; align-items:flex-start; gap:10px;">
-                                <input type="text" id="cam-rtsp-url" placeholder="rtsp://admin:password@100.93.176.107:8554/cam" style="flex:1;">
+                                <input type="text" id="cam-rtsp-url" placeholder="rtsp://admin:password@camera-ip:8554/cam" style="flex:1;">
                                 <div style="width:80px; height:56px; border-radius:6px; overflow:hidden; background:#000; flex-shrink:0; position:relative; border:1px solid #e2e8f0;">
-                                    <img src="{{ url_for('video_feed') }}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                    <img src="/api/stream/video" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                                     <div style="display:none; position:absolute; inset:0; flex-direction:column; align-items:center; justify-content:center; color:#64748b; font-size:0.5rem; gap:1px;">
                                         <i class="fas fa-video-slash" style="font-size:0.6rem;"></i>
                                         <span>Offline</span>
@@ -883,11 +883,15 @@
         function enableMjpegFallback() {
             const fallbackImg = document.getElementById('video-feed');
             if (!fallbackImg) return;
-            const src = fallbackImg.getAttribute('data-src') || '/video_feed';
-            if (!fallbackImg.src || !fallbackImg.src.includes('video_feed')) {
+            const src = fallbackImg.getAttribute('data-src') || '/api/stream/video';
+            if (!fallbackImg.src || !fallbackImg.src.includes('/api/stream/video')) {
                 fallbackImg.src = src;
             }
             fallbackImg.style.display = 'block';
+            const webrtcVideo = document.getElementById('webrtc-video');
+            if (webrtcVideo) webrtcVideo.style.display = 'none';
+            const hlsVideo = document.getElementById('hls-video');
+            if (hlsVideo) hlsVideo.style.display = 'none';
         }
 
         async function initVideoStream() {
@@ -897,7 +901,16 @@
             const overlay = document.getElementById('webrtc-status-overlay');
             if (!fallbackImg || !dot || !label || !overlay) return;
 
-            fallbackImg.addEventListener('load', () => { updateVideoAspect(); resizeCanvas(); });
+            fallbackImg.addEventListener('load', () => {
+                updateVideoAspect();
+                resizeCanvas();
+                if (fallbackImg.style.display !== 'none') {
+                    label.innerText = 'MJPEG Live';
+                    dot.style.background = '#22c55e';
+                    dot.classList.remove('webrtc-pulse-dot');
+                    overlay.style.opacity = '1';
+                }
+            });
 
             function setStatus(text, color, pulse = true) {
                 label.innerText = text;
@@ -906,17 +919,9 @@
                 overlay.style.opacity = '1';
             }
 
-            try {
-                const statusRes = await fetch('/api/stream/status');
-                const statusData = await statusRes.json();
-                if (statusData.mode === 'imou' && statusData.enabled) {
-                    initHlsStream(setStatus);
-                    return;
-                }
-            } catch (err) {
-                console.warn("[Video] Status check failed, using WebRTC.", err);
-            }
-            initWebRTCStream();
+            // WebRTC disabled over domain — use MJPEG /api/stream/video directly for universal network access
+            setStatus('Connecting Live Stream...', '#3b82f6', true);
+            enableMjpegFallback();
         }
 
         function destroyHlsPlayer() {

@@ -414,7 +414,7 @@ async function loadCameraSettings() {
         const data = await res.json();
         const urlEl = document.getElementById('cam-rtsp-url');
         if (urlEl) urlEl.value = data.rtsp_url || '';
-        if (urlEl && !urlEl.value) urlEl.placeholder = 'rtsp://100.x.x.x:8554/cam (Tailscale IP)';
+        if (urlEl && !urlEl.value) urlEl.placeholder = 'rtsp://camera-ip:8554/cam';
         const qualityEl = document.getElementById('cam-quality');
         if (qualityEl) {
             qualityEl.value = data.camera_preset || '720p';
@@ -507,9 +507,9 @@ async function diagnosePtz() {
         alert('PTZ Diagnosis (generated ' + d.generated + ')\n\n' +
             lines.join('\n\n') +
             '\n\nREACHABLE = server can open a TCP connection to the target host.\n' +
-            'Primary route: VPS backend -> PTZ Relay on Edge PC (100.93.176.107:5003).\n' +
+            'Primary route: VPS backend -> PTZ Relay on Edge PC.\n' +
             'If the PTZ relay shows UNREACHABLE, ensure the Edge PC is connected to ' +
-            'Tailscale and ptz_relay.py is running. Physical camera (192.168.50.251) ' +
+            'Tailscale and ptz_relay.py is running. Physical camera ' +
             'is contacted directly by the relay service on the Edge PC LAN.');
         st.style.display = 'none';
     } catch (e) {

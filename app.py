@@ -63,10 +63,15 @@ class MetricsCollector:
         self.filtered_counts = []
         self.confirmed_counts = []
         self.latest_metrics_line = ""
+        self.current_fps = 0.0
 
     def record_capture(self):
         with self.lock:
             self.capture_frames += 1
+
+    def get_fps(self):
+        with self.lock:
+            return self.current_fps
 
     def record_inference(self, infer_ms, e2e_ms, raw_cnt, filt_cnt, conf_cnt):
         with self.lock:
@@ -80,6 +85,7 @@ class MetricsCollector:
             elapsed = now - self.last_log_time
             if elapsed >= 5.0:
                 fps = self.capture_frames / max(elapsed, 0.001)
+                self.current_fps = round(fps, 1)
                 avg_inf = (sum(self.inference_times) / len(self.inference_times)) if self.inference_times else 0.0
                 avg_e2e = (sum(self.e2e_latencies) / len(self.e2e_latencies)) if self.e2e_latencies else 0.0
                 raw = int(self.raw_counts[-1]) if self.raw_counts else 0
@@ -199,8 +205,9 @@ camera_stream = None  # AI stream: cam_ai (H.264 640x480) — used by YOLO/visio
 display_stream = None # Display stream: cam (full HD relay) — used by video_feed
 
 # RTSP Camera Configuration
+CAMERA_RTSP_URL = os.environ.get("CAMERA_RTSP_URL", os.environ.get("REMOTE_RTSP_URL", "rtsp://100.93.176.107:8554/cam")).strip()
 EDGE_PC_IP = os.environ.get("EDGE_PC_IP", "100.93.176.107").strip()
-_DEFAULT_PHYSICAL_RTSP_URL = f"rtsp://admin:L2DD2594@{EDGE_PC_IP}:554/cam/realmonitor?channel=1&subtype=0"
+_DEFAULT_PHYSICAL_RTSP_URL = CAMERA_RTSP_URL
 PHYSICAL_RTSP_URL = _DEFAULT_PHYSICAL_RTSP_URL
 RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"  # AI stream: H.264 transcode for YOLO / bounding boxes
 DISPLAY_RTSP_URL = "rtsp://127.0.0.1:8554/cam"  # Display stream: full HD relay
@@ -699,18 +706,18 @@ def generate_frames():
 
     refresh_counter = 0
     last_yield_time = 0
-    min_frame_interval = 0.067
+    min_frame_interval = 1.0 / 15.0  # max 15 fps
     last_sent_frame_id = -1
     
     while True:
         try:
             current_time = time.time()
             
-            if system_initializing or camera_stream is None:
-                loading = np.zeros((480, 640, 3), np.uint8)
-                cv2.putText(loading, "INITIALIZING AI...", (150, 220), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-                cv2.putText(loading, "Please wait...", (240, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-                ret, buf = cv2.imencode('.jpg', loading)
+            if system_initializing or (camera_stream is None and display_stream is None):
+                loading = np.zeros((720, 1280, 3), np.uint8)
+                cv2.putText(loading, "INITIALIZING AI...", (450, 340), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+                cv2.putText(loading, "Please wait...", (540, 390), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                ret, buf = cv2.imencode('.jpg', loading, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
                 time.sleep(0.5); continue
 
@@ -720,18 +727,17 @@ def generate_frames():
                 refresh_counter = 0
 
             # If all camera streams are offline, return CAM OFFLINE.
-            # In Imou mode only cam_ai is consumed (cam may be HEVC); never show
-            # OFFLINE while at least one stream is producing frames.
             streams = [s for s in (display_stream, camera_stream) if s is not None]
             if not any(s.online for s in streams):
-                err = np.zeros((camera_height or 480, camera_width or 640, 3), np.uint8)
-                cv2.putText(err, "CAMERA OFFLINE", (140, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50, 50, 255), 3)
-                ret, buf = cv2.imencode('.jpg', err)
+                err = np.zeros((720, 1280, 3), np.uint8)
+                cv2.putText(err, "CAMERA OFFLINE", (430, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (50, 50, 255), 3)
+                ret, buf = cv2.imencode('.jpg', err, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
                 time.sleep(1); continue
 
-
             # Stream the server-side annotated frame directly
+            display_frame = None
+            buf_frame_id = -1
             with processed_frame_lock:
                 if latest_processed_frame is not None:
                     display_frame = latest_processed_frame.copy()
@@ -742,18 +748,26 @@ def generate_frames():
                     res = src.read()
                     if res[0] is not None:
                         display_frame = res[0]
+                        buf_frame_id = res[1]
                         if engine and hasattr(engine, 'latest_detections') and engine.latest_detections:
                             from vision_engine import draw_detections_on_frame
-                            display_frame = draw_detections_on_frame(display_frame, engine.latest_detections, 640, 480)
+                            display_frame = draw_detections_on_frame(display_frame, engine.latest_detections, display_frame.shape[1], display_frame.shape[0])
                 if display_frame is None:
                     time.sleep(0.02)
                     continue
+
+            # Resize to 1280 wide, maintaining aspect ratio
+            dh, dw = display_frame.shape[:2]
+            if dw != 1280 and dw > 0:
+                target_h = max(1, int(dh * (1280.0 / dw)))
+                display_frame = cv2.resize(display_frame, (1280, target_h), interpolation=cv2.INTER_LINEAR)
 
             elapsed = time.time() - last_yield_time
             if elapsed < min_frame_interval:
                 time.sleep(min_frame_interval - elapsed)
             
-            ret, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, camera_quality])
+            # JPEG quality ~70, max 15 fps
+            ret, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             if ret:
                 yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
                 last_yield_time = time.time()
@@ -1019,6 +1033,7 @@ def generate_recording_frames():
 def recording_feed():
     return Response(generate_recording_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+@app.route('/api/stream/video')
 @app.route('/video_feed')
 def video_feed():
     resp = Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -1027,6 +1042,18 @@ def video_feed():
     resp.headers['Expires'] = '0'
     resp.headers['X-Accel-Buffering'] = 'no'
     return resp
+
+@app.route('/api/stream/health', methods=['GET'])
+def stream_health():
+    src = camera_stream or display_stream
+    rtsp_open = bool(src and src.online and src.stream is not None and src.stream.isOpened())
+    last_frame_age_ms = int((time.time() - src.frame_timestamp) * 1000) if (src and src.frame_timestamp > 0) else -1
+    fps = metrics_collector.get_fps() if 'metrics_collector' in globals() else 0.0
+    return jsonify({
+        "rtsp_open": rtsp_open,
+        "last_frame_age_ms": last_frame_age_ms,
+        "fps": fps
+    })
 
 @app.route('/api/analytics/engagement')
 @login_required
