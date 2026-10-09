@@ -218,6 +218,7 @@ def _write_mediamtx_config_remote_rtsp():
         return
     config_path = os.path.join(BIN_DIR, "mediamtx.yml")
     ffmpeg_path = FFMPEG_EXE
+    ff_bin = f'"{ffmpeg_path}"' if _IS_WINDOWS else (ffmpeg_path or "ffmpeg")
 
     stream_w, stream_h = get_stream_resolution()
     config_content = f"""# MediaMTX configuration for Stafflytics - REMOTE RTSP MODE (auto-generated)
@@ -255,11 +256,11 @@ paths:
   cam_ai:
     # H.264 transcoded stream for OpenCV / YOLO AI processing.
     # scale=640:-2 preserves source aspect ratio (no forced 4:3 stretch).
-    runOnInit: '"{ffmpeg_path}" -loglevel quiet -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf "scale=640:-2" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam_ai'
+    runOnInit: '{ff_bin} -loglevel warning -rtsp_transport tcp -i rtsp://127.0.0.1:8554/cam -vf "scale=640:-2" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://127.0.0.1:8554/cam_ai'
     runOnInitRestart: yes
 
   mystream:
-    runOnDemand: '"{ffmpeg_path}" -rtsp_transport tcp -i rtsp://localhost:8554/cam -vf \"scale={stream_w}:{stream_h}\" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://localhost:8554/mystream'
+    runOnDemand: '{ff_bin} -rtsp_transport tcp -i rtsp://127.0.0.1:8554/cam -vf "scale={stream_w}:{stream_h}" -c:v libx264 -preset ultrafast -tune zerolatency -r 15 -pix_fmt yuv420p -an -rtsp_transport tcp -f rtsp rtsp://127.0.0.1:8554/mystream'
     runOnDemandRestart: yes
 """
     try:

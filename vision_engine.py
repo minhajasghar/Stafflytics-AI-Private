@@ -1452,9 +1452,9 @@ class VisionEngine:
                             int(y2 * fs_scale_y)
                         )
                         x1_orig, y1_orig, x2_orig, y2_orig = map(int, track_box_native)
-                        h_orig = y2_orig - y1_orig
+                        box_h_orig = y2_orig - y1_orig
                         # Focus strictly on the upper body/head (top 40% head region)
-                        head_y2 = int(y1_orig + (h_orig * 0.40))
+                        head_y2 = int(y1_orig + (box_h_orig * 0.40))
                         head_crop = face_source[max(0, y1_orig):min(fh, head_y2), max(0, x1_orig):min(fw, x2_orig)] if (x2_orig > x1_orig and head_y2 > y1_orig) else None
 
                         # Quality check: head crop available for InsightFace

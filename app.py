@@ -167,9 +167,8 @@ def ai_status():
     import vision_engine
     import stream_manager
     model_loaded = vision_engine.model is not None
-    model_loading = getattr(vision_engine, 'model_loading_active', False)
-    cam_online = camera_stream.online if camera_stream is not None else False
     disp_online = display_stream.online if display_stream is not None else False
+    cam_online = (camera_stream.online if camera_stream is not None else False) or disp_online
     
     last_payload = {}
     try:
@@ -361,48 +360,38 @@ class CameraStream:
                     # Prefer the H.264 AI path so YOLO actually receives decodable frames
                     rtsp_variants.insert(0, "rtsp://127.0.0.1:8554/cam_ai")
 
+                # If local MediaMTX paths fail, fall back directly to remote camera source
+                remote_source = getattr(stream_manager, 'REMOTE_RTSP_URL', None) or PHYSICAL_RTSP_URL
+                if remote_source and remote_source not in rtsp_variants:
+                    rtsp_variants.append(remote_source)
+                    tcp_variant = remote_source + ("&tcp" if '?' in remote_source else "?tcp")
+                    if tcp_variant not in rtsp_variants:
+                        rtsp_variants.append(tcp_variant)
+
             # Only try camera-specific fallbacks if connecting to a remote camera directly
             if "localhost" not in active_url and "127.0.0.1" not in active_url:
                 # 2) Try with TCP transport on the exact URL
-                if '?' in active_url:
-                    rtsp_variants.append(active_url + "&tcp")
-                else:
-                    rtsp_variants.append(active_url + "?tcp")
+                tcp_suffix = "&tcp" if '?' in active_url else "?tcp"
+                tcp_variant = active_url + tcp_suffix
+                if tcp_variant not in rtsp_variants:
+                    rtsp_variants.append(tcp_variant)
 
-                # 3) Extract base and try Imou/Dahua-specific paths
-                m = re.match(r'(rtsp://[^@]+@[^/]+|rtsp://[^/]+)', active_url)
-                base = m.group(1) if m else active_url
-
-                paths = [
-                    '/cam/realmonitor?channel=1&subtype=1',
-                    '/cam/realmonitor?channel=1&subtype=1&unicast=true&proto=Onvif',
-                    '/cam/realmonitor?channel=1&subtype=0',
-                    '/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif',
-                    '/stream1',
-                    '/Streaming/Channels/101',
-                    '/h264/ch1/main/av_stream',
-                    '/h264_stream',
-                    '/onvif1',
-                    '/onvif/stream2',
-                    '/live',
-                    '/video',
-                    '/video1',
-                    '/videoMain',
-                    '/h264',
-                ]
-                for p in paths:
-                    variant = f"{base}{p}"
-                    if variant not in rtsp_variants:
-                        rtsp_variants.append(variant)
-                    tcp_suffix = "&tcp" if "?" in p else "?tcp"
-                    tcp_variant = f"{base}{p}{tcp_suffix}"
-                    if tcp_variant not in rtsp_variants:
-                        rtsp_variants.append(tcp_variant)
+                # Only probe vendor paths if connecting to a physical IP camera (port 554), not MediaMTX (port 8554)
+                if ":554" in active_url or "channel=" in active_url:
+                    m = re.match(r'(rtsp://[^@]+@[^/]+|rtsp://[^/]+)', active_url)
+                    base = m.group(1) if m else active_url
+                    for p in ['/cam/realmonitor?channel=1&subtype=1', '/cam/realmonitor?channel=1&subtype=0', '/live']:
+                        v = f"{base}{p}"
+                        if v not in rtsp_variants:
+                            rtsp_variants.append(v)
+                        vt = f"{v}?tcp"
+                        if vt not in rtsp_variants:
+                            rtsp_variants.append(vt)
 
             print(f"[SYSTEM] Trying {len(rtsp_variants)} RTSP variants...")
             for url in rtsp_variants:
                 if self.stopped: return False
-                backends_to_try = [cv2.CAP_FFMPEG, cv2.CAP_ANY]
+                backends_to_try = [cv2.CAP_FFMPEG]
                 for be in backends_to_try:
                     if self.stopped: return False
                     try:
@@ -411,8 +400,8 @@ class CameraStream:
                         cap = cv2.VideoCapture(url, be)
                         if cap:
                             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
-                            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)
+                            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 4000)
+                            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 4000)
                         if cap and cap.isOpened():
                             ret, f = cap.read()
                             if ret and f is not None:
@@ -463,6 +452,7 @@ class CameraStream:
     def update(self):
         global camera_online
         retry_count = 0
+        consecutive_grab_fails = 0
         while not self.stopped:
             if not self.online:
                 if self.stream is not None:
@@ -472,19 +462,23 @@ class CameraStream:
                 if self._attempt_connection():
                     print("[SYSTEM] Camera Signal Established.")
                     retry_count = 0
+                    consecutive_grab_fails = 0
                 else:
                     retry_count += 1
-                    wait = min(5 * retry_count, 30)
+                    wait = min(2 * retry_count, 10)
                     print(f"[SYSTEM] Camera hardware not found. Retrying in {wait}s...")
                     time.sleep(wait)
                     continue
 
             try:
-                # 1. Zero-Buffer Frame Capture:
-                # Dedicated thread continuously runs cap.grab() to ensure YOLO
-                # processes strictly the latest camera frame without latency.
+                # 1. Zero-Buffer Frame Capture with transient drop tolerance
                 if not self.stream.grab():
+                    consecutive_grab_fails += 1
+                    if consecutive_grab_fails < 5:
+                        time.sleep(0.02)
+                        continue
                     print("[SYSTEM] Camera Signal Lost. Attempting Reconnection...")
+                    consecutive_grab_fails = 0
                     self.online = False
                     camera_online = False
                     if self.stream:
@@ -492,8 +486,9 @@ class CameraStream:
                         except: pass
                         self.stream = None
                     retry_count += 1
-                    time.sleep(min(retry_count, 10))
+                    time.sleep(min(retry_count, 5))
                     continue
+                consecutive_grab_fails = 0
 
                 ret, frame = self.stream.retrieve()
                 if not ret or frame is None:
@@ -545,11 +540,12 @@ def vision_engine_loop():
     print("[SYSTEM] Vision Engine background loop started.")
     while True:
         try:
-            if camera_stream is None or not camera_stream.online or engine is None:
+            active_stream = camera_stream if (camera_stream and camera_stream.online) else (display_stream if (display_stream and display_stream.online) else None)
+            if active_stream is None or engine is None:
                 time.sleep(0.05)
                 continue
             
-            res = camera_stream.read()
+            res = active_stream.read()
             if res[0] is None:
                 time.sleep(0.005)
                 continue
