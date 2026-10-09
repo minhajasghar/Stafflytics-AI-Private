@@ -167,6 +167,29 @@ def detection_poll():
     global last_detection_payload
     return Response(last_detection_payload, mimetype='application/json')
 
+last_edge_heartbeat = 0.0
+
+@app.route('/api/edge/detections', methods=['POST'])
+def edge_detections():
+    """Receive live YOLOv11 detections from Edge PC running directly beside the camera."""
+    global last_edge_heartbeat
+    try:
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"status": "error", "message": "No JSON payload"}), 400
+        
+        last_edge_heartbeat = time.time()
+        detections = data.get("detections", [])
+        frame_w = data.get("frame_w", 1920)
+        frame_h = data.get("frame_h", 1080)
+        passage = data.get("passage", None)
+        timestamp = data.get("timestamp", last_edge_heartbeat)
+
+        broadcast_detections(detections, frame_w=frame_w, frame_h=frame_h, passage=passage, timestamp=timestamp)
+        return jsonify({"status": "ok", "broadcasted": len(detections)})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/api/ai_status', methods=['GET'])
 def ai_status():
     """Diagnostic endpoint to check the live status of the AI vision pipeline."""
@@ -177,6 +200,11 @@ def ai_status():
     disp_online = display_stream.online if display_stream is not None else False
     cam_online = (camera_stream.online if camera_stream is not None else False) or disp_online
     
+    edge_active = (time.time() - last_edge_heartbeat < 6.0)
+    if edge_active:
+        cam_online = True
+        model_loaded = True
+
     last_payload = {}
     try:
         last_payload = json.loads(last_detection_payload)
@@ -189,9 +217,10 @@ def ai_status():
         "status": "online" if (model_loaded and cam_online) else "degraded",
         "model_loaded": model_loaded,
         "model_loading_active": model_loading,
-        "engine_initialized": engine is not None,
+        "engine_initialized": (engine is not None) or edge_active,
         "camera_online": cam_online,
         "display_stream_online": disp_online,
+        "edge_worker_active": edge_active,
         "websocket_clients": len(websocket_clients),
         "stream_mode": getattr(stream_manager, 'STREAM_MODE', 'unknown'),
         "rtsp_url": RTSP_URL,

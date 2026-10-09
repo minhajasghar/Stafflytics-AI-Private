@@ -1,0 +1,14 @@
+[Unit]
+Description=Stafflytics Edge YOLOv11 Vision Worker
+After=network.target mediamtx.service
+
+[Service]
+Type=simple
+User=tntinnovations
+WorkingDirectory=/home/tntinnovations/projects/stafflytics-ai-private
+ExecStart=/usr/bin/python3 edge_ai_worker.py --source rtsp://localhost:8554/cam --server https://localhost --fps 20
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
