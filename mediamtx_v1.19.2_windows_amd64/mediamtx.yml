@@ -11,6 +11,10 @@ readTimeout: 30s
 webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigins: ['*']
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
+  - url: stun:stun1.l.google.com:19302
+  - url: stun:stun2.l.google.com:19302
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s
