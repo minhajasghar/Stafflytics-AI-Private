@@ -114,8 +114,13 @@ def write_mediamtx_config():
     
     config_path = os.path.join(BIN_DIR, "mediamtx.yml")
     ffmpeg_path = FFMPEG_EXE
-    stream_w, stream_h = get_stream_resolution()
-    
+    webrtc_hosts = os.environ.get("WEBRTC_ADDITIONAL_HOSTS", "13.140.149.253").strip()
+    additional_hosts_yaml = ""
+    if webrtc_hosts:
+        hosts_list = [h.strip() for h in webrtc_hosts.split(',') if h.strip()]
+        if hosts_list:
+            additional_hosts_yaml = "webrtcAdditionalHosts:\n" + "\n".join(f"  - {h}" for h in hosts_list)
+
     config_content = f"""# MediaMTX configuration for Stafflytics (auto-generated)
 rtspAddress: :8554
 rtpAddress: :8556
@@ -126,6 +131,9 @@ webrtcAddress: :8889
 webrtcAllowOrigin: "*"
 webrtcICEServers2:
   - url: stun:stun.l.google.com:19302
+  - url: stun:stun1.l.google.com:19302
+  - url: stun:stun2.l.google.com:19302
+{additional_hosts_yaml}
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s
@@ -221,6 +229,13 @@ def _write_mediamtx_config_remote_rtsp():
     ff_bin = f'"{ffmpeg_path}"' if _IS_WINDOWS else (ffmpeg_path or "ffmpeg")
 
     stream_w, stream_h = get_stream_resolution()
+    webrtc_hosts = os.environ.get("WEBRTC_ADDITIONAL_HOSTS", "13.140.149.253").strip()
+    additional_hosts_yaml = ""
+    if webrtc_hosts:
+        hosts_list = [h.strip() for h in webrtc_hosts.split(',') if h.strip()]
+        if hosts_list:
+            additional_hosts_yaml = "webrtcAdditionalHosts:\n" + "\n".join(f"  - {h}" for h in hosts_list)
+
     config_content = f"""# MediaMTX configuration for Stafflytics - REMOTE RTSP MODE (auto-generated)
 # "cam" pulls directly from the remote RTSP source; no Imou bridge needed.
 rtspAddress: :8554
@@ -234,6 +249,7 @@ webrtcICEServers2:
   - url: stun:stun.l.google.com:19302
   - url: stun:stun1.l.google.com:19302
   - url: stun:stun2.l.google.com:19302
+{additional_hosts_yaml}
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 webrtcHandshakeTimeout: 30s

@@ -905,7 +905,29 @@ def webrtc_whep_proxy():
                 )
                 if r.ok:
                     print(f"[WHEP PROXY] Success via {whep_url}")
-                    resp = Response(r.text, status=r.status_code, mimetype='application/sdp')
+                    answer_sdp = r.text
+                    public_host = os.environ.get("WEBRTC_PUBLIC_HOST", "").strip()
+                    if not public_host:
+                        host_hdr = request.headers.get('Host', '')
+                        if host_hdr:
+                            public_host = host_hdr.split(':')[0].strip()
+
+                    # Add public candidate line for each private candidate so external browsers can reach WebRTC
+                    if public_host and public_host not in ['127.0.0.1', 'localhost', '0.0.0.0']:
+                        answer_lines = []
+                        seen_candidates = set()
+                        for line in answer_sdp.splitlines():
+                            answer_lines.append(line)
+                            if line.startswith('a=candidate:'):
+                                seen_candidates.add(line)
+                                if ' 127.0.0.1 ' in line or ' 100.' in line or ' 192.168.' in line:
+                                    pub_cand = re.sub(r' (127\.0\.0\.1|100\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+) ', f' {public_host} ', line)
+                                    if pub_cand not in seen_candidates:
+                                        seen_candidates.add(pub_cand)
+                                        answer_lines.append(pub_cand)
+                        answer_sdp = '\r\n'.join(answer_lines) + '\r\n'
+
+                    resp = Response(answer_sdp, status=r.status_code, mimetype='application/sdp')
                     resp.headers['Access-Control-Allow-Origin'] = '*'
                     return resp
                 print(f"[WHEP PROXY] {whep_url} returned {r.status_code}: {r.text[:100]}")

@@ -114,8 +114,7 @@
                         <video id="hls-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none;"></video>
                         <!-- WebRTC live feed — seamlessly takes over once connected -->
                         <video id="webrtc-video" autoplay muted playsinline style="width:100%; height:100%; object-fit:contain; display:none; background:#000;"></video>
-                        <!-- Fallback & Instant Stream Feed (shows instantly on dashboard load so there is zero black screen) -->
-                        <img id="video-feed" alt="Live Feed" src="/api/stream/video" data-src="/api/stream/video" style="width:100%; height:100%; object-fit:contain; display:block;">
+                        <img id="video-feed" alt="Live Feed" src="/video_feed" data-src="/video_feed" onerror="if(this.src.indexOf('api')===-1){this.src='/api/stream/video';}" style="width:100%; height:100%; object-fit:contain; display:block;">
                         
                         <!-- Stream Status Overlay -->
                         <div id="webrtc-status-overlay" style="position:absolute; top:15px; left:15px; z-index:10; background:rgba(15, 23, 42, 0.85); color:white; padding:6px 12px; border-radius:30px; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:8px; backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.1); box-shadow:0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.5s;">
@@ -883,15 +882,11 @@
         function enableMjpegFallback() {
             const fallbackImg = document.getElementById('video-feed');
             if (!fallbackImg) return;
-            const src = fallbackImg.getAttribute('data-src') || '/api/stream/video';
-            if (!fallbackImg.src || !fallbackImg.src.includes('/api/stream/video')) {
+            const src = fallbackImg.getAttribute('data-src') || '/video_feed';
+            if (!fallbackImg.src || (!fallbackImg.src.includes('video') && !fallbackImg.src.includes('feed'))) {
                 fallbackImg.src = src;
             }
             fallbackImg.style.display = 'block';
-            const webrtcVideo = document.getElementById('webrtc-video');
-            if (webrtcVideo) webrtcVideo.style.display = 'none';
-            const hlsVideo = document.getElementById('hls-video');
-            if (hlsVideo) hlsVideo.style.display = 'none';
         }
 
         async function initVideoStream() {
@@ -904,8 +899,10 @@
             fallbackImg.addEventListener('load', () => {
                 updateVideoAspect();
                 resizeCanvas();
-                if (fallbackImg.style.display !== 'none') {
-                    label.innerText = 'MJPEG Live';
+                const webrtcVideo = document.getElementById('webrtc-video');
+                const isWebrtcActive = webrtcVideo && webrtcVideo.style.display !== 'none' && webrtcVideo.currentTime > 0;
+                if (!isWebrtcActive && fallbackImg.style.display !== 'none') {
+                    label.innerText = 'MJPEG Fallback';
                     dot.style.background = '#22c55e';
                     dot.classList.remove('webrtc-pulse-dot');
                     overlay.style.opacity = '1';
@@ -919,9 +916,17 @@
                 overlay.style.opacity = '1';
             }
 
-            // WebRTC disabled over domain — use MJPEG /api/stream/video directly for universal network access
-            setStatus('Connecting Live Stream...', '#3b82f6', true);
-            enableMjpegFallback();
+            try {
+                const statusRes = await fetch('/api/stream/status');
+                const statusData = await statusRes.json();
+                if (statusData.mode === 'imou' && statusData.enabled) {
+                    initHlsStream(setStatus);
+                    return;
+                }
+            } catch (err) {
+                console.warn("[Video] Status check failed, using WebRTC.", err);
+            }
+            initWebRTCStream();
         }
 
         function destroyHlsPlayer() {
