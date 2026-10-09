@@ -222,19 +222,18 @@ def sync_camera_config():
     # is used. Must be checked BEFORE the legacy local-RTSP block so that
     # set_stream_mode("rtsp") and setup_mediamtx() are never called in this mode.
     if stream_manager.CAMERA_SOURCE_MODE == "remote_rtsp":
-        # Always read from the database first — this is what the user saved in Settings.
         conf = database.get_system_settings()
         saved_url = conf.get('rtsp_url', '').strip()
-        if saved_url:
-            # Pass it explicitly so the stream manager uses the latest saved URL.
-            stream_manager.setup_remote_rtsp_stream(remote_url=saved_url)
+        # If database has a stale/old LAN URL (e.g. 192.168.*), do not let it override CAMERA_RTSP_URL
+        if saved_url and not ('192.168.' in saved_url):
             PHYSICAL_RTSP_URL = saved_url
         else:
-            stream_manager.setup_remote_rtsp_stream()
-            if stream_manager.REMOTE_RTSP_URL:
-                PHYSICAL_RTSP_URL = stream_manager.REMOTE_RTSP_URL
-        RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"
-        print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {stream_manager.REMOTE_RTSP_URL} (AI via cam_ai)")
+            PHYSICAL_RTSP_URL = CAMERA_RTSP_URL
+
+        stream_manager.setup_remote_rtsp_stream(remote_url=PHYSICAL_RTSP_URL)
+        RTSP_URL = PHYSICAL_RTSP_URL
+        DISPLAY_RTSP_URL = PHYSICAL_RTSP_URL
+        print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {PHYSICAL_RTSP_URL}")
         return
 
 
@@ -357,24 +356,16 @@ class CameraStream:
         if active_url:
             rtsp_variants = []
 
-            # 1) ALWAYS try the user's exact URL first (most important!)
-            rtsp_variants.append(active_url)
+            # Prioritize direct camera source (Office PC over Tailscale)
+            remote_source = getattr(stream_manager, 'REMOTE_RTSP_URL', None) or PHYSICAL_RTSP_URL or CAMERA_RTSP_URL
+            if remote_source and ("127.0.0.1" not in remote_source and "localhost" not in remote_source):
+                tcp_variant = remote_source + ("&tcp" if '?' in remote_source else "?tcp")
+                rtsp_variants.append(tcp_variant)
+                rtsp_variants.append(remote_source)
 
-            if "localhost" in active_url or "127.0.0.1" in active_url:
-                if "/cam_ai" in active_url:
-                    if "rtsp://127.0.0.1:8554/cam" not in rtsp_variants:
-                        rtsp_variants.append("rtsp://127.0.0.1:8554/cam")
-                else:
-                    # Prefer the H.264 AI path so YOLO actually receives decodable frames
-                    rtsp_variants.insert(0, "rtsp://127.0.0.1:8554/cam_ai")
-
-                # If local MediaMTX paths fail, fall back directly to remote camera source
-                remote_source = getattr(stream_manager, 'REMOTE_RTSP_URL', None) or PHYSICAL_RTSP_URL
-                if remote_source and remote_source not in rtsp_variants:
-                    rtsp_variants.append(remote_source)
-                    tcp_variant = remote_source + ("&tcp" if '?' in remote_source else "?tcp")
-                    if tcp_variant not in rtsp_variants:
-                        rtsp_variants.append(tcp_variant)
+            # Also try active_url and local variants
+            if active_url not in rtsp_variants:
+                rtsp_variants.append(active_url)
 
             # Only try camera-specific fallbacks if connecting to a remote camera directly
             if "localhost" not in active_url and "127.0.0.1" not in active_url:
@@ -912,8 +903,8 @@ def webrtc_whep_proxy():
                         if host_hdr:
                             public_host = host_hdr.split(':')[0].strip()
 
-                    # Add public candidate line for each private candidate so external browsers can reach WebRTC
-                    if public_host and public_host not in ['127.0.0.1', 'localhost', '0.0.0.0']:
+                    # Only add public candidate if proxying to VPS-local MediaMTX (127.0.0.1)
+                    if host in ['127.0.0.1', 'localhost'] and public_host and public_host not in ['127.0.0.1', 'localhost', '0.0.0.0']:
                         answer_lines = []
                         seen_candidates = set()
                         for line in answer_sdp.splitlines():
