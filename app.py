@@ -167,6 +167,7 @@ def ai_status():
     import vision_engine
     import stream_manager
     model_loaded = vision_engine.model is not None
+    model_loading = getattr(vision_engine, 'model_loading_active', False)
     disp_online = display_stream.online if display_stream is not None else False
     cam_online = (camera_stream.online if camera_stream is not None else False) or disp_online
     
