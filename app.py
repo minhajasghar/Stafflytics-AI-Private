@@ -260,9 +260,9 @@ def sync_camera_config():
             PHYSICAL_RTSP_URL = CAMERA_RTSP_URL
 
         stream_manager.setup_remote_rtsp_stream(remote_url=PHYSICAL_RTSP_URL)
-        RTSP_URL = PHYSICAL_RTSP_URL
-        DISPLAY_RTSP_URL = PHYSICAL_RTSP_URL
-        print(f"[SYSTEM] REMOTE RTSP MODE active — pulling from {PHYSICAL_RTSP_URL}")
+        RTSP_URL = "rtsp://127.0.0.1:8554/cam_ai"
+        DISPLAY_RTSP_URL = "rtsp://127.0.0.1:8554/cam"
+        print(f"[SYSTEM] REMOTE RTSP MODE active — MediaMTX pulling from {PHYSICAL_RTSP_URL} (AI reading local cam_ai)")
         return
 
 
@@ -385,16 +385,22 @@ class CameraStream:
         if active_url:
             rtsp_variants = []
 
-            # Prioritize direct camera source (Office PC over Tailscale)
+            # 1) Prioritize active_url first (local MediaMTX cam_ai / cam)
+            rtsp_variants.append(active_url)
+            if "localhost" in active_url or "127.0.0.1" in active_url:
+                if "/cam_ai" in active_url:
+                    rtsp_variants.append("rtsp://127.0.0.1:8554/cam")
+                else:
+                    rtsp_variants.insert(0, "rtsp://127.0.0.1:8554/cam_ai")
+
+            # 2) Fallback to direct camera source only if local MediaMTX is unavailable
             remote_source = getattr(stream_manager, 'REMOTE_RTSP_URL', None) or PHYSICAL_RTSP_URL or CAMERA_RTSP_URL
             if remote_source and ("127.0.0.1" not in remote_source and "localhost" not in remote_source):
                 tcp_variant = remote_source + ("&tcp" if '?' in remote_source else "?tcp")
-                rtsp_variants.append(tcp_variant)
-                rtsp_variants.append(remote_source)
-
-            # Also try active_url and local variants
-            if active_url not in rtsp_variants:
-                rtsp_variants.append(active_url)
+                if tcp_variant not in rtsp_variants:
+                    rtsp_variants.append(tcp_variant)
+                if remote_source not in rtsp_variants:
+                    rtsp_variants.append(remote_source)
 
             # Only try camera-specific fallbacks if connecting to a remote camera directly
             if "localhost" not in active_url and "127.0.0.1" not in active_url:
@@ -1666,10 +1672,11 @@ def enroll_staff_with_faces():
                 return jsonify({"status": "error", "message": f"CRITICAL: Face detection crashed on this server. Error: {_last_ai_error}"}), 500
             return jsonify({"status": "error", "message": "No valid face detected in any capture"}), 400
         
-        # Store ALL individual encodings from different angles for robust multi-angle matching
+        # Store optimal Few-Shot individual encodings (capped at 5 shots) for robust and fast recognition
+        few_shot_encodings = encodings[:5]
         database.add_staff(
             data['id'], data['name'], data['role'],
-            pickle.dumps(encodings),
+            pickle.dumps(few_shot_encodings),
             data.get('shift_time', '10:00'),
             data.get('shift', 'Morning'),
             data.get('rate', 500),
@@ -1677,7 +1684,7 @@ def enroll_staff_with_faces():
             first_photo
         )
         engine.load_known_faces()
-        return jsonify({"status": "success", "message": f"Enrolled {len(encodings)}/{len(images)} captures"})
+        return jsonify({"status": "success", "message": f"Few-Shot Enrollment complete ({len(few_shot_encodings)} shots registered)"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 

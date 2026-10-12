@@ -694,7 +694,7 @@ class VisionEngine:
                                             break
                             
                             if can_assign_staff:
-                                # MULTI-ANGLE LEARNING: Store new distinct face angles over time (up to 5)
+                                # FEW-SHOT ANGLE OPTIMIZATION: Retain optimal distinct face shots (up to 5)
                                 s_meta_matched = known_staff_meta[best_staff_idx]
                                 stored_list = s_meta_matched.get("all_encs", [])
                                 if stored_list and best_staff_sim >= 0.38:
@@ -712,7 +712,7 @@ class VisionEngine:
                                                 stored_list.pop(pair_sims[0][2])
                                         database.update_staff_encodings(match_id, pickle.dumps(stored_list))
                                         s_meta_matched["all_encs"] = stored_list
-                                        print(f"[AI MULTI-ANGLE] Learned new distinct face angle for Staff {s_meta_matched['name']} (total stored: {len(stored_list)}/5)")
+                                        print(f"[AI FEW-SHOT] Retained optimal distinct face angle for Staff {s_meta_matched['name']} (total stored: {len(stored_list)}/5)")
                                 
                                 match_name = known_staff_meta[best_staff_idx]["name"]
                                 match_role = known_staff_meta[best_staff_idx]["role"]
@@ -798,7 +798,7 @@ class VisionEngine:
                                         "reid_vec": body_reid_vec, "last_seen": current_time, "is_staff": False
                                     }
                             
-                            # MULTI-ANGLE LEARNING: Store new distinct face angles for customer (up to 5)
+                            # FEW-SHOT ANGLE OPTIMIZATION: Retain optimal distinct face shots for customer (up to 5)
                             c_stored_list = known_cust_meta[matched_cust_idx].get("all_encs", [])
                             if c_stored_list and best_cust_sim >= 0.38:
                                 c_sims_to_self = _cos_sims(c_stored_list, face_encodings[0])
@@ -818,7 +818,7 @@ class VisionEngine:
                                     b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
                                     database.update_customer_encoding(c_id_matched, pickle.dumps(c_stored_list), photo=b64_photo)
                                     known_cust_meta[matched_cust_idx]["all_encs"] = c_stored_list
-                                    print(f"[AI MULTI-ANGLE] Learned new distinct face angle for Customer #{c_id_matched} (total stored: {len(c_stored_list)}/5)")
+                                    print(f"[AI FEW-SHOT] Retained optimal distinct face angle for Customer #{c_id_matched} (total stored: {len(c_stored_list)}/5)")
 
                 # TIER 2: Person Re-ID Appearance Matching (When Face is Occluded / Steep Ceiling Angle)
                 if match_id == "Unknown" and body_reid_vec is not None:

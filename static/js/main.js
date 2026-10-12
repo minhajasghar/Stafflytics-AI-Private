@@ -1069,20 +1069,21 @@ function handleImageUpload(event) {
     const files = event.target.files;
     if (!files || files.length === 0) return;
     
-    if (files.length < 4) {
-        alert("Please upload at least 4 pictures.");
+    if (files.length < 3) {
+        alert("Few-Shot enrollment requires at least 3 pictures (Front, Left 45°, Right 45°).");
         return;
     }
 
     enrollmentCaptures = [];
+    const maxFiles = Math.min(files.length, 5);
     let loadedCount = 0;
 
-    for (let i = 0; i < files.length; i++) {
+    for (let i = 0; i < maxFiles; i++) {
         const reader = new FileReader();
         reader.onload = function(e) {
             enrollmentCaptures.push(e.target.result);
             loadedCount++;
-            if (loadedCount === files.length) {
+            if (loadedCount === maxFiles) {
                 goToStep(3); // skip straight to review
             }
         };
@@ -1305,8 +1306,8 @@ async function submitEnrollment() {
         alert("ID and Name are mandatory.");
         return;
     }
-    if (enrollmentCaptures.length < 4) {
-        alert("Please capture or upload at least 4 face images.");
+    if (enrollmentCaptures.length < 3) {
+        alert("Few-Shot enrollment requires at least 3 distinct face captures (Front, Left, Right).");
         return;
     }
 
