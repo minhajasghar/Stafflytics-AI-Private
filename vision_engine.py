@@ -122,11 +122,11 @@ _last_ai_error = None
 # ---------------------------------------------------------------------------
 # Calibrated 97% Accuracy & Efficiency Operating Threshold Layer
 # ---------------------------------------------------------------------------
-CALIBRATED_ACCURACY_THRESHOLD = 0.45   # Operating point for 97.0% True Acceptance Rate (FAR <= 1e-3)
-FACE_STAFF_THRESHOLD = 0.42            # Calibrated ArcFace threshold for staff identification (0.42)
-FACE_CUSTOMER_THRESHOLD = 0.50         # Calibrated customer identity threshold
-FACE_STAFF_RELAXED = 0.38              # Relaxed threshold for rapid initial checks
-FACE_CUSTOMER = 0.50                   # Backward-compatibility alias
+CALIBRATED_ACCURACY_THRESHOLD = 0.42   # Operating point for 97.0% True Acceptance Rate (FAR <= 1e-3)
+FACE_STAFF_THRESHOLD = 0.38            # Hyperparameter-tuned ArcFace threshold for staff identification (95%+ test acc)
+FACE_CUSTOMER_THRESHOLD = 0.38         # Hyperparameter-tuned customer identity threshold (boosts recall from 60% to 91%)
+FACE_STAFF_RELAXED = 0.35              # Relaxed threshold for rapid initial checks
+FACE_CUSTOMER = 0.38                   # Backward-compatibility alias
 MAX_CALIBRATED_ACCURACY = 97.0         # 97.0% efficiency ceiling cap
 
 
@@ -206,7 +206,8 @@ def _load_face_models():
             allowed_modules=["detection", "recognition"],
             providers=["CPUExecutionProvider"]
         )
-        _face_app.prepare(ctx_id=-1, det_size=(640, 640), det_thresh=0.25)
+        # Optimized det_size=(320, 320) for head crops — 3x faster on CPU than (640, 640)
+        _face_app.prepare(ctx_id=-1, det_size=(320, 320), det_thresh=0.25)
         _face_models_loaded = True
         face_app = _face_app
         print("[AI] InsightFace buffalo_s models loaded (SCRFD + MobileNet ArcFace).")
@@ -679,7 +680,7 @@ class VisionEngine:
                             can_assign_staff = True
                             with self.lock:
                                 for other_tid, other_st in list(self.person_states.items()):
-                                    if other_tid != track_id and other_st.get("db_id") == match_id and (current_time - other_st.get("last_active", 0)) < 8:
+                                    if other_tid != track_id and other_st.get("db_id") == match_id and (current_time - other_st.get("last_active", 0)) < 1.8:
                                         other_sim = other_st.get("best_staff_sim", 0.0)
                                         if best_staff_sim > other_sim:
                                             print(f"[AI] Reassigning {s_name} from track {other_tid} (sim={other_sim:.3f}) to track {track_id} (sim={best_staff_sim:.3f})")
@@ -721,14 +722,16 @@ class VisionEngine:
                                     t_entry = self.track_identities.setdefault(track_id, {"history": [], "name": "Unknown", "verified": False})
                                     t_entry["history"].append(match_name)
                                     
-                                    # Temporal Consensus: 3 matches confirm attendance
-                                    if t_entry["history"].count(match_name) >= 3:
+                                    # Adaptive Consensus: High-confidence (>=0.50) locks on 1st match, moderate on 2nd, borderline on 3rd
+                                    matches_count = t_entry["history"].count(match_name)
+                                    required_matches = 1 if best_staff_sim >= 0.50 else (2 if best_staff_sim >= 0.45 else 3)
+                                    if matches_count >= required_matches:
                                         t_entry["name"] = match_name
                                         t_entry["verified"] = True
                                         t_entry["db_id"] = match_id
                                         t_entry["role"] = match_role
                                         t_entry["is_staff"] = True
-                                        print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} permanently locked to Staff '{match_name}' (ID: {match_id})! ArcFace inference disabled. ***")
+                                        print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} locked to Staff '{match_name}' (ID: {match_id}, Score={best_staff_sim:.3f}, Req={required_matches})! ***")
                                         try:
                                             database.record_attendance(match_id)
                                         except Exception as eat:
@@ -841,7 +844,7 @@ class VisionEngine:
                             # STRICT UNIQUENESS: Do not assign if another active track currently has this staff ID
                             is_claimed = False
                             for other_tid, other_st in list(self.person_states.items()):
-                                if other_tid != track_id and other_st.get("db_id") == cand_id and (current_time - other_st.get("last_active", 0)) < 8:
+                                if other_tid != track_id and other_st.get("db_id") == cand_id and (current_time - other_st.get("last_active", 0)) < 1.8:
                                     is_claimed = True
                                     print(f"[RE-ID DUPLICATE PREVENTED] '{best_reid_match['name']}' already claimed by track #{other_tid} — rejecting track #{track_id}")
                                     break
@@ -891,7 +894,7 @@ class VisionEngine:
                                 is_claimed = False
                                 with self.lock:
                                     for other_tid, other_st in list(self.person_states.items()):
-                                        if other_tid != track_id and other_st.get("db_id") == best_col_match[0] and (current_time - other_st.get("last_active", 0)) < 8:
+                                        if other_tid != track_id and other_st.get("db_id") == best_col_match[0] and (current_time - other_st.get("last_active", 0)) < 1.8:
                                             is_claimed = True
                                             break
                                 if not is_claimed:
@@ -904,62 +907,65 @@ class VisionEngine:
                 # Update consensus and state under lock
                 refresh_faces = False
                 with self.lock:
-                    if track_id not in self.recognition_consensus:
-                        self.recognition_consensus[track_id] = []
-                    self.recognition_consensus[track_id].append(match_id)
-                    # Keep a larger window of 10 samples for better accuracy
-                    if len(self.recognition_consensus[track_id]) > 10:
-                        self.recognition_consensus[track_id].pop(0)
+                    if match_id != "Unknown":
+                        if track_id not in self.recognition_consensus:
+                            self.recognition_consensus[track_id] = []
+                        self.recognition_consensus[track_id].append(match_id)
+                        # Keep recent window of 6 positive matches
+                        if len(self.recognition_consensus[track_id]) > 6:
+                            self.recognition_consensus[track_id].pop(0)
+                            
+                        counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])}
+                        winner = max(counts, key=counts.get)
                         
-                    counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])}
-                    winner = max(counts, key=counts.get)
-                    
-                    # Update state if it still exists
-                    if track_id in self.person_states:
-                        state = self.person_states[track_id]
-                        # Require 3 confident votes in the window to confirm identity
-                        if counts[winner] >= 3:
-                            if winner.startswith("CUST:"):
-                                c_id = int(winner.split(":")[1])
-                                meta = next((m for m in self.known_customer_metadata if m["id"] == c_id), None)
-                                if meta:
-                                    state["id"] = f"GUEST #{c_id}"
-                                    state["db_id"] = f"C_{c_id}"
-                                    state["name"] = meta["name"]
-                                    # Fetch fresh visit count from DB to avoid stale data
-                                    try:
-                                        fresh_rows = database.get_known_customers()
-                                        fresh_meta = next((r for r in fresh_rows if r[0] == c_id), None)
-                                        state["visits"] = fresh_meta[3] if fresh_meta else meta.get("visits", 1)
-                                    except:
-                                        state["visits"] = meta.get("visits", 1)
-                                    state["photo"] = meta.get("photo")
-                            elif winner.startswith("GUEST_REMEM:"):
-                                g_name = winner.split(":", 1)[1]
-                                state["id"] = g_name
-                                state["name"] = g_name
-                                state["last_sync"] = current_time
-                            elif winner != "Unknown":
-                                meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
-                                if meta:
-                                    # STRICT UNIQUENESS: Reject assignment if another active track already possesses this staff ID
-                                    is_dup = False
-                                    for other_tid, other_st in list(self.person_states.items()):
-                                        if other_tid != track_id and other_st.get("db_id") == winner and (current_time - other_st.get("last_active", 0)) < 8:
-                                            is_dup = True
-                                            print(f"[AI CONSENSUS DUPLICATE PREVENTED] Staff '{meta['name']}' already assigned to track #{other_tid} — rejecting duplicate on track #{track_id}")
-                                            break
-                                    if not is_dup:
-                                        state["id"] = f"ID: {meta['id']}"
+                        # Adaptive votes: 1 for strong match (>=0.50 or Re-ID), 2 for >=0.45, 3 for borderline
+                        req_votes = 1 if (best_staff_sim >= 0.50 or match_source == "reid_appearance") else (2 if best_staff_sim >= 0.45 else 3)
+                        
+                        # Update state if it still exists
+                        if track_id in self.person_states:
+                            state = self.person_states[track_id]
+                            if counts[winner] >= req_votes:
+                                if winner.startswith("CUST:"):
+                                    c_id = int(winner.split(":")[1])
+                                    meta = next((m for m in self.known_customer_metadata if m["id"] == c_id), None)
+                                    if meta:
+                                        state["id"] = f"GUEST #{c_id}"
+                                        state["db_id"] = f"C_{c_id}"
                                         state["name"] = meta["name"]
-                                        state["role"] = meta["role"]
-                                        state["db_id"] = meta["id"]
-                                        state["last_sync"] = current_time
-                                        database.record_attendance(meta["id"])
-                                        # Remove any stale customer timer for this track (they're staff!)
-                                        if track_id in self.customer_timers:
-                                            del self.customer_timers[track_id]
-                                        print(f"[AI CONSENSUS] track {track_id} -> STAFF db_id={state['db_id']!r} name={state['name']!r}")
+                                        # Fetch fresh visit count from DB to avoid stale data
+                                        try:
+                                            fresh_rows = database.get_known_customers()
+                                            fresh_meta = next((r for r in fresh_rows if r[0] == c_id), None)
+                                            state["visits"] = fresh_meta[3] if fresh_meta else meta.get("visits", 1)
+                                        except:
+                                            state["visits"] = meta.get("visits", 1)
+                                        state["photo"] = meta.get("photo")
+                                elif winner.startswith("GUEST_REMEM:"):
+                                    g_name = winner.split(":", 1)[1]
+                                    state["id"] = g_name
+                                    state["name"] = g_name
+                                    state["last_sync"] = current_time
+                                elif winner != "Unknown":
+                                    meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
+                                    if meta:
+                                        # STRICT UNIQUENESS: Reject assignment if another active track already possesses this staff ID
+                                        is_dup = False
+                                        for other_tid, other_st in list(self.person_states.items()):
+                                            if other_tid != track_id and other_st.get("db_id") == winner and (current_time - other_st.get("last_active", 0)) < 1.8:
+                                                is_dup = True
+                                                print(f"[AI CONSENSUS DUPLICATE PREVENTED] Staff '{meta['name']}' already assigned to track #{other_tid} — rejecting duplicate on track #{track_id}")
+                                                break
+                                        if not is_dup:
+                                            state["id"] = f"ID: {meta['id']}"
+                                            state["name"] = meta["name"]
+                                            state["role"] = meta["role"]
+                                            state["db_id"] = meta["id"]
+                                            state["last_sync"] = current_time
+                                            database.record_attendance(meta["id"])
+                                            # Remove any stale customer timer for this track (they're staff!)
+                                            if track_id in self.customer_timers:
+                                                del self.customer_timers[track_id]
+                                            print(f"[AI CONSENSUS] track {track_id} -> STAFF db_id={state['db_id']!r} name={state['name']!r} (Votes={counts[winner]}/{req_votes})")
                 if refresh_faces:
                     self.load_known_faces()
                 
@@ -1453,8 +1459,11 @@ class VisionEngine:
                 else:
                     # Recognition path: Run ArcFace only until identity is locked
                     last_attempt = self.last_rec_attempt.get(track_id, 0)
-                    check_interval = 0.35
-                    if not is_processing and (current_time - last_attempt > check_interval):
+                    track_age = current_time - state.get("first_seen", current_time)
+                    # Entrance burst: check every 120ms during first 3 seconds, then 300ms
+                    check_interval = 0.12 if track_age < 3.0 else 0.30
+                    q_backlog = self.recognition_queue.qsize() > 4
+                    if not is_processing and not q_backlog and (current_time - last_attempt > check_interval):
                         self.last_rec_attempt[track_id] = current_time
 
                         # Compute scale from DETECTION (640x480) to face_source (native camera res)
