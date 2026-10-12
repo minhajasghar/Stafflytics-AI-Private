@@ -241,7 +241,11 @@ class MySQLConnectionWrapper:
         self.conn.close()
 
 import sqlite3
-import mysql.connector
+try:
+    import mysql.connector
+except ImportError:
+    mysql = None
+
 
 class SQLiteRow:
     def __init__(self, tuple_data, column_names):
@@ -325,12 +329,12 @@ class SQLiteConnectionWrapper:
     def close(self):
         self.conn.close()
 
-USE_SQLITE_FALLBACK = False
+USE_SQLITE_FALLBACK = (mysql is None)
 
 def get_db_connection():
     """Returns a database connection (MySQL if available, or SQLite fallback)."""
     global USE_SQLITE_FALLBACK
-    if not USE_SQLITE_FALLBACK:
+    if not USE_SQLITE_FALLBACK and mysql is not None:
         try:
             conn = mysql.connector.connect(
                 host=DB_CONFIG["MYSQL_HOST"],
@@ -386,7 +390,7 @@ def init_db():
     """Initializes the database and ensures all required tables exist."""
     global USE_SQLITE_FALLBACK
     _init_conn = None
-    if not USE_SQLITE_FALLBACK:
+    if not USE_SQLITE_FALLBACK and mysql is not None:
         try:
             conn_raw = mysql.connector.connect(
                 host=DB_CONFIG["MYSQL_HOST"],
@@ -404,6 +408,7 @@ def init_db():
         except Exception as e:
             print(f"[DB] MySQL init failed ({e}). Switching to SQLite fallback.")
             USE_SQLITE_FALLBACK = True
+
 
     def _try(cursor, sql, label):
         """Run a single DDL statement and swallow benign errors (e.g. duplicate columns)."""
