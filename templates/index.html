@@ -795,19 +795,12 @@
             }
 
             const now = Date.now();
-            if (!detections || detections.length === 0) {
-                detectionDwellBuffer = detectionDwellBuffer.filter(d => now - d.ts < 1500);
-                if (detectionDwellBuffer.length > 0) {
-                    const last = detectionDwellBuffer[detectionDwellBuffer.length - 1];
-                    detections = last.dets;
-                    frameW = last.frameW;
-                    frameH = last.frameH;
-                }
-            } else {
-                detectionDwellBuffer.push({ dets: detections, frameW: frameW, frameH: frameH, ts: now });
-                if (detectionDwellBuffer.length > 10) detectionDwellBuffer.shift();
+            if (!detections) detections = [];
+            if (detections.length === 0) {
+                // If no active detections in this frame, clear interpolators immediately
+                if (window._boxInterpolators) window._boxInterpolators.clear();
+                return;
             }
-            if (!detections || detections.length === 0) return;
 
             // Coordinates from backend are in native detection frame space (frameW x frameH).
             // Map them into the visible contain-fit video rect.
@@ -900,9 +893,9 @@
                 ctx.fillText(labelText, x1 + 6, labelY + 14);
             });
 
-            // Evict expired track interpolators
+            // Evict absent track interpolators immediately when people leave
             for (const [tid, state] of interpolators.entries()) {
-                if (now - state.lastSeen > 1800) {
+                if (!activeIds.has(tid) || (now - state.lastSeen > 350)) {
                     interpolators.delete(tid);
                 }
             }

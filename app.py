@@ -569,11 +569,16 @@ class CameraStream:
         if self.stream: self.stream.release()
 
 def vision_engine_loop():
-    global camera_stream, engine, latest_processed_frame, camera_width, camera_height
+    global camera_stream, engine, latest_processed_frame, camera_width, camera_height, last_edge_heartbeat
     last_processed_frame_id = -1
     print("[SYSTEM] Vision Engine background loop started.")
     while True:
         try:
+            # When an Edge AI Worker is actively sending live detections, yield completely!
+            if (time.time() - last_edge_heartbeat) < 6.0:
+                time.sleep(0.3)
+                continue
+
             active_stream = camera_stream if (camera_stream and camera_stream.online) else (display_stream if (display_stream and display_stream.online) else None)
             if active_stream is None or engine is None:
                 time.sleep(0.05)
