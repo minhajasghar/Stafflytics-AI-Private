@@ -124,10 +124,10 @@ _last_ai_error = None
 # ---------------------------------------------------------------------------
 # Calibrated 97% Accuracy & Efficiency Operating Threshold Layer
 # ---------------------------------------------------------------------------
-CALIBRATED_ACCURACY_THRESHOLD = 0.42   # Operating point for 97.0% True Acceptance Rate (FAR <= 1e-3)
-FACE_STAFF_THRESHOLD = 0.38            # Hyperparameter-tuned ArcFace threshold for staff identification (95%+ test acc)
-FACE_CUSTOMER_THRESHOLD = 0.38         # Hyperparameter-tuned customer identity threshold (boosts recall from 60% to 91%)
-FACE_STAFF_RELAXED = 0.35              # Relaxed threshold for rapid initial checks
+CALIBRATED_ACCURACY_THRESHOLD = 0.36   # Operating point for True Acceptance Rate
+FACE_STAFF_THRESHOLD = 0.32            # Calibrated ArcFace threshold for angled ceiling surveillance cameras
+FACE_CUSTOMER_THRESHOLD = 0.38         # Customer identity threshold
+FACE_STAFF_RELAXED = 0.30              # Relaxed threshold for rapid initial checks
 FACE_CUSTOMER = 0.38                   # Backward-compatibility alias
 MAX_CALIBRATED_ACCURACY = 97.0         # 97.0% efficiency ceiling cap
 
@@ -783,14 +783,13 @@ class VisionEngine:
                                 t_entry["history"].append(match_name)
                                 if t_entry["history"].count(match_name) >= 3:
                                     t_entry["name"] = match_name
-                                    t_entry["verified"] = True
+                                    t_entry["verified"] = False  # Keep open for staff upgrades
                                     t_entry["db_id"] = cust_id
                                     t_entry["is_staff"] = False
-                                    print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} permanently locked to Customer '{match_name}'! ***")
 
                                 if track_id in self.person_states:
                                     s = self.person_states[track_id]
-                                    s["identity_locked"] = t_entry["verified"]
+                                    s["identity_locked"] = False
                                     s["name"] = match_name
                                     s["db_id"] = cust_id
                                     s["id"] = f"Guest ({match_name})"
@@ -1446,20 +1445,26 @@ class VisionEngine:
                 # 2. Track-to-Identity Caching Map
                 with self.lock:
                     t_ident = self.track_identities.get(track_id)
-                    is_verified = (t_ident is not None and t_ident.get("verified", False))
-                    if is_verified:
+                    # Only mark verified if locked to an actual confirmed STAFF member!
+                    is_staff_verified = (t_ident is not None and t_ident.get("verified", False) and t_ident.get("is_staff", False))
+                    if is_staff_verified:
                         state["name"] = t_ident["name"]
                         state["db_id"] = t_ident.get("db_id")
                         state["role"] = t_ident.get("role", "None")
                         state["identity_locked"] = True
+                    elif t_ident is not None and t_ident.get("name") and not state.get("identity_locked"):
+                        state["name"] = t_ident["name"]
+                        state["db_id"] = t_ident.get("db_id")
                     db_id = state.get("db_id")
                     is_processing = track_id in self.processing_tracks
 
-                # Fast path: Identity already verified for this active track
-                if is_verified:
+                # Fast path: Identity is ONLY permanently locked if confirmed as STAFF.
+                # If currently marked as Customer/Guest, ALWAYS keep checking so staff
+                # sitting down or turning their face get recognized as soon as their face clears!
+                if is_staff_verified:
                     pass
                 else:
-                    # Recognition path: Run ArcFace only until identity is locked
+                    # Recognition path: Run ArcFace until confirmed as Staff
                     last_attempt = self.last_rec_attempt.get(track_id, 0)
                     track_age = current_time - state.get("first_seen", current_time)
                     # Entrance burst: check every 120ms during first 3 seconds, then 300ms
