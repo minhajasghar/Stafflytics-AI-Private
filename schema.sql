@@ -100,9 +100,50 @@ CREATE TABLE IF NOT EXISTS system_settings (
     `value` VARCHAR(1000)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 11. Persistent Identities Table
+CREATE TABLE IF NOT EXISTS identities (
+    id VARCHAR(255) PRIMARY KEY,
+    type VARCHAR(32) NOT NULL,
+    label VARCHAR(255) NOT NULL,
+    numeric_index INT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 12. Persistent Identity Counters (Atomic Sequence)
+CREATE TABLE IF NOT EXISTS identity_counters (
+    type VARCHAR(32) PRIMARY KEY,
+    next_index INT NOT NULL DEFAULT 1
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO identity_counters (type, next_index) VALUES ('staff', 1), ('customer', 1);
+
+-- 13. Persistent Identity Embeddings (Face & Body Galleries)
+CREATE TABLE IF NOT EXISTS identity_embeddings (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    identity_id VARCHAR(255) NOT NULL,
+    kind VARCHAR(32) NOT NULL,
+    vector LONGBLOB NOT NULL,
+    quality_score FLOAT DEFAULT 1.0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (identity_id) REFERENCES identities(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 14. Identity Sightings Table
+CREATE TABLE IF NOT EXISTS sightings (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    identity_id VARCHAR(255) NOT NULL,
+    camera_id VARCHAR(255) DEFAULT 'cam_1',
+    first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (identity_id) REFERENCES identities(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Default System Settings Insertion
 INSERT IGNORE INTO system_settings (`key`, `value`) VALUES
 ('owner_email', 'admin@stafflytics.ai'),
 ('sender_email', ''),
 ('sender_password', ''),
-('rtsp_url', '');
+('rtsp_url', ''),
+('customer_retention_days', '30');
+

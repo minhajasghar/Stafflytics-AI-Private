@@ -617,9 +617,10 @@
 
         let detectionPollInterval = null;
 
+        let window_lastWsMessageTime = 0;
+
         function initDetectionWebSocket() {
-            // Always poll as well — reverse proxies often accept the WebSocket
-            // upgrade then silently drop messages, which left bounding boxes empty.
+            // Standby polling fallback in case reverse proxies drop WebSocket messages
             startDetectionPolling();
 
             if (detectionSocket && (detectionSocket.readyState === WebSocket.OPEN || detectionSocket.readyState === WebSocket.CONNECTING)) {
@@ -633,8 +634,13 @@
             try {
                 detectionSocket = new WebSocket(wsUrl);
                 
+                detectionSocket.onopen = () => {
+                    console.log("[WebSocket] Connected to AI metadata stream.");
+                };
+
                 detectionSocket.onmessage = (event) => {
                     try {
+                        window_lastWsMessageTime = Date.now();
                         const data = JSON.parse(event.data);
                         drawDetections(data);
                     } catch (e) {
@@ -645,7 +651,7 @@
                 detectionSocket.onclose = (event) => {
                     console.warn("[WebSocket] Connection lost or rejected.", event.code);
                     detectionSocket = null;
-                    setTimeout(initDetectionWebSocket, 4000);
+                    setTimeout(initDetectionWebSocket, 3000);
                 };
                 
                 detectionSocket.onerror = (err) => {
@@ -658,10 +664,14 @@
 
         function startDetectionPolling() {
             if (detectionPollInterval !== null) return;
-            console.log("[Polling] Starting polling fallback for AI detections (every 100ms)...");
+            console.log("[Polling] Standby polling fallback initialized.");
             detectionPollInterval = setInterval(async () => {
+                // If WebSocket is actively delivering messages within the last 2 seconds, keep polling on standby
+                if (window_lastWsMessageTime && (Date.now() - window_lastWsMessageTime < 2000)) {
+                    return;
+                }
                 try {
-                    // Append a timestamp to perfectly bust Cloudflare/Apache GET caches
+                    // Bust caches
                     const res = await fetch('/api/detection_poll?t=' + Date.now());
                     if (!res.ok) return;
                     const data = await res.json();
@@ -669,7 +679,7 @@
                 } catch (e) {
                     // silent ignore to prevent console spam
                 }
-            }, 100);
+            }, 250);
         }
 
         async function updateAiStatusIndicator() {
@@ -752,77 +762,93 @@
 
         window.addEventListener('resize', () => resizeCanvas());
 
-        let detectionDwellBuffer = []; // { detections, frameW, frameH, timestamp }
-        function drawDetections(data) {
-            const canvas = document.getElementById('detection-canvas');
-            if (!canvas) return;
-            const container = canvas.parentElement;
-            if (!container) return;
+        // ------------------------------------------------------------------
+        // Persistent Multi-Layer Tracking Engine
+        // Layer A: Geometry (box positions, lerp smoothed at 60 FPS)
+        // Layer B: Identity Metadata (label, role, locked status merged per track_id)
+        // ------------------------------------------------------------------
+        window._tracks = new Map(); // track_id -> TrackState
+        window._lastProcessedSeq = 0;
+        window._lastProcessedTime = 0;
+        window._lastDetectionRxTime = Date.now();
+        window._debugTrackingOverlay = false;
 
-            let frameW = (data && data.frame_w) || 640;
-            let frameH = (data && data.frame_h) || 480;
+        // Toggle debug overlay via function or 'D' key
+        window.toggleTrackingDebug = function() {
+            window._debugTrackingOverlay = !window._debugTrackingOverlay;
+            console.log("[TRACKING DEBUG] Overlay is now:", window._debugTrackingOverlay ? "ENABLED" : "DISABLED");
+            return window._debugTrackingOverlay;
+        };
 
-            // Auto-resize canvas if it was never sized or container changed
-            if (canvas.width !== container.clientWidth || canvas.height !== container.clientHeight ||
-                !videoFitRect.w || !videoFitRect.h || Date.now() - lastFitRectUpdate > 1500) {
-                resizeCanvas(frameW, frameH);
+        window.addEventListener('keydown', (e) => {
+            if ((e.key === 'd' || e.key === 'D') && !['INPUT', 'TEXTAREA'].includes(e.target?.tagName)) {
+                window.toggleTrackingDebug();
             }
+        });
 
-            const ctx = canvas.getContext('2d');
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Ingest incoming detection payloads (WebSocket or Polling fallback)
+        function handleDetectionPayload(data) {
+            if (!data) return;
+            const now = Date.now();
+            window._lastDetectionRxTime = now;
 
-            let detections = data && data.detections ? data.detections : null;
-
-            // Immediately clear boxes if detection payload timestamp is stale (>2.0s)
-            if (data && data.timestamp && ((Date.now() / 1000) - data.timestamp > 2.0)) {
-                if (window._boxInterpolators) window._boxInterpolators.clear();
-                return;
-            }
-            
-            // Update Trackers count using total people detected
-            const pillEl = document.getElementById('person-count');
-            if (pillEl) {
-                const count = detections ? detections.length : 0;
-                pillEl.innerHTML = `<span class="tracker-dot"></span><span class="tracker-val">${count} Active</span>`;
-                if (count > 0) {
-                    pillEl.classList.add('is-active');
-                    pillEl.classList.remove('is-muted');
-                } else {
-                    pillEl.classList.remove('is-active');
-                    pillEl.classList.add('is-muted');
+            // 1. Race & Out-of-Order Stale Frame Filtering
+            if (data.seq !== undefined) {
+                if (data.seq < window._lastProcessedSeq) {
+                    return; // Ignore older / stale payload arriving out-of-order
                 }
+                window._lastProcessedSeq = data.seq;
+            }
+            if (data.timestamp !== undefined) {
+                if (data.timestamp < window._lastProcessedTime - 0.5) {
+                    return; // Reject stale timestamps
+                }
+                window._lastProcessedTime = Math.max(window._lastProcessedTime, data.timestamp);
             }
 
-            if (data && data.passage) {
+            // 2. Passage counter updates
+            if (data.passage) {
                 const statLtr = document.getElementById('stat-ltr');
                 const statRtl = document.getElementById('stat-rtl');
                 if (statLtr && data.passage.l_to_r !== undefined) statLtr.innerText = data.passage.l_to_r;
                 if (statRtl && data.passage.r_to_l !== undefined) statRtl.innerText = data.passage.r_to_l;
             }
 
-            const now = Date.now();
-            if (!detections) detections = [];
-            if (detections.length === 0) {
-                // If no active detections in this frame, clear interpolators immediately
-                if (window._boxInterpolators) window._boxInterpolators.clear();
-                return;
+            // 3. Coordinate Space Mapping
+            let frameW = data.frame_w || 640;
+            let frameH = data.frame_h || 480;
+            const canvas = document.getElementById('detection-canvas');
+            if (canvas) {
+                const container = canvas.parentElement;
+                if (container && (canvas.width !== container.clientWidth || canvas.height !== container.clientHeight ||
+                    !videoFitRect.w || !videoFitRect.h || Date.now() - lastFitRectUpdate > 1500)) {
+                    resizeCanvas(frameW, frameH);
+                }
             }
-
-            // Coordinates from backend are in native detection frame space (frameW x frameH).
-            // Map them into the visible contain-fit video rect.
             const fit = videoFitRect;
             const fitReady = fit.w > 10 && fit.h > 10;
-            const baseW = fitReady ? fit.w : canvas.width;
-            const baseH = fitReady ? fit.h : canvas.height;
+            const baseW = fitReady ? fit.w : (canvas ? canvas.width : 640);
+            const baseH = fitReady ? fit.h : (canvas ? canvas.height : 480);
             const offX = fitReady ? fit.x : 0;
             const offY = fitReady ? fit.y : 0;
 
-            if (!window._boxInterpolators) window._boxInterpolators = new Map();
-            const interpolators = window._boxInterpolators;
-            const activeIds = new Set();
+            const detections = data.detections || [];
+            if (!Array.isArray(detections)) return;
 
+            // Evict reassigned / stale tracks immediately so ghost boxes disappear instantly
+            if (Array.isArray(data.evicted_tracks)) {
+                data.evicted_tracks.forEach(tid => {
+                    window._tracks.delete(String(tid));
+                    window._tracks.delete(Number(tid));
+                });
+            }
+
+            // 4. Merge Incoming Detections into Persistent State per track_id
             detections.forEach((det, idx) => {
                 if (!det.box || det.box.length < 4) return;
+                const trackId = det.track_id !== undefined ? String(det.track_id) : `det_${idx}`;
+
+                // Calculate target viewport geometry
                 const targetX1 = (det.box[0] / frameW) * baseW + offX;
                 const targetY1 = (det.box[1] / frameH) * baseH + offY;
                 const targetX2 = (det.box[2] / frameW) * baseW + offX;
@@ -831,80 +857,216 @@
                 const targetH = targetY2 - targetY1;
                 if (targetW <= 0 || targetH <= 0) return;
 
-                const trackId = det.track_id !== undefined ? String(det.track_id) : `det_${idx}`;
-                activeIds.add(trackId);
+                // Extract identity layer metadata
+                const identityData = det.identity || {};
+                const detLabel = identityData.label || det.label || 'Unknown';
+                const detType = identityData.type || (detLabel.startsWith('Staff') ? 'staff' : (detLabel.startsWith('Customer') ? 'customer' : 'unknown'));
+                const detLocked = Boolean(identityData.is_locked || (detLabel !== 'Unknown' && !detLabel.startsWith('HUMAN') && !detLabel.startsWith('Provisional')));
+                const identityId = identityData.identity_id || det.identity_id || '';
 
-                let boxState = interpolators.get(trackId);
-                if (boxState) {
-                    // Smooth box transitions (60% new target, 40% previous)
-                    boxState.x1 = boxState.x1 * 0.40 + targetX1 * 0.60;
-                    boxState.y1 = boxState.y1 * 0.40 + targetY1 * 0.60;
-                    boxState.w = boxState.w * 0.40 + targetW * 0.60;
-                    boxState.h = boxState.h * 0.40 + targetH * 0.60;
-                    boxState.label = det.label || boxState.label;
-                    boxState.color = det.color || boxState.color;
-                    boxState.lastSeen = now;
+                // Map standard role colors
+                let detColor = det.color;
+                if (!detColor) {
+                    if (detType === 'staff') detColor = '#3b82f6';       // Staff: Vibrant Blue
+                    else if (detType === 'customer') detColor = '#eab308'; // Customer: Amber/Gold
+                    else detColor = '#94a3b8';                           // Unknown: Neutral Slate
+                }
+
+                let track = window._tracks.get(trackId);
+                if (track) {
+                    // Update Layer A: Geometry target (interpolated smoothly in render loop)
+                    track.targetX1 = targetX1;
+                    track.targetY1 = targetY1;
+                    track.targetW = targetW;
+                    track.targetH = targetH;
+
+                    // Update Layer B: Identity Metadata (merge without resetting geometry)
+                    track.identityId = identityId;
+                    if (detLocked) {
+                        track.isLocked = true;
+                        track.label = detLabel;
+                        track.type = detType;
+                        track.color = detColor;
+                    } else if (!track.isLocked) {
+                        // Candidate / unconfirmed update
+                        track.label = detLabel;
+                        track.type = detType;
+                        track.color = detColor;
+                    }
+
+                    track.lastSeen = now;
+                    track.alpha = 1.0;
                 } else {
-                    boxState = {
-                        x1: targetX1, y1: targetY1, w: targetW, h: targetH,
-                        label: det.label || 'HUMAN',
-                        color: det.color || '#3b82f6',
-                        lastSeen: now
+                    // Create new persistent track
+                    track = {
+                        trackId: trackId,
+                        identityId: identityId,
+                        // Geometry
+                        x1: targetX1,
+                        y1: targetY1,
+                        w: targetW,
+                        h: targetH,
+                        targetX1: targetX1,
+                        targetY1: targetY1,
+                        targetW: targetW,
+                        targetH: targetH,
+                        // Identity
+                        label: detLabel,
+                        type: detType,
+                        color: detColor,
+                        isLocked: detLocked,
+                        // Lifecycle
+                        firstSeen: now,
+                        lastSeen: now,
+                        alpha: 1.0
                     };
-                    interpolators.set(trackId, boxState);
+                    window._tracks.set(trackId, track);
                 }
-
-                const { x1, y1, w, h } = boxState;
-                const color = boxState.color || '#3b82f6';
-
-                // Semi-transparent target fill
-                ctx.fillStyle = color.startsWith('#') ? color + '18' : 'rgba(59, 130, 246, 0.1)';
-                ctx.fillRect(x1, y1, w, h);
-
-                // Outer bounding box
-                ctx.strokeStyle = color;
-                ctx.lineWidth = 2.5;
-                ctx.strokeRect(x1, y1, w, h);
-
-                // High-tech corner bracket accents
-                const cornerLen = Math.min(12, Math.min(w, h) / 3);
-                ctx.lineWidth = 3.5;
-                ctx.beginPath();
-                // Top-left
-                ctx.moveTo(x1, y1 + cornerLen); ctx.lineTo(x1, y1); ctx.lineTo(x1 + cornerLen, y1);
-                // Top-right
-                ctx.moveTo(x1 + w - cornerLen, y1); ctx.lineTo(x1 + w, y1); ctx.lineTo(x1 + w, y1 + cornerLen);
-                // Bottom-left
-                ctx.moveTo(x1, y1 + h - cornerLen); ctx.lineTo(x1, y1 + h); ctx.lineTo(x1 + cornerLen, y1 + h);
-                // Bottom-right
-                ctx.moveTo(x1 + w - cornerLen, y1 + h); ctx.lineTo(x1 + w, y1 + h); ctx.lineTo(x1 + w, y1 + h - cornerLen);
-                ctx.stroke();
-
-                // Label background flag
-                ctx.fillStyle = color;
-                ctx.font = '700 11px Outfit, sans-serif';
-                const labelText = boxState.label || 'HUMAN';
-                const textWidth = ctx.measureText(labelText).width;
-                
-                const labelHeight = 20;
-                let labelY = y1 - labelHeight;
-                if (labelY < 0) {
-                    labelY = y1 + 2;
-                }
-                
-                ctx.fillRect(x1 - 1, labelY, textWidth + 14, labelHeight);
-
-                // Draw label text
-                ctx.fillStyle = '#ffffff';
-                ctx.fillText(labelText, x1 + 6, labelY + 14);
             });
+        }
 
-            // Evict absent track interpolators immediately when people leave
-            for (const [tid, state] of interpolators.entries()) {
-                if (!activeIds.has(tid) || (now - state.lastSeen > 350)) {
-                    interpolators.delete(tid);
-                }
+        // Keep drawDetections alias for existing socket/polling hooks
+        function drawDetections(data) {
+            handleDetectionPayload(data);
+        }
+
+        // ------------------------------------------------------------------
+        // Continuous 60 FPS Render Loop (Smooth LERP + 1.0s TTL Grace Period)
+        // ------------------------------------------------------------------
+        function startTrackingRenderLoop() {
+            const canvas = document.getElementById('detection-canvas');
+            if (!canvas) {
+                requestAnimationFrame(startTrackingRenderLoop);
+                return;
             }
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                requestAnimationFrame(startTrackingRenderLoop);
+                return;
+            }
+
+            function renderFrame() {
+                const now = Date.now();
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Configurable TTL Grace Period (1.0 second = 1000ms)
+                const TRACK_TTL_MS = 1000;
+                const FADE_START_MS = 600;
+
+                // Watchdog: If no updates at all from backend for > 3.5s, clear all
+                if (now - window._lastDetectionRxTime > 3500) {
+                    window._tracks.clear();
+                }
+
+                // Render active tracks
+                let activeCount = 0;
+                for (const [trackId, track] of window._tracks.entries()) {
+                    const age = now - track.lastSeen;
+
+                    // 1. TTL Grace Window & Smooth Fade-Out
+                    if (age > TRACK_TTL_MS) {
+                        window._tracks.delete(trackId);
+                        continue;
+                    } else if (age > FADE_START_MS) {
+                        track.alpha = Math.max(0.08, 1.0 - ((age - FADE_START_MS) / (TRACK_TTL_MS - FADE_START_MS)));
+                    } else {
+                        track.alpha = 1.0;
+                    }
+
+                    activeCount++;
+
+                    // 2. Smooth Geometry Interpolation (LERP @ 60 FPS)
+                    track.x1 += (track.targetX1 - track.x1) * 0.35;
+                    track.y1 += (track.targetY1 - track.y1) * 0.35;
+                    track.w += (track.targetW - track.w) * 0.35;
+                    track.h += (track.targetH - track.h) * 0.35;
+
+                    const { x1, y1, w, h } = track;
+                    const color = track.color || '#94a3b8';
+
+                    ctx.save();
+                    ctx.globalAlpha = track.alpha;
+
+                    // Semi-transparent target fill
+                    ctx.fillStyle = color.startsWith('#') ? color + '18' : 'rgba(148, 163, 184, 0.1)';
+                    ctx.fillRect(x1, y1, w, h);
+
+                    // Outer bounding box
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 2.5;
+                    ctx.strokeRect(x1, y1, w, h);
+
+                    // High-tech corner bracket accents
+                    const cornerLen = Math.min(12, Math.min(w, h) / 3);
+                    ctx.lineWidth = 3.5;
+                    ctx.beginPath();
+                    // Top-left
+                    ctx.moveTo(x1, y1 + cornerLen); ctx.lineTo(x1, y1); ctx.lineTo(x1 + cornerLen, y1);
+                    // Top-right
+                    ctx.moveTo(x1 + w - cornerLen, y1); ctx.lineTo(x1 + w, y1); ctx.lineTo(x1 + w, y1 + cornerLen);
+                    // Bottom-left
+                    ctx.moveTo(x1, y1 + h - cornerLen); ctx.lineTo(x1, y1 + h); ctx.lineTo(x1 + cornerLen, y1 + h);
+                    // Bottom-right
+                    ctx.moveTo(x1 + w - cornerLen, y1 + h); ctx.lineTo(x1 + w, y1 + h); ctx.lineTo(x1 + w, y1 + h - cornerLen);
+                    ctx.stroke();
+
+                    // Label background flag
+                    ctx.fillStyle = color;
+                    ctx.font = '700 11px Outfit, sans-serif';
+                    const labelText = track.label || 'Unknown';
+                    const textWidth = ctx.measureText(labelText).width;
+                    
+                    const labelHeight = 20;
+                    let labelY = y1 - labelHeight;
+                    if (labelY < 0) {
+                        labelY = y1 + 2;
+                    }
+                    
+                    ctx.fillRect(x1 - 1, labelY, textWidth + 14, labelHeight);
+
+                    // Draw label text
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillText(labelText, x1 + 6, labelY + 14);
+
+                    // 3. Debug Overlay (Toggled via 'D' key or window.toggleTrackingDebug())
+                    if (window._debugTrackingOverlay) {
+                        const debugY = y1 + h + 16;
+                        const debugText = `TID: #${trackId} | IID: ${track.identityId || 'provisional'} | ${labelText} | Lock: ${track.isLocked ? 'YES' : 'NO'}`;
+                        ctx.font = '600 10px monospace';
+                        const dbgWidth = ctx.measureText(debugText).width;
+                        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+                        ctx.fillRect(x1 - 1, debugY - 12, dbgWidth + 10, 16);
+                        ctx.fillStyle = '#38bdf8';
+                        ctx.fillText(debugText, x1 + 4, debugY);
+                    }
+
+                    ctx.restore();
+                }
+
+                // Update Active Trackers Badge
+                const pillEl = document.getElementById('person-count');
+                if (pillEl) {
+                    pillEl.innerHTML = `<span class="tracker-dot"></span><span class="tracker-val">${activeCount} Active</span>`;
+                    if (activeCount > 0) {
+                        pillEl.classList.add('is-active');
+                        pillEl.classList.remove('is-muted');
+                    } else {
+                        pillEl.classList.remove('is-active');
+                        pillEl.classList.add('is-muted');
+                    }
+                }
+
+                requestAnimationFrame(renderFrame);
+            }
+
+            requestAnimationFrame(renderFrame);
+        }
+
+        // Start 60 FPS Tracking Loop immediately
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startTrackingRenderLoop);
+        } else {
+            startTrackingRenderLoop();
         }
 
         // ------------------------------------------------------------------

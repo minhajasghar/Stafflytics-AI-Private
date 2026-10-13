@@ -178,6 +178,10 @@ def translate_sqlite_to_mysql(query):
     query = query.replace('CAST(SUM(a.is_late) AS REAL)', 'CAST(SUM(a.is_late) AS DECIMAL(10,4))')
     query = query.replace('CAST(sessions AS REAL)', 'CAST(sessions AS DECIMAL(10,4))')
     query = query.replace('CAST(total_active AS REAL)', 'CAST(total_active AS DECIMAL(10,4))')
+    query = query.replace('identity_id TEXT', 'identity_id VARCHAR(255)')
+    query = query.replace('camera_id TEXT', 'camera_id VARCHAR(255)')
+    query = query.replace('kind TEXT', 'kind VARCHAR(32)')
+    query = query.replace('label TEXT', 'label VARCHAR(255)')
     
     return query
 
@@ -462,7 +466,20 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS passage_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, direction TEXT NOT NULL, track_id INTEGER)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
 
-        defaults = [('owner_email', 'admin@stafflytics.ai'), ('sender_email', ''), ('sender_password', ''), ('rtsp_url', ''), ('late_grace_minutes', '10'), ('wellness_threshold', '4')]
+        # Persistent Identity System Tables
+        cursor.execute('''CREATE TABLE IF NOT EXISTS identities (id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL, numeric_index INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS identity_counters (type TEXT PRIMARY KEY, next_index INTEGER NOT NULL DEFAULT 1)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS identity_embeddings (id INTEGER PRIMARY KEY AUTOINCREMENT, identity_id TEXT NOT NULL, kind TEXT NOT NULL, vector BLOB NOT NULL, quality_score REAL DEFAULT 1.0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS sightings (id INTEGER PRIMARY KEY AUTOINCREMENT, identity_id TEXT NOT NULL, camera_id TEXT DEFAULT 'cam_1', first_seen DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
+        cursor.execute("INSERT OR IGNORE INTO identity_counters (type, next_index) VALUES ('staff', 1)")
+        cursor.execute("INSERT OR IGNORE INTO identity_counters (type, next_index) VALUES ('customer', 1)")
+
+        defaults = [
+            ('owner_email', 'admin@stafflytics.ai'), ('sender_email', ''), ('sender_password', ''),
+            ('rtsp_url', ''), ('late_grace_minutes', '10'), ('wellness_threshold', '4'),
+            ('customer_retention_days', '30')
+        ]
         for key, val in defaults:
             cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
 
@@ -1654,5 +1671,215 @@ def get_admin_email():
         conn.close()
         return row[0] if row else None
 
+
+# ===========================================================================
+# PERSISTENT IDENTITY SYSTEM DATABASE LAYER
+# ===========================================================================
+
+def get_next_identity_index(identity_type: str) -> int:
+    """
+    Atomically allocates and returns the next sequential integer index for the given type.
+    Guarantees no gaps, no duplicates, and no race conditions across threads/processes.
+    """
+    identity_type = identity_type.lower()
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("INSERT OR IGNORE INTO identity_counters (type, next_index) VALUES (?, 1)", (identity_type,))
+            cursor.execute("UPDATE identity_counters SET next_index = next_index + 1 WHERE type = ?", (identity_type,))
+            cursor.execute("SELECT next_index - 1 FROM identity_counters WHERE type = ?", (identity_type,))
+            row = cursor.fetchone()
+            allocated = int(row[0]) if row else 1
+            conn.commit()
+            return allocated
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+
+def save_identity(identity_id: str, identity_type: str, label: str, numeric_index: int):
+    """Inserts or updates an identity record."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT OR REPLACE INTO identities (id, type, label, numeric_index, created_at, last_seen_at)
+                VALUES (?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
+            """, (identity_id, identity_type.lower(), label, numeric_index))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_identity(identity_id: str):
+    """Fetches an identity by its permanent ID."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, type, label, numeric_index, created_at, last_seen_at FROM identities WHERE id = ?", (identity_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {
+                "id": row[0],
+                "type": row[1],
+                "label": row[2],
+                "numeric_index": row[3],
+                "created_at": row[4],
+                "last_seen_at": row[5]
+            }
+        return None
+
+
+def get_all_identities():
+    """Fetches all registered identities."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, type, label, numeric_index, created_at, last_seen_at FROM identities ORDER BY numeric_index ASC")
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "id": r[0],
+                "type": r[1],
+                "label": r[2],
+                "numeric_index": r[3],
+                "created_at": r[4],
+                "last_seen_at": r[5]
+            }
+            for r in rows
+        ]
+
+
+def update_identity_last_seen(identity_id: str):
+    """Updates the last_seen_at timestamp for an identity."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE identities SET last_seen_at = datetime('now', 'localtime') WHERE id = ?", (identity_id,))
+        conn.commit()
+        conn.close()
+
+
+def save_identity_embedding(identity_id: str, kind: str, vector_blob: bytes, quality_score: float = 1.0):
+    """Saves a face or body embedding vector for an identity."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO identity_embeddings (identity_id, kind, vector, quality_score, created_at)
+            VALUES (?, ?, ?, ?, datetime('now', 'localtime'))
+        """, (identity_id, kind, vector_blob, float(quality_score)))
+        conn.commit()
+        conn.close()
+
+
+def get_identity_embeddings(identity_id: str = None):
+    """Fetches stored embeddings, optionally filtered by identity_id."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if identity_id:
+            cursor.execute("""
+                SELECT id, identity_id, kind, vector, quality_score, created_at
+                FROM identity_embeddings
+                WHERE identity_id = ?
+                ORDER BY quality_score DESC, created_at DESC
+            """, (identity_id,))
+        else:
+            cursor.execute("""
+                SELECT id, identity_id, kind, vector, quality_score, created_at
+                FROM identity_embeddings
+                ORDER BY identity_id, kind, quality_score DESC
+            """)
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "id": r[0],
+                "identity_id": r[1],
+                "kind": r[2],
+                "vector": r[3],
+                "quality_score": float(r[4]) if r[4] is not None else 1.0,
+                "created_at": r[5]
+            }
+            for r in rows
+        ]
+
+
+def prune_identity_embeddings(identity_id: str, kind: str, max_keep: int = 5):
+    """Retains top-K highest-quality embeddings for an identity and prunes the rest."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id FROM identity_embeddings
+            WHERE identity_id = ? AND kind = ?
+            ORDER BY quality_score DESC, created_at DESC
+        """, (identity_id, kind))
+        rows = cursor.fetchall()
+        if len(rows) > max_keep:
+            to_delete = [r[0] for r in rows[max_keep:]]
+            placeholders = ",".join(["?"] * len(to_delete))
+            cursor.execute(f"DELETE FROM identity_embeddings WHERE id IN ({placeholders})", tuple(to_delete))
+            conn.commit()
+        conn.close()
+
+
+def log_sighting(identity_id: str, camera_id: str = "cam_1"):
+    """Records or updates a continuous sighting window for an identity."""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Look for a sighting on this camera within the last 60 seconds
+        cursor.execute("""
+            SELECT id FROM sightings
+            WHERE identity_id = ? AND camera_id = ?
+              AND strftime('%s', 'now', 'localtime') - strftime('%s', last_seen, 'localtime') <= 60
+            ORDER BY last_seen DESC LIMIT 1
+        """, (identity_id, camera_id))
+        row = cursor.fetchone()
+        if row:
+            cursor.execute("UPDATE sightings SET last_seen = datetime('now', 'localtime') WHERE id = ?", (row[0],))
+        else:
+            cursor.execute("""
+                INSERT INTO sightings (identity_id, camera_id, first_seen, last_seen)
+                VALUES (?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
+            """, (identity_id, camera_id))
+        conn.commit()
+        conn.close()
+
+
+def purge_expired_customer_identities(retention_days: int = 30):
+    """
+    Deletes customer embeddings older than retention_days.
+    Retains staff indefinitely; ensures customer privacy compliance.
+    """
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Identify customers not seen within retention_days
+        cursor.execute("""
+            SELECT id FROM identities
+            WHERE type = 'customer'
+              AND last_seen_at < date('now', '-' || ? || ' days', 'localtime')
+        """, (int(retention_days),))
+        expired_custs = [r[0] for r in cursor.fetchall()]
+        if expired_custs:
+            placeholders = ",".join(["?"] * len(expired_custs))
+            cursor.execute(f"DELETE FROM identity_embeddings WHERE identity_id IN ({placeholders})", tuple(expired_custs))
+            cursor.execute(f"DELETE FROM sightings WHERE identity_id IN ({placeholders})", tuple(expired_custs))
+            cursor.execute(f"DELETE FROM identities WHERE id IN ({placeholders})", tuple(expired_custs))
+            conn.commit()
+            print(f"[DB IDENTITY] Purged {len(expired_custs)} expired customer identities (>{retention_days} days).")
+        conn.close()
+
+
 if __name__ == "__main__":
     init_db()
+

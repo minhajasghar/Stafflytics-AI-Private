@@ -227,30 +227,20 @@ def _get_best_face(bgr):
     if not _load_face_models():
         return None
     try:
-        faces = _face_app.get(bgr)
-        if not faces:
-            # Fallback 1: Scale down if high-res (>1280px) to prevent tiny face miss
-            h, w = bgr.shape[:2]
-            if max(h, w) > 1280:
-                scale = 1280.0 / max(h, w)
-                resized = cv2.resize(bgr, (int(w * scale), int(h * scale)))
-                faces = _face_app.get(resized)
-                if faces:
-                    for f in faces:
-                        f.bbox = f.bbox / scale
-        if not faces:
-            # Fallback 2: Scale up if small (<300px)
-            h, w = bgr.shape[:2]
-            if min(h, w) < 300:
-                scale = min(3.0, 300.0 / max(min(h, w), 1))
-                resized = cv2.resize(bgr, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-                faces = _face_app.get(resized)
-                if faces:
-                    for f in faces:
-                        f.bbox = f.bbox / scale
+        h, w = bgr.shape[:2]
+        # Pre-scale tiny head crops once for accurate detection without redundant multiple passes
+        if min(h, w) < 160:
+            scale = min(2.5, 160.0 / max(min(h, w), 1))
+            eval_img = cv2.resize(bgr, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+            faces = _face_app.get(eval_img)
+            if faces:
+                for f in faces:
+                    f.bbox = f.bbox / scale
+        else:
+            faces = _face_app.get(bgr)
+
         if not faces:
             return None
-        # InsightFace returns bounding boxes as [x1, y1, x2, y2]
         # Maximize width * height: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1])
         best = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
         return best
@@ -460,6 +450,7 @@ class VisionEngine:
         
         self.track_hit_counts = {}        # track_id -> int (consecutive frame hits)
         self.track_last_seen = {}         # track_id -> int (last frame_count seen)
+        self.track_last_seen_time = {}    # track_id -> float (last wall-clock time seen)
         self.ema_boxes = {}               # track_id -> np.ndarray([x1, y1, x2, y2])
         self.confirmed_track_ids = set()  # set of confirmed track_ids (>= 3 consecutive hits)
         self.last_raw_count = 0
@@ -475,6 +466,9 @@ class VisionEngine:
         self.visitor_logged = set() # track_ids that have been logged to visitor_log
         self.dwell_buffer = [] # (detection, timestamp) for persistence when YOLO briefly misses
         self.latest_detections = []  # Most recent detections list — read by video_feed MJPEG overlay
+        self.last_face_enc_frame = {} # track_id -> frame_count of last face encode
+        self.last_evicted_tracks = [] # evicted track IDs from last assignment
+        self.show_debug_overlay = False # Debug toggle for tracking overlay
         
         # Corridor Passage Counters (Left-to-Right and Right-to-Left)
         self.passage_counts = {"l_to_r": 0, "r_to_l": 0}
@@ -586,21 +580,29 @@ class VisionEngine:
                 self.processing_tracks.clear()
             
             print(f"[AI] System Ready: {len(new_encodings)} Staff, {len(c_encodings)} Customers loaded.")
-        except Exception as e: print(f"[AI Initialization Error] {e}")
+        except Exception as e:
+            print(f"[AI Initialization Error] {e}")
 
     def _recognition_worker(self):
         while True:
             try:
-                track_id, face_crop, body_crop, current_zone, current_time = self.recognition_queue.get()
+                item = self.recognition_queue.get()
+                track_id = item[0]
+                face_crop = item[1]
+                body_crop = item[2]
+                current_zone = item[3] if len(item) > 3 else "Main Hall"
+                current_time = item[4] if len(item) > 4 else time.time()
+                box = item[5] if len(item) > 5 else None
+
                 if (face_crop is None or face_crop.size == 0) and (body_crop is None or body_crop.size == 0):
                     self.recognition_queue.task_done()
                     with self.lock:
                         self.processing_tracks.discard(track_id)
                     continue
 
-                face_encodings = []
+                face_enc = None
                 if face_crop is not None and face_crop.size > 0:
-                    # Ensure the face crop is a valid 8-bit uint8 BGR array
+                    # Ensure valid uint8 BGR array
                     if not isinstance(face_crop, np.ndarray):
                         face_crop = np.array(face_crop)
                     if face_crop.dtype != np.uint8:
@@ -611,558 +613,46 @@ class VisionEngine:
                     elif len(face_crop.shape) == 3 and face_crop.shape[2] == 4:
                         face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGRA2BGR)
 
-                    h_f, w_f = face_crop.shape[:2]
-                    # Encode the face (YuNet detect + SFace embed)
+                    # Encode face with strict quality filter (FIQA)
                     with face_rec_lock:
-                        enc = _encode_face(face_crop)
+                        face_enc = _encode_face(face_crop, strict=True)
 
-                    # Try upscaling for small crops
-                    if enc is None and (h_f < 160 or w_f < 160):
-                        scale = min(4.0, max(160.0 / max(h_f, 1), 160.0 / max(w_f, 1), 1.0))
-                        enlarged = cv2.resize(face_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                    if face_enc is None:
                         with face_rec_lock:
-                            enc = _encode_face(enlarged)
+                            face_enc = _encode_face(face_crop, strict=False)
 
-                    if enc is not None:
-                        face_encodings = [enc]
+                # Delegate to Persistent Identity System (multi-cue fusion, atomic rules & drift prevention)
+                from identity_manager import identity_manager
+                label, color_hex, iid, is_confirmed = identity_manager.process_track_observation(
+                    track_id=track_id,
+                    box=box,
+                    frame_count=self.frame_count,
+                    face_embedding=face_enc,
+                    body_crop=body_crop,
+                    face_crop=face_crop,
+                    current_zone=current_zone
+                )
 
-                # Extract Person Re-ID Appearance Embedding (Full Body)
-                body_reid_vec = _extract_appearance_embedding(body_crop) if body_crop is not None else None
-
-                match_id = "Unknown"
-                match_source = None
-                matched_staff_meta = None
-                matched_cust_meta = None
-
-                # TIER 1: Match by Face Recognition (Highest Confidence)
-                if face_encodings:
-                    with self.lock:
-                        known_staff_enc = list(self.known_face_encodings)
-                        known_staff_meta = list(self.known_face_metadata)
-                        known_cust_enc = list(self.known_customer_encodings)
-                        known_cust_meta = list(self.known_customer_metadata)
-                    
-                    best_staff_sim = -1.0
-                    if known_staff_enc:
-                        # ArcFace Cosine Matching via match_staff (calibrated threshold=0.42)
-                        enrolled_staff_dict = {i: enc for i, enc in enumerate(known_staff_enc)}
-                        matched_idx, best_staff_sim = match_staff(face_encodings[0], enrolled_staff_dict, threshold=FACE_STAFF_THRESHOLD)
-
-                        best_staff_idx = int(np.argmax(_cos_sims(known_staff_enc, face_encodings[0])))
-                        s_name = known_staff_meta[best_staff_idx]['name']
-                        s_id = known_staff_meta[best_staff_idx]['id']
-
-                        if matched_idx != "Unknown":
-                            best_staff_idx = int(matched_idx)
-                            s_name = known_staff_meta[best_staff_idx]['name']
-                            s_id = known_staff_meta[best_staff_idx]['id']
-                            print(f"[FACE SCORE] Track #{track_id} -> Staff '{s_name}' (ID {s_id}) Score={best_staff_sim:.4f} (Threshold={FACE_STAFF_THRESHOLD}) -> MATCH ACCEPTED")
-                            match_id = s_id
-                            match_source = "staff"
-                            matched_staff_meta = known_staff_meta[best_staff_idx]
-                            
-                            # Extract and save daily clothing color memory
-                            color = _extract_dominant_color(body_crop)
-                            if color is not None:
-                                with self.lock:
-                                    if datetime.now().date() != self.clothes_memory_date:
-                                        self.staff_clothes_colors.clear()
-                                        self.clothes_memory_date = datetime.now().date()
-                                    self.staff_clothes_colors[s_id] = (color, s_name, matched_staff_meta.get("role", "None"))
-                                    
-                            # Update Re-ID appearance cache for this staff member
-                            if body_reid_vec is not None:
-                                with self.lock:
-                                    self.reid_appearance_cache[s_id] = {
-                                        "name": s_name, "db_id": s_id, "role": matched_staff_meta.get("role", "None"),
-                                        "reid_vec": body_reid_vec, "last_seen": current_time, "is_staff": True
-                                    }
-                            
-                            # CRITICAL: Prevent 2 people from claiming the same staff member simultaneously
-                            can_assign_staff = True
-                            with self.lock:
-                                for other_tid, other_st in list(self.person_states.items()):
-                                    if other_tid != track_id and other_st.get("db_id") == match_id and (current_time - other_st.get("last_active", 0)) < 1.8:
-                                        other_sim = other_st.get("best_staff_sim", 0.0)
-                                        if best_staff_sim > other_sim:
-                                            print(f"[AI] Reassigning {s_name} from track {other_tid} (sim={other_sim:.3f}) to track {track_id} (sim={best_staff_sim:.3f})")
-                                            other_st["db_id"] = None
-                                            other_st["id"] = f"Track #{other_tid}"
-                                            other_st["name"] = "Guest"
-                                            other_st["role"] = "None"
-                                            other_st["best_staff_sim"] = 0.0
-                                        else:
-                                            print(f"[AI] Track {track_id} matched {s_name} (sim={best_staff_sim:.3f}), but track {other_tid} has higher sim ({other_sim:.3f}) — rejecting duplicate")
-                                            can_assign_staff = False
-                                            break
-                            
-                            if can_assign_staff:
-                                # FEW-SHOT ANGLE OPTIMIZATION: Retain optimal distinct face shots (up to 5)
-                                s_meta_matched = known_staff_meta[best_staff_idx]
-                                stored_list = s_meta_matched.get("all_encs", [])
-                                if stored_list and best_staff_sim >= 0.38:
-                                    sims_to_self = _cos_sims(stored_list, face_encodings[0])
-                                    if float(np.max(sims_to_self)) < 0.85:
-                                        stored_list.append(face_encodings[0])
-                                        if len(stored_list) > 5:
-                                            pair_sims = []
-                                            for i in range(len(stored_list)):
-                                                for j in range(i + 1, len(stored_list)):
-                                                    sim_ij = float(np.dot(stored_list[i], stored_list[j]) / (np.linalg.norm(stored_list[i]) * np.linalg.norm(stored_list[j]) + 1e-6))
-                                                    pair_sims.append((sim_ij, i, j))
-                                            if pair_sims:
-                                                pair_sims.sort(key=lambda x: x[0], reverse=True)
-                                                stored_list.pop(pair_sims[0][2])
-                                        database.update_staff_encodings(match_id, pickle.dumps(stored_list))
-                                        s_meta_matched["all_encs"] = stored_list
-                                        print(f"[AI FEW-SHOT] Retained optimal distinct face angle for Staff {s_meta_matched['name']} (total stored: {len(stored_list)}/5)")
-                                
-                                match_name = known_staff_meta[best_staff_idx]["name"]
-                                match_role = known_staff_meta[best_staff_idx]["role"]
-                                with self.lock:
-                                    # 2. Track-to-Identity Caching Map
-                                    t_entry = self.track_identities.setdefault(track_id, {"history": [], "name": "Unknown", "verified": False})
-                                    t_entry["history"].append(match_name)
-                                    
-                                    # Adaptive Consensus: High-confidence (>=0.50) locks on 1st match, moderate on 2nd, borderline on 3rd
-                                    matches_count = t_entry["history"].count(match_name)
-                                    required_matches = 1 if best_staff_sim >= 0.50 else (2 if best_staff_sim >= 0.45 else 3)
-                                    if matches_count >= required_matches:
-                                        t_entry["name"] = match_name
-                                        t_entry["verified"] = True
-                                        t_entry["db_id"] = match_id
-                                        t_entry["role"] = match_role
-                                        t_entry["is_staff"] = True
-                                        print(f"[TRACK LOCK CONFIRMED] *** Track #{track_id} locked to Staff '{match_name}' (ID: {match_id}, Score={best_staff_sim:.3f}, Req={required_matches})! ***")
-                                        try:
-                                            database.record_attendance(match_id)
-                                        except Exception as eat:
-                                            print(f"[AI] Attendance record error: {eat}")
-
-                                    if track_id in self.person_states:
-                                        s = self.person_states[track_id]
-                                        s["identity_locked"] = t_entry["verified"]
-                                        if s.get("db_id") == match_id:
-                                            s["best_staff_sim"] = max(s.get("best_staff_sim", 0.0), best_staff_sim)
-                                        else:
-                                            s["best_staff_sim"] = best_staff_sim
-                                            
-                                        s["db_id"] = match_id
-                                        s["confidence"] = calculate_calibrated_confidence(best_staff_sim, FACE_STAFF_THRESHOLD)
-                                        s["id"] = f"ID: {match_id}"
-                                        s["name"] = match_name
-                                        s["role"] = match_role
-                                        s["last_sync"] = current_time
-                                        if track_id in self.customer_timers:
-                                            del self.customer_timers[track_id]
-                            else:
-                                match_id = "Unknown"
-                                match_source = None
-                        else:
-                            print(f"[FACE SCORE] Track #{track_id} -> Best Staff '{s_name}' Score={best_staff_sim:.4f} (Threshold={FACE_STAFF_THRESHOLD}) -> REJECTED")
-
-                    best_cust_sim = -1.0
-                    if match_id == "Unknown" and known_cust_enc:
-                        c_sims = _cos_sims(known_cust_enc, face_encodings[0])
-                        best_cust_idx = int(np.argmax(c_sims))
-                        best_cust_sim = float(c_sims[best_cust_idx])
-                        c_name = known_cust_meta[best_cust_idx]['name']
-                        c_id_matched = known_cust_meta[best_cust_idx]['id']
-                        
-                        if best_cust_sim >= FACE_CUSTOMER_THRESHOLD:
-                            print(f"[FACE SCORE] Track #{track_id} -> Customer '{c_name}' (ID {c_id_matched}) Score={best_cust_sim:.4f} (Threshold={FACE_CUSTOMER_THRESHOLD}) -> MATCH ACCEPTED")
-                            match_id = f"CUST:{c_id_matched}"
-                            match_source = "customer"
-                            matched_cust_idx = best_cust_idx
-                            
-                            match_name = c_name
-                            cust_id = f"C_{c_id_matched}"
-                            with self.lock:
-                                # 2. Track-to-Identity Caching Map
-                                t_entry = self.track_identities.setdefault(track_id, {"history": [], "name": "Unknown", "verified": False})
-                                t_entry["history"].append(match_name)
-                                if t_entry["history"].count(match_name) >= 3:
-                                    t_entry["name"] = match_name
-                                    t_entry["verified"] = False  # Keep open for staff upgrades
-                                    t_entry["db_id"] = cust_id
-                                    t_entry["is_staff"] = False
-
-                                if track_id in self.person_states:
-                                    s = self.person_states[track_id]
-                                    s["identity_locked"] = False
-                                    s["name"] = match_name
-                                    s["db_id"] = cust_id
-                                    s["id"] = f"Guest ({match_name})"
-
-                            # Update Re-ID appearance cache for this returning guest
-                            if body_reid_vec is not None:
-                                with self.lock:
-                                    self.reid_appearance_cache[f"C_{c_id_matched}"] = {
-                                        "name": c_name, "db_id": f"C_{c_id_matched}", "role": "None",
-                                        "reid_vec": body_reid_vec, "last_seen": current_time, "is_staff": False
-                                    }
-                            
-                            # FEW-SHOT ANGLE OPTIMIZATION: Retain optimal distinct face shots for customer (up to 5)
-                            c_stored_list = known_cust_meta[matched_cust_idx].get("all_encs", [])
-                            if c_stored_list and best_cust_sim >= 0.38:
-                                c_sims_to_self = _cos_sims(c_stored_list, face_encodings[0])
-                                if float(np.max(c_sims_to_self)) < 0.85:
-                                    c_stored_list.append(face_encodings[0])
-                                    if len(c_stored_list) > 5:
-                                        pair_sims = []
-                                        for i in range(len(c_stored_list)):
-                                            for j in range(i + 1, len(c_stored_list)):
-                                                sim_ij = float(np.dot(c_stored_list[i], c_stored_list[j]) / (np.linalg.norm(c_stored_list[i]) * np.linalg.norm(c_stored_list[j]) + 1e-6))
-                                                pair_sims.append((sim_ij, i, j))
-                                        if pair_sims:
-                                            pair_sims.sort(key=lambda x: x[0], reverse=True)
-                                            c_stored_list.pop(pair_sims[0][2])
-                                    import base64
-                                    _, buffer = cv2.imencode('.jpg', face_crop)
-                                    b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
-                                    database.update_customer_encoding(c_id_matched, pickle.dumps(c_stored_list), photo=b64_photo)
-                                    known_cust_meta[matched_cust_idx]["all_encs"] = c_stored_list
-                                    print(f"[AI FEW-SHOT] Retained optimal distinct face angle for Customer #{c_id_matched} (total stored: {len(c_stored_list)}/5)")
-
-                # TIER 2: Person Re-ID Appearance Matching (When Face is Occluded / Steep Ceiling Angle)
-                if match_id == "Unknown" and body_reid_vec is not None:
-                    with self.lock:
-                        # Purge Re-ID cache entries older than 15 minutes (900s)
-                        self.reid_appearance_cache = {k: v for k, v in self.reid_appearance_cache.items() if current_time - v.get("last_seen", 0) < 900}
-                        best_reid_match = None
-                        best_reid_score = -1.0
-                        for k, v in self.reid_appearance_cache.items():
-                            cached_vec = v.get("reid_vec")
-                            if cached_vec is not None:
-                                sim = float(np.dot(cached_vec, body_reid_vec))
-                                if sim > best_reid_score:
-                                    best_reid_score = sim
-                                    best_reid_match = v
-                        
-                        # Strict Re-ID Threshold: 0.82 (prevents confusion between coworkers in similar shirts)
-                        if best_reid_match is not None and best_reid_score >= 0.82:
-                            cand_id = best_reid_match["db_id"]
-                            # STRICT UNIQUENESS: Do not assign if another active track currently has this staff ID
-                            is_claimed = False
-                            for other_tid, other_st in list(self.person_states.items()):
-                                if other_tid != track_id and other_st.get("db_id") == cand_id and (current_time - other_st.get("last_active", 0)) < 1.8:
-                                    is_claimed = True
-                                    print(f"[RE-ID DUPLICATE PREVENTED] '{best_reid_match['name']}' already claimed by track #{other_tid} — rejecting track #{track_id}")
-                                    break
-                            
-                            if not is_claimed:
-                                match_id = cand_id
-                                match_source = "reid_appearance"
-                                best_reid_match["last_seen"] = current_time
-                                best_reid_match["reid_vec"] = body_reid_vec
-                                print(f"[RE-ID MATCH] Track #{track_id} -> Re-identified as '{best_reid_match['name']}' via Person Appearance (Score={best_reid_score:.4f}, Face Occluded/Ceiling Angle)")
-
-                # TIER 3: Check short-term recent guest face memory (15-min rolling window)
-                if match_id == "Unknown" and face_encodings:
-                    recent_matched = False
-                    with self.lock:
-                        self.recent_guest_embeddings = [g for g in self.recent_guest_embeddings if current_time - g.get("last_seen", 0) < 900]
-                        for g_info in self.recent_guest_embeddings:
-                            g_encs = g_info.get("encs", [])
-                            if g_encs:
-                                r_sims = _cos_sims(g_encs, face_encodings[0])
-                                if float(np.max(r_sims)) >= 0.40:
-                                    match_id = g_info["db_id"] if g_info.get("db_id") else f"GUEST_REMEM:{g_info['name']}"
-                                    match_source = "recent_guest"
-                                    g_info["last_seen"] = current_time
-                                    if float(np.max(r_sims)) < 0.85 and len(g_encs) < 5:
-                                        g_encs.append(face_encodings[0])
-                                    recent_matched = True
-                                    print(f"[AI GUEST RE-LINK] Track #{track_id} matched returning guest '{g_info['name']}' (sim={float(np.max(r_sims)):.4f})")
-                                    break
-
-                    if match_id == "Unknown":
-                        # Attempt fallback to Daily Clothing Memory for Staff
-                        curr_color = _extract_dominant_color(body_crop)
-                        if curr_color is not None:
-                            best_col_score = 9999
-                            best_col_match = None
-                            with self.lock:
-                                if datetime.now().date() == self.clothes_memory_date:
-                                    for sid, (c_bgr, c_name, c_role) in self.staff_clothes_colors.items():
-                                        dist = sum((c1 - c2)**2 for c1, c2 in zip(curr_color, c_bgr))**0.5
-                                        if dist < best_col_score:
-                                            best_col_score = dist
-                                            best_col_match = (sid, c_name, c_role)
-                            
-                            # Strict color distance threshold (e.g. Euclidean < 15 in BGR space)
-                            if best_col_match is not None and best_col_score < 15:
-                                is_claimed = False
-                                with self.lock:
-                                    for other_tid, other_st in list(self.person_states.items()):
-                                        if other_tid != track_id and other_st.get("db_id") == best_col_match[0] and (current_time - other_st.get("last_active", 0)) < 1.8:
-                                            is_claimed = True
-                                            break
-                                if not is_claimed:
-                                    match_id = best_col_match[0]
-                                    match_source = "staff"
-                                    matched_staff_meta = {"name": best_col_match[1] + " (By Clothes)", "role": best_col_match[2]}
-                                    print(f"[CLOTHING MATCH] Track #{track_id} -> Re-identified as '{best_col_match[1]}' via Daily Clothing (Dist={best_col_score:.1f})")
-                        print(f"[AI] No match found — best staff sim={best_staff_sim:.4f}, best cust sim={best_cust_sim:.4f}")
-                
-                # Update consensus and state under lock
-                refresh_faces = False
+                # Update internal tracking state
                 with self.lock:
-                    if match_id != "Unknown":
-                        if track_id not in self.recognition_consensus:
-                            self.recognition_consensus[track_id] = []
-                        self.recognition_consensus[track_id].append(match_id)
-                        # Keep recent window of 6 positive matches
-                        if len(self.recognition_consensus[track_id]) > 6:
-                            self.recognition_consensus[track_id].pop(0)
-                            
-                        counts = {cid: self.recognition_consensus[track_id].count(cid) for cid in set(self.recognition_consensus[track_id])}
-                        winner = max(counts, key=counts.get)
-                        
-                        # Adaptive votes: 1 for strong match (>=0.50 or Re-ID), 2 for >=0.45, 3 for borderline
-                        req_votes = 1 if (best_staff_sim >= 0.50 or match_source == "reid_appearance") else (2 if best_staff_sim >= 0.45 else 3)
-                        
-                        # Update state if it still exists
-                        if track_id in self.person_states:
-                            state = self.person_states[track_id]
-                            if counts[winner] >= req_votes:
-                                if winner.startswith("CUST:"):
-                                    c_id = int(winner.split(":")[1])
-                                    meta = next((m for m in self.known_customer_metadata if m["id"] == c_id), None)
-                                    if meta:
-                                        state["id"] = f"GUEST #{c_id}"
-                                        state["db_id"] = f"C_{c_id}"
-                                        state["name"] = meta["name"]
-                                        # Fetch fresh visit count from DB to avoid stale data
-                                        try:
-                                            fresh_rows = database.get_known_customers()
-                                            fresh_meta = next((r for r in fresh_rows if r[0] == c_id), None)
-                                            state["visits"] = fresh_meta[3] if fresh_meta else meta.get("visits", 1)
-                                        except:
-                                            state["visits"] = meta.get("visits", 1)
-                                        state["photo"] = meta.get("photo")
-                                elif winner.startswith("GUEST_REMEM:"):
-                                    g_name = winner.split(":", 1)[1]
-                                    state["id"] = g_name
-                                    state["name"] = g_name
-                                    state["last_sync"] = current_time
-                                elif winner != "Unknown":
-                                    meta = next((m for m in self.known_face_metadata if m["id"] == winner), None)
-                                    if meta:
-                                        # STRICT UNIQUENESS: Reject assignment if another active track already possesses this staff ID
-                                        is_dup = False
-                                        for other_tid, other_st in list(self.person_states.items()):
-                                            if other_tid != track_id and other_st.get("db_id") == winner and (current_time - other_st.get("last_active", 0)) < 1.8:
-                                                is_dup = True
-                                                print(f"[AI CONSENSUS DUPLICATE PREVENTED] Staff '{meta['name']}' already assigned to track #{other_tid} — rejecting duplicate on track #{track_id}")
-                                                break
-                                        if not is_dup:
-                                            state["id"] = f"ID: {meta['id']}"
-                                            state["name"] = meta["name"]
-                                            state["role"] = meta["role"]
-                                            state["db_id"] = meta["id"]
-                                            state["last_sync"] = current_time
-                                            database.record_attendance(meta["id"])
-                                            # Remove any stale customer timer for this track (they're staff!)
-                                            if track_id in self.customer_timers:
-                                                del self.customer_timers[track_id]
-                                            print(f"[AI CONSENSUS] track {track_id} -> STAFF db_id={state['db_id']!r} name={state['name']!r} (Votes={counts[winner]}/{req_votes})")
-                if refresh_faces:
-                    self.load_known_faces()
-                
-                # Handle auto-registration outside lock
-                if match_id == "Unknown" and face_encodings:
-                    # CRITICAL: Check if this track already has a staff identity — if so, DO NOT overwrite
-                    with self.lock:
-                        existing_db_id = self.person_states.get(track_id, {}).get("db_id")
-                    if existing_db_id and not str(existing_db_id).startswith("C_"):
-                        print(f"[AI] Skipping auto-registration for track {track_id} — already identified as staff ({existing_db_id})")
-                    else:
-                        # ALWAYS do a quick staff check with relaxed threshold BEFORE waiting for 15 votes
-                        # This prevents 30-second delay when distance is between 0.60 and 0.65
-                        with self.lock:
-                            known_staff_enc_q = list(self.known_face_encodings)
-                            known_staff_meta_q = list(self.known_face_metadata)
-                        if known_staff_enc_q:
-                            s_sims_q = _cos_sims(known_staff_enc_q, face_encodings[0])
-                            best_s_idx_q = int(np.argmax(s_sims_q))
-                            best_s_sim_q = float(s_sims_q[best_s_idx_q])
-                            if best_s_sim_q >= FACE_STAFF_RELAXED:
-                                s_meta_q = known_staff_meta_q[best_s_idx_q]
-                                print(f"[AI] Quick staff check: {s_meta_q['name']} (sim={best_s_sim_q:.4f}) — identifying immediately")
-                                with self.lock:
-                                    if track_id in self.person_states:
-                                        state = self.person_states[track_id]
-                                        # Protect identity by setting max similarity
-                                        if state.get("db_id") == s_meta_q["id"]:
-                                            state["best_staff_sim"] = max(state.get("best_staff_sim", 0.0), best_s_sim_q)
-                                        else:
-                                            state["best_staff_sim"] = best_s_sim_q
-                                            
-                                        state["id"] = f"ID: {s_meta_q['id']}"
-                                        state["name"] = s_meta_q["name"]
-                                        state["role"] = s_meta_q["role"]
-                                        state["db_id"] = s_meta_q["id"]
-                                        state["confidence"] = calculate_calibrated_confidence(best_s_sim_q, FACE_STAFF_RELAXED)
-                                        state["identity_locked"] = True
-                                        state["last_sync"] = current_time
-                                        if track_id in self.customer_timers:
-                                            del self.customer_timers[track_id]
-                                    if track_id in self.recognition_consensus:
-                                        self.recognition_consensus[track_id].append(s_meta_q["id"])
-                                database.record_attendance(s_meta_q["id"])
-                                self.recognition_queue.task_done()
-                                with self.lock:
-                                    self.processing_tracks.discard(track_id)
-                                continue
-                        
-                        with self.lock:
-                            consensus_list = self.recognition_consensus.get(track_id, [])
-                            consensus_len = len(consensus_list)
-                            counts = {cid: consensus_list.count(cid) for cid in set(consensus_list)} if consensus_list else {}
-                            winner = max(counts, key=counts.get) if counts else "Unknown"
-                            known_staff_count = len(self.known_face_encodings)
-                        
-                        # Rapid Guest Recognition: recognize non-staff in 2 checks (~200ms)
-                        min_unknown_votes = 2
-                        
-                        if consensus_len >= min_unknown_votes and winner == "Unknown":
-                            # Double-check with relaxed threshold before creating new customer
-                            with self.lock:
-                                known_cust_enc = list(self.known_customer_encodings)
-                                known_cust_meta = list(self.known_customer_metadata)
-                                known_staff_enc = list(self.known_face_encodings)
-                                known_staff_meta = list(self.known_face_metadata)
-                            
-                            # Last-chance staff check with relaxed threshold
-                            if known_staff_enc:
-                                s_sims = _cos_sims(known_staff_enc, face_encodings[0])
-                                best_s_idx = int(np.argmax(s_sims))
-                                best_s_sim = float(s_sims[best_s_idx])
-                                if best_s_sim >= FACE_STAFF_RELAXED:
-                                    # Found a plausible staff match — update and skip customer creation
-                                    s_meta = known_staff_meta[best_s_idx]
-                                    print(f"[AI] Last-chance staff match: {s_meta['name']} (sim={best_s_sim:.4f}) — NOT creating new customer")
-                                    with self.lock:
-                                        if track_id in self.person_states:
-                                            state = self.person_states[track_id]
-                                            state["id"] = f"ID: {s_meta['id']}"
-                                            state["name"] = s_meta["name"]
-                                            state["role"] = s_meta["role"]
-                                            state["db_id"] = s_meta["id"]
-                                            state["confidence"] = calculate_calibrated_confidence(best_s_sim, FACE_STAFF_RELAXED)
-                                            state["identity_locked"] = True
-                                            state["last_sync"] = current_time
-                                            if track_id in self.customer_timers:
-                                                del self.customer_timers[track_id]
-                                        if track_id in self.recognition_consensus:
-                                            self.recognition_consensus[track_id].append(s_meta["id"])
-                                    database.record_attendance(s_meta["id"])
-                                    self.recognition_queue.task_done()
-                                    with self.lock:
-                                        self.processing_tracks.discard(track_id)
-                                    continue
-                            
-                            fallback_match = False
-                            if known_cust_enc:
-                                c_sims = _cos_sims(known_cust_enc, face_encodings[0])
-                                best_cust_idx = int(np.argmax(c_sims))
-                                best_cust_sim = float(c_sims[best_cust_idx])
-                                if best_cust_sim >= FACE_CUSTOMER:
-                                    match_id = f"CUST:{known_cust_meta[best_cust_idx]['id']}"
-                                    
-                                    # Convert face_crop to base64 photo
-                                    import base64
-                                    _, buffer = cv2.imencode('.jpg', face_crop)
-                                    b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
-                                    
-                                    c_id_matched = known_cust_meta[best_cust_idx]['id']
-                                    c_stored_list = known_cust_meta[best_cust_idx].get("all_encs", [])
-                                    if c_stored_list and best_cust_sim >= 0.38:
-                                        c_sims_to_self = _cos_sims(c_stored_list, face_encodings[0])
-                                        if float(np.max(c_sims_to_self)) < 0.85:
-                                            c_stored_list.append(face_encodings[0])
-                                            if len(c_stored_list) > 5:
-                                                pair_sims = []
-                                                for i in range(len(c_stored_list)):
-                                                    for j in range(i + 1, len(c_stored_list)):
-                                                        sim_ij = float(np.dot(c_stored_list[i], c_stored_list[j]) / (np.linalg.norm(c_stored_list[i]) * np.linalg.norm(c_stored_list[j]) + 1e-6))
-                                                        pair_sims.append((sim_ij, i, j))
-                                                if pair_sims:
-                                                    pair_sims.sort(key=lambda x: x[0], reverse=True)
-                                                    c_stored_list.pop(pair_sims[0][2])
-                                    else:
-                                        c_stored_list = [face_encodings[0]]
-                                    database.update_customer_encoding(c_id_matched, pickle.dumps(c_stored_list), photo=b64_photo)
-                                    known_cust_meta[best_cust_idx]["all_encs"] = c_stored_list
-                                    fallback_match = True
-                                    print(f"[AI] Auto-registered as RETURNING customer: {known_cust_meta[best_cust_idx]['name']} (sim={best_cust_sim:.4f})")
-                                    with self.lock:
-                                        if track_id in self.recognition_consensus:
-                                            self.recognition_consensus[track_id].append(match_id)
-                                        if track_id in self.person_states:
-                                            state = self.person_states[track_id]
-                                            c_id = int(known_cust_meta[best_cust_idx]['id'])
-                                            state["db_id"] = f"C_{c_id}"
-                                            state["id"] = f"GUEST #{c_id}"
-                                            state["name"] = known_cust_meta[best_cust_idx]["name"]
-                                            # Fetch fresh visit count
-                                            try:
-                                                fresh_rows = database.get_known_customers()
-                                                fresh_meta = next((r for r in fresh_rows if r[0] == c_id), None)
-                                                state["visits"] = fresh_meta[3] if fresh_meta else known_cust_meta[best_cust_idx].get("visits", 1)
-                                            except:
-                                                state["visits"] = known_cust_meta[best_cust_idx].get("visits", 1)
-                                            state["photo"] = b64_photo
-                                            state["last_sync"] = current_time
-                            if not fallback_match:
-                                # Robust New Identity Gate:
-                                # Require persistence (>=6 consensus samples), minimum face size (>=75px),
-                                # natural face aspect ratio, and blur check to prevent spurious registrations from motion blur.
-                                consensus_count = len(self.recognition_consensus.get(track_id, []))
-                                face_h, face_w = face_crop.shape[:2]
-                                aspect_ratio = face_h / float(max(1, face_w))
-                                
-                                is_sharp = True
-                                try:
-                                    gray_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
-                                    lap_var = cv2.Laplacian(gray_face, cv2.CV_64F).var()
-                                    if lap_var < 20.0:  # Below 20 is blurry/motion-blurred
-                                        is_sharp = False
-                                except: pass
-                                
-                                if consensus_count >= 6 and face_h >= 75 and face_w >= 75 and (0.60 <= aspect_ratio <= 1.80) and is_sharp:
-                                    # Convert face_crop to base64 photo
-                                    import base64
-                                    _, buffer = cv2.imencode('.jpg', face_crop)
-                                    b64_photo = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
-                                    
-                                    new_c_id = database.register_customer(pickle.dumps([face_encodings[0]]), photo=b64_photo)
-                                    print(f"[AI NEW FACE] Confirmed stable new customer profile created: ID {new_c_id} (samples={consensus_count}, size={face_w}x{face_h}, sharpness={lap_var:.1f})")
-                                    self.load_known_faces()
-                                    with self.lock:
-                                        if track_id in self.person_states:
-                                            state = self.person_states[track_id]
-                                            state["db_id"] = f"C_{new_c_id}"
-                                            state["id"] = f"GUEST #{new_c_id}"
-                                            state["name"] = f"Guest #{new_c_id}"
-                                            state["last_sync"] = current_time
-                                            state["visits"] = 1
-                                            state["photo"] = b64_photo
-                                            self.recent_guest_embeddings.append({
-                                                "name": f"Guest #{new_c_id}",
-                                                "db_id": f"C_{new_c_id}",
-                                                "encs": [face_encodings[0]],
-                                                "last_seen": current_time
-                                            })
-                                else:
-                                    with self.lock:
-                                        if track_id in self.recognition_consensus:
-                                            self.recognition_consensus[track_id].append("Unknown")
-                                    print(f"[AI STABILITY GATE] Holding off new identity for track {track_id} (samples={consensus_count}/6, size={face_w}x{face_h}, sharp={is_sharp})")
-                            else:
-                                self.load_known_faces()
-                                
+                    if track_id in self.person_states:
+                        st = self.person_states[track_id]
+                        st["label"] = label
+                        st["color"] = color_hex
+                        st["db_id"] = iid
+                        st["identity_locked"] = is_confirmed
+                        if is_confirmed and iid:
+                            st["id"] = label
+                            st["name"] = label
+                            # Attendance sync for confirmed staff
+                            if label.startswith("Staff") or (iid and not str(iid).startswith("customer_")):
+                                database.record_attendance(iid)
+                                if track_id in self.customer_timers:
+                                    del self.customer_timers[track_id]
+                        else:
+                            st["id"] = "Unknown"
+                            st["name"] = "Unknown"
+
                 self.recognition_queue.task_done()
                 with self.lock:
                     self.processing_tracks.discard(track_id)
@@ -1171,7 +661,7 @@ class VisionEngine:
                 print(f"[AI BACKGROUND ERROR] {e}")
                 try:
                     self.recognition_queue.task_done()
-                except:
+                except Exception:
                     pass
                 if 'track_id' in locals():
                     with self.lock:
@@ -1240,20 +730,30 @@ class VisionEngine:
             
             if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
                 res_boxes = results[0].boxes
-                # Robustly isolate humans / class 0 (person in standard YOLO models)
+                # Robustly isolate humans / class 0 (person) with confidence threshold >= 0.50
                 if hasattr(res_boxes, 'cls') and res_boxes.cls is not None:
                     try:
-                        person_mask = (res_boxes.cls == 0).cpu().numpy().astype(bool)
+                        cls_arr = res_boxes.cls.cpu().numpy()
+                        is_person = (cls_arr == 0)
+                        if hasattr(res_boxes, 'conf') and res_boxes.conf is not None:
+                            conf_arr = res_boxes.conf.cpu().numpy()
+                            person_mask = is_person & (conf_arr >= 0.50)
+                        else:
+                            person_mask = is_person
+                            conf_arr = np.ones(len(cls_arr))
                         raw_boxes = res_boxes.xyxy.cpu().numpy()[person_mask]
+                        raw_conf = conf_arr[person_mask]
                         if hasattr(res_boxes, 'id') and res_boxes.id is not None:
                             raw_track_ids = res_boxes.id.int().cpu().numpy()[person_mask].tolist()
                         else:
                             raw_track_ids = [-1] * len(raw_boxes)
                     except Exception:
                         raw_boxes = res_boxes.xyxy.cpu().numpy()
+                        raw_conf = np.ones(len(raw_boxes))
                         raw_track_ids = [-1] * len(raw_boxes)
                 else:
                     raw_boxes = res_boxes.xyxy.cpu().numpy()
+                    raw_conf = np.ones(len(raw_boxes))
                     try:
                         if hasattr(res_boxes, 'id') and res_boxes.id is not None:
                             raw_track_ids = res_boxes.id.int().cpu().tolist()
@@ -1265,6 +765,8 @@ class VisionEngine:
                 try:
                     if hasattr(results[0], 'keypoints') and results[0].keypoints is not None and results[0].keypoints.xy is not None:
                         raw_kps = results[0].keypoints.xy.cpu().numpy()
+                    else:
+                        raw_kps = None
                 except Exception:
                     raw_kps = None
                     
@@ -1277,23 +779,42 @@ class VisionEngine:
             scale_x = float(w_out) / float(max(1, w_orig))
             scale_y = float(h_out) / float(max(1, h_orig))
 
-            # Filter: drop boxes smaller than 0.3% of frame area
+            # Filtering: drop noise (<0.6% frame area), whole-frame hallucinations (>80%),
+            # and non-human aspect ratios (e.g. door mullions, vertical glass edges)
             frame_area = float(w_orig * h_orig)
-            min_box_area = 0.003 * frame_area
+            min_box_area = 0.006 * frame_area
+            max_box_area = 0.80 * frame_area
 
             filtered_boxes = []
             filtered_track_ids = []
             filtered_kps = []
+            filtered_confs = []
 
             for b_idx, r_box in enumerate(raw_boxes):
                 x1, y1, x2, y2 = map(float, r_box)
-                box_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-                if box_area < min_box_area:
-                    continue  # Drop boxes smaller than 0.3% of frame area
+                bw = max(0.0, x2 - x1)
+                bh = max(0.0, y2 - y1)
+                box_area = bw * bh
+                if box_area < min_box_area or box_area > max_box_area:
+                    continue  # Ignore tiny specks or absurd whole-frame hallucinations
+
+                # Human proportion filters:
+                # Vertical slivers (e.g. door jambs, reflections, glass partition borders): bh / bw > 4.2
+                # Extremely wide rectangles: bw / bh > 2.8
+                if bh / max(1.0, bw) > 4.2:
+                    continue
+                if bw / max(1.0, bh) > 2.8:
+                    continue
 
                 t_id = raw_track_ids[b_idx] if (raw_track_ids is not None and b_idx < len(raw_track_ids)) else -1
+                conf_val = float(raw_conf[b_idx]) if (b_idx < len(raw_conf)) else 0.5
+                # Untracked boxes must have very high confidence to be considered
+                if t_id < 0 and conf_val < 0.60:
+                    continue
+
                 filtered_boxes.append([x1, y1, x2, y2])
                 filtered_track_ids.append(t_id)
+                filtered_confs.append(conf_val)
                 if raw_kps is not None and b_idx < len(raw_kps):
                     filtered_kps.append(raw_kps[b_idx])
                 else:
@@ -1301,51 +822,151 @@ class VisionEngine:
 
             self.last_filtered_count = len(filtered_boxes)
 
-            # Tracking: 3 consecutive confirmed hits and EMA smoothing (alpha=0.6)
+            # Tracking: require 2 consecutive confirmed hits for new tracks to prevent single-frame flickers
             confirmed_boxes = []
             confirmed_track_ids = []
             confirmed_kps = []
 
-            # If tracker did not provide ID, assign a fallback ID so detections are not dropped
             resolved_track_ids = []
             for b_idx, tid in enumerate(filtered_track_ids):
                 if tid is None or tid < 0:
-                    resolved_track_ids.append(1000 + b_idx)
+                    if filtered_confs[b_idx] >= 0.65:
+                        resolved_track_ids.append(1000 + b_idx)
+                    else:
+                        resolved_track_ids.append(-1)
                 else:
                     resolved_track_ids.append(int(tid))
 
             for f_box, t_id, kp in zip(filtered_boxes, resolved_track_ids, filtered_kps):
-                # Track consecutive hits (allow small frame gap so single dropped frame does not reset count)
+                if t_id < 0:
+                    continue
+                # Track consecutive hits
                 if t_id in self.track_last_seen and (self.frame_count - self.track_last_seen[t_id] <= 2):
                     self.track_hit_counts[t_id] = self.track_hit_counts.get(t_id, 0) + 1
                 else:
                     self.track_hit_counts[t_id] = 1
                 self.track_last_seen[t_id] = self.frame_count
+                self.track_last_seen_time[t_id] = current_time
 
-                # EMA coordinate smoothing (alpha 0.6)
+                # Raw YOLO bounding box directly (no coordinate EMA blending that stretches over chairs)
                 curr_box_arr = np.array(f_box, dtype=np.float32)
-                if t_id in self.ema_boxes:
-                    smoothed_box = 0.6 * curr_box_arr + 0.4 * self.ema_boxes[t_id]
-                else:
-                    smoothed_box = curr_box_arr
-                self.ema_boxes[t_id] = smoothed_box
+                self.ema_boxes[t_id] = curr_box_arr
 
-                # Immediate tracking response on confirmed detection
-                if self.track_hit_counts[t_id] >= 1:
+                # Require at least 2 consecutive hits (or already confirmed) to prevent 1-frame glitches
+                if self.track_hit_counts[t_id] >= 2 or t_id in self.confirmed_track_ids:
                     self.confirmed_track_ids.add(t_id)
-                    confirmed_boxes.append(smoothed_box)
+                    confirmed_boxes.append(curr_box_arr)
                     confirmed_track_ids.append(t_id)
                     confirmed_kps.append(kp)
 
-            self.last_confirmed_count = len(confirmed_track_ids)
+            # Carry-forward persistence for momentary YOLO drops (1.0s Grace Period TTL)
+            current_frame_tids = set(confirmed_track_ids)
+            for tid in list(self.confirmed_track_ids):
+                if tid not in current_frame_tids:
+                    time_missed = current_time - self.track_last_seen_time.get(tid, 0)
+                    if 0.1 <= time_missed <= 1.0 and tid in self.ema_boxes:
+                        confirmed_boxes.append(self.ema_boxes[tid])
+                        confirmed_track_ids.append(tid)
+                        confirmed_kps.append(None)
 
-            # Cleanup stale tracks
-            stale_tids = [tid for tid, lf in self.track_last_seen.items() if self.frame_count - lf > 45]
+            # Cleanup stale tracks only after full grace TTL expires
+            from identity_manager import identity_manager
+            stale_tids = [tid for tid, lt in self.track_last_seen_time.items() if current_time - lt > 1.2]
             for tid in stale_tids:
+                identity_manager.handle_track_lost(tid)
                 self.track_hit_counts.pop(tid, None)
                 self.track_last_seen.pop(tid, None)
+                self.track_last_seen_time.pop(tid, None)
                 self.ema_boxes.pop(tid, None)
                 self.confirmed_track_ids.discard(tid)
+
+            # Overlap suppression (NMS): Sort by detection confidence, not area (avoids desk/chair expansions)
+            if len(confirmed_boxes) > 1:
+                keep_indices = []
+                suppressed = set()
+                order = list(range(len(confirmed_boxes)))
+                for i in order:
+                    if i in suppressed:
+                        continue
+                    keep_indices.append(i)
+                    b1 = confirmed_boxes[i]
+                    a1 = max(1.0, (b1[2] - b1[0]) * (b1[3] - b1[1]))
+                    for j in order:
+                        if j == i or j in suppressed:
+                            continue
+                        b2 = confirmed_boxes[j]
+                        a2 = max(1.0, (b2[2] - b2[0]) * (b2[3] - b2[1]))
+                        ix1 = max(b1[0], b2[0])
+                        iy1 = max(b1[1], b2[1])
+                        ix2 = min(b1[2], b2[2])
+                        iy2 = min(b1[3], b2[3])
+                        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                        if inter > 0:
+                            iou = inter / (a1 + a2 - inter)
+                            iom = inter / min(a1, a2)
+                            if iou > 0.45 or iom > 0.65:
+                                suppressed.add(j)
+
+                confirmed_boxes = [confirmed_boxes[k] for k in keep_indices]
+                confirmed_track_ids = [confirmed_track_ids[k] for k in keep_indices]
+                confirmed_kps = [confirmed_kps[k] for k in keep_indices]
+
+            # Prepare detection structures for Hungarian matching
+            fs_scale_x = fw / max(1.0, float(DETECTION_WIDTH))
+            fs_scale_y = fh / max(1.0, float(DETECTION_HEIGHT))
+            
+            det_objs = []
+            for b_idx, (box, track_id) in enumerate(zip(confirmed_boxes, confirmed_track_ids)):
+                x1, y1, x2, y2 = map(int, box)
+                bx1 = max(0, int(x1 * fs_scale_x))
+                by1 = max(0, int(y1 * fs_scale_y))
+                bx2 = min(fw, int(x2 * fs_scale_x))
+                by2 = min(fh, int(y2 * fs_scale_y))
+                b_crop = face_source[by1:by2, bx1:bx2] if (bx2 > bx1 and by2 > by1) else None
+
+                box_h_orig = by2 - by1
+                head_y2 = int(by1 + (box_h_orig * 0.40))
+                h_crop = face_source[by1:head_y2, bx1:bx2] if (head_y2 > by1 and bx2 > bx1) else None
+                
+                face_enc = None
+                last_f_frame = self.last_face_enc_frame.get(track_id, -999)
+                needs_face_scan = (track_id not in identity_manager.track_to_identity) or ((self.frame_count - last_f_frame) >= 25)
+                if needs_face_scan and h_crop is not None and min(h_crop.shape[:2]) >= 35:
+                    with face_rec_lock:
+                        face_enc = _encode_face(h_crop, strict=False)
+                    if face_enc is not None:
+                        self.last_face_enc_frame[track_id] = self.frame_count
+
+                det_objs.append({
+                    "track_id": int(track_id),
+                    "box": [float(x1), float(y1), float(x2), float(y2)],
+                    "body_crop": b_crop,
+                    "face_crop": h_crop,
+                    "face_enc": face_enc
+                })
+
+            # Run Identity-Centric Global Hungarian Assignment
+            assigned_map, evicted_tids = identity_manager.assign_detections(det_objs, current_time=current_time)
+            self.last_evicted_tracks = evicted_tids
+
+            # Immediately purge evicted stale tracks so they disappear without delay
+            if evicted_tids:
+                with self.lock:
+                    for ev_tid in evicted_tids:
+                        self.person_states.pop(ev_tid, None)
+                        self.track_hit_counts.pop(ev_tid, None)
+                        self.track_last_seen.pop(ev_tid, None)
+                        self.ema_boxes.pop(ev_tid, None)
+                        self.confirmed_track_ids.discard(ev_tid)
+
+            # Filter out evicted tracks from confirmed list
+            if evicted_tids:
+                active_pairs = [(b, t, k) for b, t, k in zip(confirmed_boxes, confirmed_track_ids, confirmed_kps) if t not in evicted_tids]
+                confirmed_boxes = [p[0] for p in active_pairs]
+                confirmed_track_ids = [p[1] for p in active_pairs]
+                confirmed_kps = [p[2] for p in active_pairs]
+
+            self.last_confirmed_count = len(confirmed_track_ids)
 
             boxes = np.array(confirmed_boxes, dtype=np.float32) if confirmed_boxes else np.empty((0, 4), dtype=np.float32)
             track_ids = np.array(confirmed_track_ids, dtype=np.int32) if confirmed_track_ids else np.empty((0,), dtype=np.int32)
@@ -1442,81 +1063,85 @@ class VisionEngine:
                             state["pose_label"] = pose_label
                     except: pass
 
-                # 2. Track-to-Identity Caching Map
+                # Persistent Identity System - Track Assignment Lookup
+                assign_info = assigned_map.get(track_id, {})
+                label = assign_info.get("label", "Unknown")
+                itype = assign_info.get("type", "unknown")
+                db_id = assign_info.get("identity_id")
+                is_locked = assign_info.get("is_locked", False)
+                color_hex = assign_info.get("color", "#94a3b8")
+
                 with self.lock:
-                    t_ident = self.track_identities.get(track_id)
-                    # Only mark verified if locked to an actual confirmed STAFF member!
-                    is_staff_verified = (t_ident is not None and t_ident.get("verified", False) and t_ident.get("is_staff", False))
-                    if is_staff_verified:
-                        state["name"] = t_ident["name"]
-                        state["db_id"] = t_ident.get("db_id")
-                        state["role"] = t_ident.get("role", "None")
-                        state["identity_locked"] = True
-                    elif t_ident is not None and t_ident.get("name") and not state.get("identity_locked"):
-                        state["name"] = t_ident["name"]
-                        state["db_id"] = t_ident.get("db_id")
-                    db_id = state.get("db_id")
-                    is_processing = track_id in self.processing_tracks
+                    state["name"] = label
+                    state["id"] = label
+                    state["db_id"] = db_id
+                    state["label"] = label
+                    state["identity_locked"] = is_locked
+                    state["is_staff"] = (itype == "staff")
 
-                # Fast path: Identity is ONLY permanently locked if confirmed as STAFF.
-                # If currently marked as Customer/Guest, ALWAYS keep checking so staff
-                # sitting down or turning their face get recognized as soon as their face clears!
-                if is_staff_verified:
-                    pass
+                is_processing = track_id in self.processing_tracks
+
+                # Keep background scanning active for all persons (unconfirmed and verified)
+                needs_extraction = False
+                if not is_locked:
+                    needs_extraction = True
+                    check_interval = 0.35  # Rapid background identification for new people
                 else:
-                    # Recognition path: Run ArcFace until confirmed as Staff
-                    last_attempt = self.last_rec_attempt.get(track_id, 0)
-                    track_age = current_time - state.get("first_seen", current_time)
-                    # Entrance burst: check every 120ms during first 3 seconds, then 300ms
-                    check_interval = 0.12 if track_age < 3.0 else 0.30
-                    q_backlog = self.recognition_queue.qsize() > 4
-                    if not is_processing and not q_backlog and (current_time - last_attempt > check_interval):
-                        self.last_rec_attempt[track_id] = current_time
+                    # Verified person: keep scanning in background for continuous verification & gallery enrichment
+                    last_v = state.get("last_verified_frame", 0)
+                    v_interval = identity_manager.config.get("VERIFICATION_INTERVAL_FRAMES", 30)
+                    if (self.frame_count - last_v) >= v_interval:
+                        needs_extraction = True
+                    check_interval = 0.70
 
-                        # Compute scale from DETECTION (640x480) to face_source (native camera res)
-                        fs_scale_x = fw / DETECTION_WIDTH
-                        fs_scale_y = fh / DETECTION_HEIGHT
+                last_attempt = self.last_rec_attempt.get(track_id, 0)
+                q_backlog = self.recognition_queue.qsize() > 4
 
-                        # 1. Crop Head Region for InsightFace (Fixes "Face Not Detected")
-                        # Map YOLO track bounding box to native frame
-                        track_box_native = (
-                            int(x1 * fs_scale_x),
-                            int(y1 * fs_scale_y),
-                            int(x2 * fs_scale_x),
-                            int(y2 * fs_scale_y)
-                        )
-                        x1_orig, y1_orig, x2_orig, y2_orig = map(int, track_box_native)
-                        box_h_orig = y2_orig - y1_orig
-                        # Focus strictly on the upper body/head (top 40% head region)
-                        head_y2 = int(y1_orig + (box_h_orig * 0.40))
-                        head_crop = face_source[max(0, y1_orig):min(fh, head_y2), max(0, x1_orig):min(fw, x2_orig)] if (x2_orig > x1_orig and head_y2 > y1_orig) else None
+                if needs_extraction and not is_processing and not q_backlog and (current_time - last_attempt > check_interval):
+                    self.last_rec_attempt[track_id] = current_time
 
-                        # Quality check: head crop available for InsightFace
-                        is_good_quality = (head_crop is not None and head_crop.shape[0] >= 30 and head_crop.shape[1] >= 30)
+                    # Compute scale from DETECTION (640x480) to face_source (native camera res)
+                    fs_scale_x = fw / DETECTION_WIDTH
+                    fs_scale_y = fh / DETECTION_HEIGHT
 
-                        # Extract full body crop for Person Re-ID (appearance embedding)
-                        x1b = max(0, x1_orig)
-                        y1b = max(0, y1_orig)
-                        x2b = min(fw, x2_orig)
-                        y2b = min(fh, y2_orig)
-                        body_crop = face_source[y1b:y2b, x1b:x2b] if (x2b > x1b and y2b > y1b) else None
-                        has_valid_body = body_crop is not None and body_crop.shape[0] >= 60 and body_crop.shape[1] >= 30
+                    # 1. Crop Head Region for InsightFace
+                    track_box_native = (
+                        int(x1 * fs_scale_x),
+                        int(y1 * fs_scale_y),
+                        int(x2 * fs_scale_x),
+                        int(y2 * fs_scale_y)
+                    )
+                    x1_orig, y1_orig, x2_orig, y2_orig = map(int, track_box_native)
+                    box_h_orig = y2_orig - y1_orig
+                    head_y2 = int(y1_orig + (box_h_orig * 0.40))
+                    head_crop = face_source[max(0, y1_orig):min(fh, head_y2), max(0, x1_orig):min(fw, x2_orig)] if (x2_orig > x1_orig and head_y2 > y1_orig) else None
 
-                        if is_good_quality or has_valid_body:
-                            with self.lock:
-                                self.processing_tracks.add(track_id)
-                            self.recognition_queue.put((
-                                track_id, 
-                                head_crop.copy() if is_good_quality else None, 
-                                body_crop.copy() if has_valid_body else None, 
-                                current_zone, 
-                                current_time
-                            ))
+                    is_good_quality = (head_crop is not None and head_crop.shape[0] >= 30 and head_crop.shape[1] >= 30)
+
+                    # Extract full body crop for Person Re-ID (appearance embedding)
+                    x1b = max(0, x1_orig)
+                    y1b = max(0, y1_orig)
+                    x2b = min(fw, x2_orig)
+                    y2b = min(fh, y2_orig)
+                    body_crop = face_source[y1b:y2b, x1b:x2b] if (x2b > x1b and y2b > y1b) else None
+                    has_valid_body = body_crop is not None and body_crop.shape[0] >= 60 and body_crop.shape[1] >= 30
+
+                    if is_good_quality or has_valid_body:
+                        with self.lock:
+                            self.processing_tracks.add(track_id)
+                        self.recognition_queue.put((
+                            track_id, 
+                            head_crop.copy() if is_good_quality else None, 
+                            body_crop.copy() if has_valid_body else None, 
+                            current_zone, 
+                            current_time,
+                            [x1, y1, x2, y2]
+                        ))
                 # Sync presence heartbeat (only for confirmed staff, not customers)
                 with self.lock:
                     last_sync = state.get("last_sync", 0)
                 if current_time - last_sync > self.heartbeat_interval:
-                    if db_id and not str(db_id).startswith("C_"):
+                    if db_id and not str(db_id).startswith("C_") and not str(db_id).startswith("customer_"):
                         database.record_attendance(db_id)
                     with self.lock:
                         state["last_sync"] = current_time
@@ -1526,7 +1151,7 @@ class VisionEngine:
                     db_id = state["db_id"]
                     role = state["role"]
                     
-                if db_id and not str(db_id).startswith("C_"):
+                if db_id and not str(db_id).startswith("C_") and not str(db_id).startswith("customer_"):
                     prev_pos = self.last_positions.get(track_id)
                     if prev_pos:
                         dist = np.sqrt((center[0]-prev_pos[0])**2 + (center[1]-prev_pos[1])**2)
@@ -1547,7 +1172,7 @@ class VisionEngine:
                         is_near_customer = False
                         with self.lock:
                             for other_tid, other_state in self.person_states.items():
-                                if other_tid != track_id and str(other_state.get("db_id", "")).startswith("C_"):
+                                if other_tid != track_id and (str(other_state.get("db_id", "")).startswith("C_") or str(other_state.get("db_id", "")).startswith("customer_")):
                                     other_pos = self.last_positions.get(other_tid)
                                     if other_pos:
                                         p_dist = np.sqrt((center[0]-other_pos[0])**2 + (center[1]-other_pos[1])**2)
@@ -1573,7 +1198,7 @@ class VisionEngine:
                 
                 # RESTRICTED / SAFE ZONE MONITORING
                 in_unauth_zone = False
-                is_staff = db_id and not str(db_id).startswith("C_")
+                is_staff = db_id and not str(db_id).startswith("C_") and not str(db_id).startswith("customer_")
                 for zone in self.zones:
                     if zone.unauthorized_roles and zone.is_inside(center):
                         is_unauth = False
@@ -1601,64 +1226,83 @@ class VisionEngine:
                 # CUSTOMER INTELLIGENCE (Track every non-staff person as a customer)
                 if not is_staff:
                     if track_id not in self.customer_timers:
-                        c_id = int(str(db_id).split("_")[1]) if db_id and str(db_id).startswith("C_") else None
+                        c_id = int(str(db_id).split("_")[1]) if db_id and (str(db_id).startswith("C_") or str(db_id).startswith("customer_")) else None
                         self.customer_timers[track_id] = {"start": current_time, "zone": current_zone, "c_id": c_id}
-                    elif db_id and str(db_id).startswith("C_") and self.customer_timers[track_id].get("c_id") is None:
+                    elif db_id and (str(db_id).startswith("C_") or str(db_id).startswith("customer_")) and self.customer_timers[track_id].get("c_id") is None:
                         self.customer_timers[track_id]["c_id"] = int(str(db_id).split("_")[1])
                 elif track_id in self.customer_timers:
                     # Person confirmed as staff — remove any stale customer timer
                     del self.customer_timers[track_id]
 
-                # Visuals (Bounding Boxes for EVERYONE)
-                with self.lock:
-                    db_id = state.get("db_id")
-                    state_id = state.get("id")
-                    state_name = state.get("name", "Unknown")
-                    state_role = state.get("role", "None")
-                    status = state.get("pose_label", "NEUTRAL")
-                    track_age = current_time - state.get("first_seen", current_time)
-                    
-                real_class_name = "person"
-                if model is not None and hasattr(model, 'names') and model.names:
-                    real_class_name = model.names.get(0, "person")
-                
-                if not db_id:
-                    color_hex = "#f97316"  # Amber for Unknown
-                    cv2_color = (6, 119, 217)
-                    label = f"{real_class_name.upper()} #{track_id}"
-                elif str(db_id).startswith("C_"):
-                    visits = state.get("visits", 1)
-                    cv2_color = (0, 215, 255) # Gold for Guests
-                    if visits <= 1:
-                        color_hex = "#f97316"  # Orange for New Customer (first visit)
-                        label = "New Customer (1st visit)"
+                # Visuals: Show locked label (Staff X / Customer Y) or Provisional until confirmed
+                assign_info = assigned_map.get(track_id)
+                if assign_info:
+                    label = assign_info["label"]
+                    itype = assign_info["type"]
+                    db_id = assign_info["identity_id"]
+                    is_locked_val = assign_info.get("is_locked", False)
+                    color_hex = assign_info.get("color", "#94a3b8")
+                    conf_val = 0.95 if is_locked_val else 0.50
+                    if itype == "staff":
+                        cv2_color = (229, 70, 79) # BGR Blue
+                    elif itype == "customer":
+                        cv2_color = (0, 215, 255) # BGR Yellow
                     else:
-                        color_hex = "#eab308"  # Yellow for Regular Guest
-                        suffix = "th" if visits >= 4 else ({1:"st",2:"nd",3:"rd"}.get(visits, "th"))
-                        label = f"Regular Customer ({visits}{suffix} visit)"
+                        cv2_color = (184, 163, 148) # Slate
+                elif state.get("identity_locked") and state.get("last_label"):
+                    # Occlusion lock retention: face blocked, hand on chin, looking away
+                    label = state["last_label"]
+                    color_hex = state.get("last_color", "#3b82f6" if label.startswith("Staff") else "#eab308")
+                    itype = "staff" if label.startswith("Staff") else "customer"
+                    db_id = state.get("db_id")
+                    is_locked_val = True
+                    conf_val = 0.85
+                    cv2_color = (229, 70, 79) if itype == "staff" else (0, 215, 255)
                 else:
-                    color_hex = "#3b82f6"  # Blue for Enrolled Staff (Type 3)
-                    cv2_color = (229, 70, 79) # Indigo for Staff
-                    role_tag = f" ({state_role})" if state_role and state_role != "None" else ""
-                    status = state.get("pose_label", "NEUTRAL")
-                    conf_val = state.get("confidence", 97.0)
-                    label = f"STAFF [{db_id}]: {state_name}{role_tag} [{status}] ({conf_val}%)"
+                    label = f"Provisional-T{track_id}"
+                    itype = "provisional"
+                    color_hex = "#94a3b8"  # Neutral slate for Provisional
+                    cv2_color = (184, 163, 148)  # BGR
+                    db_id = None
+                    is_locked_val = False
+                    conf_val = 0.0
                 
                 # Draw Box overlay directly onto video stream frame
+                display_label = label
+                if getattr(self, "show_debug_overlay", False):
+                    display_label = f"T:{track_id} | {label}"
                 cv2.rectangle(output_frame, (int(x1_out), int(y1_out)), (int(x2_out), int(y2_out)), cv2_color, 2)
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                (tw, th), _ = cv2.getTextSize(display_label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
                 cv2.rectangle(output_frame, (int(x1_out), int(y1_out) - th - 10), (int(x1_out) + tw + 10, int(y1_out)), cv2_color, -1)
-                cv2.putText(output_frame, label, (int(x1_out) + 5, int(y1_out) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                cv2.putText(output_frame, display_label, (int(x1_out) + 5, int(y1_out) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
                 # Store last box in state for carry-forward during brief YOLO misses
                 state["last_box"] = [float(x1), float(y1), float(x2), float(y2)]
                 state["last_label"] = label
                 state["last_color"] = color_hex
-                # Compile detection metadata for canvas rendering
+                if is_locked_val:
+                    state["identity_locked"] = True
+
+                # Compile detection metadata with separated geometry and identity layers
                 detections.append({
                     "track_id": int(track_id),
-                    "staff_id": db_id if (db_id and not str(db_id).startswith("C_")) else None,
                     "box": state["last_box"],
+                    "geometry": {
+                        "x1": float(x1),
+                        "y1": float(y1),
+                        "x2": float(x2),
+                        "y2": float(y2)
+                    },
+                    "identity": {
+                        "label": label,
+                        "type": itype,
+                        "staff_id": db_id if itype == "staff" else None,
+                        "identity_id": db_id,
+                        "is_locked": is_locked_val,
+                        "confidence": conf_val
+                    },
+                    "staff_id": db_id if itype == "staff" else None,
+                    "identity_id": db_id,
                     "label": label,
                     "color": color_hex
                 })
@@ -1694,6 +1338,7 @@ class VisionEngine:
             with self.lock:
                 expired = [tid for tid, s in self.person_states.items() if current_time - s["last_active"] > 10]
                 for tid in expired:
+                    identity_manager.handle_track_lost(tid)
                     if tid in self.customer_timers:
                         duration = current_time - self.customer_timers[tid]["start"]
                         if duration > 15:

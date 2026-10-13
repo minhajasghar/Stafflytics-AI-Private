@@ -108,10 +108,14 @@ metrics_collector = MetricsCollector()
 
 websocket_clients = set()
 websocket_lock = threading.Lock()
-last_detection_payload = json.dumps({"detections": [], "frame_w": 640, "frame_h": 480, "passage": {"l_to_r": 0, "r_to_l": 0}, "timestamp": time.time()})
+broadcast_seq = 0
+last_broadcast_time = 0.0
+last_detection_payload = json.dumps({"seq": 0, "detections": [], "frame_w": 640, "frame_h": 480, "passage": {"l_to_r": 0, "r_to_l": 0}, "timestamp": time.time()})
 
-def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None, timestamp=None):
-    global last_detection_payload
+def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None, timestamp=None, evicted_tracks=None):
+    global last_detection_payload, last_broadcast_time, broadcast_seq
+    broadcast_seq += 1
+    last_broadcast_time = time.time()
     if timestamp is None:
         timestamp = time.time()
     if passage is None and engine is not None:
@@ -128,11 +132,14 @@ def broadcast_detections(detections, frame_w=640, frame_h=360, passage=None, tim
             return obj.tolist()
         return str(obj)
 
+    ev_list = [int(t) for t in (evicted_tracks or [])]
     payload = json.dumps({
+        "seq": broadcast_seq,
         "detections": detections, 
         "frame_w": frame_w, 
         "frame_h": frame_h,
         "passage": passage or {"l_to_r": 0, "r_to_l": 0},
+        "evicted_tracks": ev_list,
         "timestamp": float(timestamp)
     }, default=_json_serial)
     last_detection_payload = payload
@@ -163,10 +170,9 @@ def detection_ws(ws):
 
 @app.route('/api/detection_poll', methods=['GET'])
 def detection_poll():
-    # Fallback polling endpoint: expire immediately if worker is idle > 2 seconds
-    global last_detection_payload, last_edge_heartbeat
-    if time.time() - last_edge_heartbeat > 2.0:
-        return jsonify({"detections": [], "timestamp": time.time(), "passage": {"l_to_r": 0, "r_to_l": 0}})
+    global last_detection_payload, last_broadcast_time, broadcast_seq
+    if time.time() - last_broadcast_time > 3.0:
+        return jsonify({"seq": broadcast_seq, "detections": [], "timestamp": time.time(), "passage": {"l_to_r": 0, "r_to_l": 0}})
     return Response(last_detection_payload, mimetype='application/json')
 
 last_edge_heartbeat = 0.0
@@ -627,13 +633,14 @@ def vision_engine_loop():
             with processed_frame_lock:
                 latest_processed_frame = annotated_frame
             
-            # Broadcast detection coordinates with frame timestamp
+            # Broadcast detection coordinates with frame timestamp and evicted tracks
             broadcast_detections(
                 detections, 
                 frame_w=frame.shape[1], 
                 frame_h=frame.shape[0],
                 passage=engine.get_passage_counts(),
-                timestamp=frame_ts
+                timestamp=frame_ts,
+                evicted_tracks=getattr(engine, 'last_evicted_tracks', [])
             )
         except Exception as e:
             print(f"[VISION LOOP ERROR] {e}")
@@ -1067,17 +1074,6 @@ def generate_recording_frames():
         if frame is None:
             time.sleep(0.1)
             continue
-            
-        if engine and hasattr(engine, 'latest_detections') and engine.latest_detections:
-            try:
-                from vision_engine import draw_detections_on_frame
-                if 'camera_stream' in globals() and camera_stream is not None and camera_stream.actual_width and camera_stream.actual_height:
-                    src_w, src_h = camera_stream.actual_width, camera_stream.actual_height
-                else:
-                    src_w, src_h = 640, 480
-                frame = draw_detections_on_frame(frame, engine.latest_detections, src_w, src_h)
-            except Exception:
-                pass
             
         ret, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         if ret:
@@ -1561,6 +1557,8 @@ def update_staff_detail(staff_id):
     data = request.json
     database.update_staff(staff_id, data['name'], data['role'], data['shift_time'], data['shift'], data['rate'], data.get('salary_type', 'Monthly'))
     engine.load_known_faces()
+    from identity_manager import identity_manager
+    identity_manager.load_from_database()
     return jsonify({"status": "success"})
 
 @app.route('/api/staff/delete/<staff_id>', methods=['DELETE'])
@@ -1568,7 +1566,53 @@ def update_staff_detail(staff_id):
 def delete_staff(staff_id):
     database.delete_staff(staff_id)
     engine.load_known_faces()
+    from identity_manager import identity_manager
+    identity_manager.load_from_database()
     return jsonify({"status": "success"})
+
+
+@app.route('/api/identity/enroll/staff', methods=['POST'])
+@login_required
+def identity_enroll_staff():
+    from identity_manager import identity_manager
+    data = request.get_json(silent=True) or {}
+    track_id = data.get('track_id')
+    identity_manager.enable_enrollment_mode(target_track_id=track_id)
+    return jsonify({
+        "status": "success",
+        "message": "Staff enrollment mode active. Prominent unregistered person in frame will be assigned the next Staff ID."
+    })
+
+@app.route('/api/identity/enroll/cancel', methods=['POST'])
+@login_required
+def identity_enroll_cancel():
+    from identity_manager import identity_manager
+    identity_manager.disable_enrollment_mode()
+    return jsonify({"status": "success", "message": "Staff enrollment mode canceled."})
+
+@app.route('/api/identity/status', methods=['GET'])
+def identity_status():
+    from identity_manager import identity_manager
+    return jsonify({
+        "enrollment_active": identity_manager.is_enrollment_active(),
+        "active_identities": identity_manager.get_all_active_identities(),
+        "config": identity_manager.config
+    })
+
+@app.route('/api/identity/all', methods=['GET'])
+@login_required
+def identity_all():
+    return jsonify(database.get_all_identities())
+
+@app.route('/api/identity/config', methods=['POST'])
+@login_required
+def identity_update_config():
+    from identity_manager import identity_manager
+    data = request.get_json(silent=True) or {}
+    for k, v in data.items():
+        if k in identity_manager.config:
+            identity_manager.set_config_value(k, v)
+    return jsonify({"status": "success", "config": identity_manager.config})
 
 @app.route('/api/staff/enroll', methods=['POST'])
 @login_required
@@ -1609,7 +1653,19 @@ def enroll_staff():
         
         database.add_staff(data['id'], data['name'], data['role'], pickle.dumps([enc]),
                           data.get('shift_time', '10:00'), data.get('shift', 'Morning'), data.get('rate', 500), data.get('salary_type', 'Monthly'), photo_b64)
+        
+        # Upper-body appearance vector extraction for overhead CCTV Re-ID
+        try:
+            from identity_manager import extract_body_reid_vector
+            b_vec = extract_body_reid_vector(bgr)
+            if b_vec is not None:
+                database.save_identity_embedding(f"staff_{data['id']}", "body", pickle.dumps(b_vec), 1.0)
+        except Exception as e_b:
+            print(f"[ENROLL BODY WARNING] {e_b}")
+
         engine.load_known_faces()
+        from identity_manager import identity_manager
+        identity_manager.load_from_database()
         return jsonify({"status": "success"})
     except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1624,6 +1680,7 @@ def enroll_staff_with_faces():
             return jsonify({"status": "error", "message": "Need at least 1 face capture"}), 400
         
         encodings = []
+        body_vectors = []
         first_photo = None
         for idx, b64_img in enumerate(images):
             try:
@@ -1651,6 +1708,16 @@ def enroll_staff_with_faces():
                 if enc is None or face is None:
                     continue
                 encodings.append(enc)
+
+                # Extract body appearance vector for overhead CCTV Re-ID
+                try:
+                    from identity_manager import extract_body_reid_vector
+                    b_vec = extract_body_reid_vector(bgr)
+                    if b_vec is not None:
+                        body_vectors.append(b_vec)
+                except Exception:
+                    pass
+
                 if idx == 0 or first_photo is None:
                     x1, y1, x2, y2 = [int(v) for v in face.bbox]
                     x, y, w_b, h_b = x1, y1, x2 - x1, y2 - y1
@@ -1690,8 +1757,77 @@ def enroll_staff_with_faces():
             data.get('salary_type', 'Monthly'),
             first_photo
         )
+
+        # Save extracted body Re-ID vectors for staff identity
+        staff_iid = f"staff_{data['id']}"
+        for bv in body_vectors[:5]:
+            try:
+                database.save_identity_embedding(staff_iid, "body", pickle.dumps(bv), 1.0)
+            except Exception:
+                pass
+
         engine.load_known_faces()
-        return jsonify({"status": "success", "message": f"Few-Shot Enrollment complete ({len(few_shot_encodings)} shots registered)"})
+        from identity_manager import identity_manager
+        identity_manager.load_from_database()
+        return jsonify({"status": "success", "message": f"Few-Shot Enrollment complete ({len(few_shot_encodings)} shots, {len(body_vectors)} body poses registered)"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/identity/enroll/capture_live_body', methods=['POST'])
+@login_required
+def capture_live_body_for_staff():
+    """
+    Overhead camera live multi-pose body enrollment:
+    Captures live body appearances directly from the camera stream
+    to enrich a staff member's body gallery for high-angle CCTV Re-ID.
+    """
+    data = request.json or {}
+    staff_id = data.get('staff_id')
+    if not staff_id:
+        return jsonify({"status": "error", "message": "staff_id is required"}), 400
+    
+    identity_id = f"staff_{staff_id}" if not str(staff_id).startswith("staff_") else str(staff_id)
+    target_track_id = data.get('track_id')
+    
+    from identity_manager import identity_manager, extract_body_reid_vector
+    samples_captured = 0
+    
+    # Grab current frame detections from engine
+    if engine and hasattr(engine, 'latest_detections') and engine.latest_detections:
+        for det in engine.latest_detections:
+            tid = det.get('track_id')
+            if target_track_id is not None and tid != int(target_track_id):
+                continue
+            box = det.get('box')
+            if box and camera_stream and camera_stream.frame is not None:
+                x1, y1, x2, y2 = map(int, box)
+                h_f, w_f = camera_stream.frame.shape[:2]
+                bx1, by1 = max(0, x1), max(0, y1)
+                bx2, by2 = min(w_f, x2), min(h_f, y2)
+                if bx2 > bx1 and by2 > by1:
+                    crop = camera_stream.frame[by1:by2, bx1:bx2]
+                    vec = extract_body_reid_vector(crop)
+                    if vec is not None:
+                        database.save_identity_embedding(identity_id, "body", pickle.dumps(vec), 1.0)
+                        samples_captured += 1
+    
+    identity_manager.load_from_database()
+    return jsonify({
+        "status": "success",
+        "identity_id": identity_id,
+        "samples_captured": samples_captured,
+        "total_body_embeddings": len(identity_manager.identities.get(identity_id, {}).get("body_gallery", []))
+    })
+
+@app.route('/api/identity/clean_customers', methods=['POST'])
+@login_required
+def clean_customers():
+    try:
+        from clean_duplicate_customers import clean_spurious_customers
+        res = clean_spurious_customers()
+        from identity_manager import identity_manager
+        identity_manager.load_from_database()
+        return jsonify({"status": "success", "result": res})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
