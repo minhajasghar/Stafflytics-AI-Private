@@ -8,12 +8,14 @@ import pickle
 import queue
 import threading
 
-# Limiting background thread count for ONNXRuntime (InsightFace) to prevent CPU starvation / video buffering
-os.environ["OMP_NUM_THREADS"] = "2"
-os.environ["OPENBLAS_NUM_THREADS"] = "2"
-os.environ["MKL_NUM_THREADS"] = "2"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "2"
-os.environ["NUMEXPR_NUM_THREADS"] = "2"
+# Dynamically scale CPU threads to utilize full processor power
+_available_cpus = os.cpu_count() or 4
+_ai_threads = str(max(2, _available_cpus if _available_cpus <= 4 else _available_cpus - 1))
+os.environ.setdefault("OMP_NUM_THREADS", _ai_threads)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _ai_threads)
+os.environ.setdefault("MKL_NUM_THREADS", _ai_threads)
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", _ai_threads)
+os.environ.setdefault("NUMEXPR_NUM_THREADS", _ai_threads)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Check root directory first (where yolov8n.onnx and yolov8n.pt are located), then models/ subfolder
@@ -1329,8 +1331,8 @@ class VisionEngine:
                     smoothed_box = curr_box_arr
                 self.ema_boxes[t_id] = smoothed_box
 
-                # Show/count a person only after 3 consecutive confirmed hits
-                if self.track_hit_counts[t_id] >= 3:
+                # Immediate tracking response on confirmed detection
+                if self.track_hit_counts[t_id] >= 1:
                     self.confirmed_track_ids.add(t_id)
                     confirmed_boxes.append(smoothed_box)
                     confirmed_track_ids.append(t_id)

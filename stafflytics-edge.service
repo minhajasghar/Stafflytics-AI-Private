@@ -1,12 +1,17 @@
 [Unit]
 Description=Stafflytics Edge YOLOv11 Vision Worker
-After=network.target mediamtx.service
+# Wait for the network, Tailscale (to reach the VPS) and MediaMTX (camera relay)
+After=network-online.target tailscaled.service mediamtx.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=tntinnovations
 WorkingDirectory=/home/tntinnovations/projects/stafflytics-ai-private
-ExecStart=/usr/bin/python3 edge_ai_worker.py --source rtsp://localhost:8554/cam --server https://stafflytics.ntinnov.com --fps 20
+# Use the venv's Python (system Python has no torch/ultralytics).
+# --source / --server come from SERVER_URL and EDGE_CAMERA_URL in .env
+ExecStart=/home/tntinnovations/projects/stafflytics-ai-private/venv/bin/python -u edge_ai_worker.py --fps 20
+Environment=YOLO_CONFIG_DIR=/home/tntinnovations/.config/Ultralytics
 Restart=always
 RestartSec=5
 

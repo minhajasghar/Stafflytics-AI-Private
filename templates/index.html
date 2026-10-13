@@ -818,17 +818,45 @@
             const offX = fitReady ? fit.x : 0;
             const offY = fitReady ? fit.y : 0;
 
-            detections.forEach(det => {
-                if (!det.box || det.box.length < 4) return;
-                const x1 = (det.box[0] / frameW) * baseW + offX;
-                const y1 = (det.box[1] / frameH) * baseH + offY;
-                const x2 = (det.box[2] / frameW) * baseW + offX;
-                const y2 = (det.box[3] / frameH) * baseH + offY;
-                const w = x2 - x1;
-                const h = y2 - y1;
-                if (w <= 0 || h <= 0) return;
+            if (!window._boxInterpolators) window._boxInterpolators = new Map();
+            const interpolators = window._boxInterpolators;
+            const activeIds = new Set();
 
-                const color = det.color || '#3b82f6';
+            detections.forEach((det, idx) => {
+                if (!det.box || det.box.length < 4) return;
+                const targetX1 = (det.box[0] / frameW) * baseW + offX;
+                const targetY1 = (det.box[1] / frameH) * baseH + offY;
+                const targetX2 = (det.box[2] / frameW) * baseW + offX;
+                const targetY2 = (det.box[3] / frameH) * baseH + offY;
+                const targetW = targetX2 - targetX1;
+                const targetH = targetY2 - targetY1;
+                if (targetW <= 0 || targetH <= 0) return;
+
+                const trackId = det.track_id !== undefined ? String(det.track_id) : `det_${idx}`;
+                activeIds.add(trackId);
+
+                let boxState = interpolators.get(trackId);
+                if (boxState) {
+                    // Smooth box transitions (60% new target, 40% previous)
+                    boxState.x1 = boxState.x1 * 0.40 + targetX1 * 0.60;
+                    boxState.y1 = boxState.y1 * 0.40 + targetY1 * 0.60;
+                    boxState.w = boxState.w * 0.40 + targetW * 0.60;
+                    boxState.h = boxState.h * 0.40 + targetH * 0.60;
+                    boxState.label = det.label || boxState.label;
+                    boxState.color = det.color || boxState.color;
+                    boxState.lastSeen = now;
+                } else {
+                    boxState = {
+                        x1: targetX1, y1: targetY1, w: targetW, h: targetH,
+                        label: det.label || 'HUMAN',
+                        color: det.color || '#3b82f6',
+                        lastSeen: now
+                    };
+                    interpolators.set(trackId, boxState);
+                }
+
+                const { x1, y1, w, h } = boxState;
+                const color = boxState.color || '#3b82f6';
 
                 // Semi-transparent target fill
                 ctx.fillStyle = color.startsWith('#') ? color + '18' : 'rgba(59, 130, 246, 0.1)';
@@ -846,17 +874,17 @@
                 // Top-left
                 ctx.moveTo(x1, y1 + cornerLen); ctx.lineTo(x1, y1); ctx.lineTo(x1 + cornerLen, y1);
                 // Top-right
-                ctx.moveTo(x2 - cornerLen, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + cornerLen);
+                ctx.moveTo(x1 + w - cornerLen, y1); ctx.lineTo(x1 + w, y1); ctx.lineTo(x1 + w, y1 + cornerLen);
                 // Bottom-left
-                ctx.moveTo(x1, y2 - cornerLen); ctx.lineTo(x1, y2); ctx.lineTo(x1 + cornerLen, y2);
+                ctx.moveTo(x1, y1 + h - cornerLen); ctx.lineTo(x1, y1 + h); ctx.lineTo(x1 + cornerLen, y1 + h);
                 // Bottom-right
-                ctx.moveTo(x2 - cornerLen, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - cornerLen);
+                ctx.moveTo(x1 + w - cornerLen, y1 + h); ctx.lineTo(x1 + w, y1 + h); ctx.lineTo(x1 + w, y1 + h - cornerLen);
                 ctx.stroke();
 
                 // Label background flag
                 ctx.fillStyle = color;
                 ctx.font = '700 11px Outfit, sans-serif';
-                const labelText = det.label || 'HUMAN';
+                const labelText = boxState.label || 'HUMAN';
                 const textWidth = ctx.measureText(labelText).width;
                 
                 const labelHeight = 20;
@@ -871,6 +899,13 @@
                 ctx.fillStyle = '#ffffff';
                 ctx.fillText(labelText, x1 + 6, labelY + 14);
             });
+
+            // Evict expired track interpolators
+            for (const [tid, state] of interpolators.entries()) {
+                if (now - state.lastSeen > 1800) {
+                    interpolators.delete(tid);
+                }
+            }
         }
 
         // ------------------------------------------------------------------

@@ -35,8 +35,8 @@ def parse_args():
                         help="RTSP source URL (default: rtsp://localhost:8554/cam)")
     parser.add_argument("--server", type=str, default=os.getenv("SERVER_URL", "http://127.0.0.1:5050"),
                         help="Dashboard server URL to push detections to (default: http://127.0.0.1:5050)")
-    parser.add_argument("--fps", type=float, default=20.0,
-                        help="Target inference FPS (default: 20)")
+    parser.add_argument("--fps", type=float, default=float(os.getenv("EDGE_FPS", "0.0")),
+                        help="Target inference FPS (0 = auto-detect camera native FPS)")
     parser.add_argument("--target-w", type=int, default=640,
                         help="Inference frame width (default: 640)")
     parser.add_argument("--target-h", type=int, default=360,
@@ -65,18 +65,31 @@ class TelemetryPoster:
             pass
 
     def _run(self):
+        last_err_log = 0.0
+        ok_logged = False
         while not self.stopped:
             try:
                 payload = self.queue.get(timeout=1.0)
             except queue.Empty:
                 continue
 
+            err = None
             try:
-                # 800ms timeout so a transient network hiccup never stalls
-                self.session.post(self.endpoint_url, json=payload, timeout=0.8)
+                # 2s timeout so a transient network hiccup never stalls for long
+                resp = self.session.post(self.endpoint_url, json=payload, timeout=2.0)
+                if resp.status_code != 200:
+                    err = f"HTTP {resp.status_code}: {resp.text[:120]}"
             except Exception as e:
-                # Silently ignore transient POST errors
-                pass
+                err = f"{type(e).__name__}: {e}"
+
+            if err:
+                ok_logged = False
+                if time.time() - last_err_log > 5.0:  # rate-limit error logs
+                    print(f"[EDGE POST FAILED] {self.endpoint_url} -> {err}")
+                    last_err_log = time.time()
+            elif not ok_logged:
+                print(f"[EDGE POST OK] Detections reaching server: {self.endpoint_url}")
+                ok_logged = True
 
     def stop(self):
         self.stopped = True
@@ -115,7 +128,7 @@ def main():
 
     consecutive_fails = 0
     cap = None
-    frame_interval = 1.0 / max(1.0, args.fps)
+    frame_interval = 1.0 / 25.0  # Default initial interval
     last_infer_time = 0.0
 
     print(f"[EDGE] Connecting to camera: {args.source} ...")
@@ -129,8 +142,18 @@ def main():
                     print(f"[EDGE] Camera not opened, retrying in 2s...")
                     time.sleep(2.0)
                     continue
-                print(f"[EDGE] Camera stream connected successfully!")
+                
+                # Probe camera stream properties
+                cam_fps = cap.get(cv2.CAP_PROP_FPS)
+                cam_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                effective_fps = args.fps if args.fps > 0 else (cam_fps if (cam_fps and 5.0 <= cam_fps <= 60.0) else 25.0)
+                frame_interval = 1.0 / max(1.0, effective_fps)
+                print(f"[EDGE] Camera connected: {cam_w}x{cam_h} | Stream FPS: {cam_fps:.1f} | Active Target: {effective_fps:.1f} FPS")
                 consecutive_fails = 0
+
+            # Discard any stale buffer to guarantee real-time sync
+            cap.grab()
 
             # Grab latest frame
             if not cap.grab():
