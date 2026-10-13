@@ -163,8 +163,10 @@ def detection_ws(ws):
 
 @app.route('/api/detection_poll', methods=['GET'])
 def detection_poll():
-    # Fallback polling endpoint if WebSocket Upgrade is stripped by reverse proxy (like Apache)
-    global last_detection_payload
+    # Fallback polling endpoint: expire immediately if worker is idle > 2 seconds
+    global last_detection_payload, last_edge_heartbeat
+    if time.time() - last_edge_heartbeat > 2.0:
+        return jsonify({"detections": [], "timestamp": time.time(), "passage": {"l_to_r": 0, "r_to_l": 0}})
     return Response(last_detection_payload, mimetype='application/json')
 
 last_edge_heartbeat = 0.0

@@ -1220,7 +1220,7 @@ class VisionEngine:
                     small_frame,
                     persist=True,
                     tracker=tracker,
-                    conf=0.45,
+                    conf=0.55,
                     iou=0.5,
                     classes=[0],
                     imgsz=inference_imgsz,
@@ -1231,7 +1231,7 @@ class VisionEngine:
                     import torch
                     is_cuda = torch.cuda.is_available()
                     inference_imgsz = 960 if is_cuda else 640
-                    results = model(small_frame, conf=0.45, iou=0.5, verbose=False, classes=[0], imgsz=inference_imgsz)
+                    results = model(small_frame, conf=0.55, iou=0.5, verbose=False, classes=[0], imgsz=inference_imgsz)
                 except Exception:
                     results = None
             

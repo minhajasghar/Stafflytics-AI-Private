@@ -772,6 +772,12 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             let detections = data && data.detections ? data.detections : null;
+
+            // Immediately clear boxes if detection payload timestamp is stale (>2.0s)
+            if (data && data.timestamp && ((Date.now() / 1000) - data.timestamp > 2.0)) {
+                if (window._boxInterpolators) window._boxInterpolators.clear();
+                return;
+            }
             
             // Update Trackers count using total people detected
             const pillEl = document.getElementById('person-count');
