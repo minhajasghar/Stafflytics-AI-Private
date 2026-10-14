@@ -1422,6 +1422,64 @@ def update_admin_password(u, new_p):
         conn.commit()
         conn.close()
 
+def get_admin_username():
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM admins LIMIT 1")
+            r = cursor.fetchone()
+            conn.close()
+            return r[0] if r else "admin"
+        except Exception as e:
+            print(f"[DB ERROR] get_admin_username: {e}")
+            return "admin"
+
+def update_admin_credentials(current_u, new_u, new_p=None, current_p=None):
+    """Updates admin username and/or password with current password verification."""
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Find the admin record
+            cursor.execute("SELECT username, password FROM admins WHERE username = ?", (current_u,))
+            admin_row = cursor.fetchone()
+            if not admin_row:
+                # Fallback to first admin record if session username differs
+                cursor.execute("SELECT username, password FROM admins LIMIT 1")
+                admin_row = cursor.fetchone()
+                if admin_row:
+                    current_u = admin_row[0]
+            
+            if not admin_row:
+                conn.close()
+                return False, "Admin account not found."
+            
+            actual_pass = admin_row[1]
+            if current_p is not None and str(current_p) != str(actual_pass):
+                conn.close()
+                return False, "Current password does not match."
+            
+            # Check for conflict if username is changed
+            if new_u != current_u:
+                cursor.execute("SELECT username FROM admins WHERE username = ? AND username != ?", (new_u, current_u))
+                if cursor.fetchone():
+                    conn.close()
+                    return False, f"Username '{new_u}' is already taken."
+            
+            if new_p and str(new_p).strip():
+                cursor.execute("UPDATE admins SET username = ?, password = ? WHERE username = ?", (new_u, str(new_p).strip(), current_u))
+            else:
+                cursor.execute("UPDATE admins SET username = ? WHERE username = ?", (new_u, current_u))
+                
+            conn.commit()
+            conn.close()
+            return True, "Credentials updated successfully."
+        except Exception as e:
+            print(f"[DB ERROR] update_admin_credentials: {e}")
+            return False, str(e)
+
 def get_system_settings():
     """Return all system_settings rows as a dict.
     Backtick-quotes the reserved words `key`/`value` for MySQL/MariaDB

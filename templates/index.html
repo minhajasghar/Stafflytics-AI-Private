@@ -434,6 +434,29 @@
                         <button onclick="handleNavClick(document.querySelector('.nav-item[data-section=\'Monitor\'], .nav-item[title=\'Monitor\']')); setTimeout(toggleZoneEditor, 300);" class="btn-primary" style="width:100%; justify-content:center; background:var(--accent);"><i class="fas fa-plus"></i> Draw New Zone</button>
                     </div>
 
+                    <div class="standard-card">
+                        <h3 style="margin-bottom:1.5rem;"><i class="fas fa-user-shield" style="color:var(--primary);"></i> Owner Account Security</h3>
+                        <p style="font-size:0.75rem; color:var(--text-muted); margin-bottom:12px;">Change your login username and master account password.</p>
+                        <div class="form-group" style="margin-bottom:12px;">
+                            <label style="font-size:0.75rem; font-weight:700;">Owner Username</label>
+                            <input type="text" id="owner-account-username" placeholder="admin" autocomplete="username">
+                        </div>
+                        <div class="form-group" style="margin-bottom:12px;">
+                            <label style="font-size:0.75rem; font-weight:700;">Current Password <span style="color:var(--red); font-size:0.7rem;">*Required to apply changes</span></label>
+                            <input type="password" id="owner-account-current-password" placeholder="Enter current password" autocomplete="current-password">
+                        </div>
+                        <div class="form-group" style="margin-bottom:12px;">
+                            <label style="font-size:0.75rem; font-weight:700;">New Password <span style="color:var(--text-muted); font-size:0.7rem;">(Optional - leave blank to keep unchanged)</span></label>
+                            <input type="password" id="owner-account-new-password" placeholder="••••••••••••" autocomplete="new-password">
+                        </div>
+                        <div class="form-group" style="margin-bottom:15px;">
+                            <label style="font-size:0.75rem; font-weight:700;">Confirm New Password</label>
+                            <input type="password" id="owner-account-confirm-password" placeholder="••••••••••••" autocomplete="new-password">
+                        </div>
+                        <div id="owner-account-msg" style="font-size:0.75rem; margin-bottom:12px; font-weight:700; display:none; padding:8px 12px; border-radius:8px;"></div>
+                        <button id="btn-save-owner-account" onclick="saveOwnerCredentials()" class="btn-primary" style="width:100%; justify-content:center; background:var(--primary);"><i class="fas fa-key"></i> Update Credentials</button>
+                    </div>
+
                 </div>
             </div>
         </main>

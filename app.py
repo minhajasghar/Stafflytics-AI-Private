@@ -1894,6 +1894,40 @@ def camera_settings():
         camera_stream.online = False
     return jsonify({"status": "success"})
 
+@app.route('/api/settings/account', methods=['GET', 'POST'])
+@login_required
+def account_settings():
+    if request.method == 'POST':
+        data = request.json or {}
+        new_username = (data.get('username') or '').strip()
+        current_password = data.get('current_password', '')
+        new_password = (data.get('new_password') or '').strip()
+
+        if not new_username:
+            return jsonify({"status": "error", "message": "Username cannot be empty."}), 400
+
+        if not current_password:
+            return jsonify({"status": "error", "message": "Current password is required to save changes."}), 400
+
+        current_user = session.get('username') or database.get_admin_username()
+
+        success, message = database.update_admin_credentials(
+            current_u=current_user,
+            new_u=new_username,
+            new_p=new_password if new_password else None,
+            current_p=current_password
+        )
+
+        if success:
+            session['username'] = new_username
+            return jsonify({"status": "success", "message": message, "username": new_username})
+        else:
+            return jsonify({"status": "error", "message": message}), 400
+
+    # GET
+    current_user = session.get('username') or database.get_admin_username()
+    return jsonify({"status": "success", "username": current_user})
+
 @app.route('/api/analytics/customers/history')
 @login_required
 def get_customer_history():

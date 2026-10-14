@@ -140,6 +140,7 @@ function handleNavClick(element) {
                 loadEmailSettings(); 
                 loadCameraSettings(); 
                 loadSettingsZones();
+                loadOwnerAccount();
             } catch (e) { console.error("Settings load error", e); }
         }
     }
@@ -449,6 +450,99 @@ async function saveCameraSettings() {
     } catch (e) {
         alert('Network error saving camera settings.');
         if (btn) { btn.innerHTML = origText; btn.disabled = false; }
+    }
+}
+
+// --- OWNER ACCOUNT SETTINGS ---
+async function loadOwnerAccount() {
+    try {
+        const res = await fetch('/api/settings/account');
+        if (!res.ok) return;
+        const data = await res.json();
+        const usernameInput = document.getElementById('owner-account-username');
+        if (usernameInput && data.username) {
+            usernameInput.value = data.username;
+        }
+    } catch (e) {
+        console.error("Error loading owner account settings", e);
+    }
+}
+
+async function saveOwnerCredentials() {
+    const usernameInput = document.getElementById('owner-account-username');
+    const currentPassInput = document.getElementById('owner-account-current-password');
+    const newPassInput = document.getElementById('owner-account-new-password');
+    const confirmPassInput = document.getElementById('owner-account-confirm-password');
+    const msgEl = document.getElementById('owner-account-msg');
+    const btn = document.getElementById('btn-save-owner-account');
+
+    function showMsg(text, isError = false) {
+        if (!msgEl) return;
+        msgEl.style.display = 'block';
+        msgEl.style.background = isError ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)';
+        msgEl.style.color = isError ? 'var(--red, #ef4444)' : 'var(--green, #10b981)';
+        msgEl.style.border = `1px solid ${isError ? 'var(--red, #ef4444)' : 'var(--green, #10b981)'}`;
+        msgEl.innerHTML = (isError ? '<i class="fas fa-exclamation-circle"></i> ' : '<i class="fas fa-check-circle"></i> ') + text;
+    }
+
+    const username = usernameInput ? usernameInput.value.trim() : '';
+    const currentPassword = currentPassInput ? currentPassInput.value : '';
+    const newPassword = newPassInput ? newPassInput.value : '';
+    const confirmPassword = confirmPassInput ? confirmPassInput.value : '';
+
+    if (!username) {
+        showMsg("Owner username cannot be blank.", true);
+        if (usernameInput) usernameInput.focus();
+        return;
+    }
+
+    if (!currentPassword) {
+        showMsg("Please enter your current password to authorize changes.", true);
+        if (currentPassInput) currentPassInput.focus();
+        return;
+    }
+
+    if (newPassword && newPassword !== confirmPassword) {
+        showMsg("New passwords do not match. Please re-type.", true);
+        if (confirmPassInput) confirmPassInput.focus();
+        return;
+    }
+
+    const origBtnHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating...';
+        btn.disabled = true;
+    }
+
+    try {
+        const res = await fetch('/api/settings/account', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                username: username,
+                current_password: currentPassword,
+                new_password: newPassword
+            })
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.status === 'success') {
+            showMsg(data.message || "Credentials updated successfully!", false);
+            if (currentPassInput) currentPassInput.value = '';
+            if (newPassInput) newPassInput.value = '';
+            if (confirmPassInput) confirmPassInput.value = '';
+            if (usernameInput && data.username) usernameInput.value = data.username;
+        } else {
+            showMsg(data.message || "Failed to update credentials.", true);
+        }
+    } catch (e) {
+        showMsg("Network error communicating with server.", true);
+    } finally {
+        if (btn) {
+            btn.innerHTML = origBtnHtml;
+            btn.disabled = false;
+        }
     }
 }
 
