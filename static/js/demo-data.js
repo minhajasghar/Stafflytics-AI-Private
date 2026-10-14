@@ -25,13 +25,13 @@
 
     // ─── Staff Master List ───────────────────────────────────────────────────────
     const STAFF = [
-        { id: 'EMP-001', name: 'Minhaj Asghar',    role: 'Co-Founder / AI Solutions Architect',    shift: 'Morning', shift_time: '09:00', rate: 75000, salary_type: 'Monthly' },
-        { id: 'EMP-002', name: 'Asad Younas',       role: 'Co-Founder / Web Solutions Architect',   shift: 'Morning', shift_time: '09:00', rate: 70000, salary_type: 'Monthly' },
-        { id: 'EMP-003', name: 'Azhar Iqbal',       role: 'Head of Business Development',           shift: 'Morning', shift_time: '09:30', rate: 65000, salary_type: 'Monthly' },
-        { id: 'EMP-004', name: 'Sultan Mahmood',    role: 'Head of Quality Assurance',              shift: 'Evening', shift_time: '14:00', rate: 60000, salary_type: 'Monthly' },
-        { id: 'EMP-005', name: 'Zia Younas',        role: 'AI Intern',                              shift: 'Morning', shift_time: '10:00', rate:  1200, salary_type: 'Hourly'  },
-        { id: 'EMP-006', name: 'Huzaifa Munir',     role: 'Electronics Engineer',                   shift: 'Evening', shift_time: '13:00', rate: 55000, salary_type: 'Monthly' },
-        { id: 'EMP-007', name: 'Muhammad Hussain',  role: 'AI Intern',                              shift: 'Morning', shift_time: '10:00', rate:  1100, salary_type: 'Hourly'  },
+        { id: 'EMP-001', name: 'Minhaj Asghar',    role: 'AI Engineer',    shift: 'Morning', shift_time: '09:00', rate: 75000, salary_type: 'Monthly' },
+        { id: 'EMP-002', name: 'Asad Younas',       role: 'Head of Business Development',   shift: 'Morning', shift_time: '09:00', rate: 70000, salary_type: 'Monthly' },
+        { id: 'EMP-003', name: 'Azhar Iqbal',       role: 'Head of Quality Assurance',           shift: 'Morning', shift_time: '09:30', rate: 65000, salary_type: 'Monthly' },
+        { id: 'EMP-004', name: 'Sultan Mahmood',    role: 'Co-Founder / Web Solutions Architect',              shift: 'Evening', shift_time: '14:00', rate: 60000, salary_type: 'Monthly' },
+        { id: 'EMP-005', name: 'Zia Younas',        role: 'Co-Founder / AI Solutions Architect',                              shift: 'Morning', shift_time: '10:00', rate:  1200, salary_type: 'Hourly'  },
+        { id: 'EMP-006', name: 'Huzaifa Munir',     role: 'AI Engineer',                   shift: 'Evening', shift_time: '13:00', rate: 55000, salary_type: 'Monthly' },
+        { id: 'EMP-007', name: 'Muhammad Hussain',  role: 'Electronics Engineer',                              shift: 'Morning', shift_time: '10:00', rate:  1100, salary_type: 'Hourly'  },
     ];
 
     // Add photo placeholder key (no real photo for demo)
