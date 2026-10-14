@@ -1,17 +1,85 @@
+# ========================================================
+# Stafflytics AI - Git Ignore Configuration
+# ========================================================
+
+# Environment Variables & Secrets
 .env
+.env.local
+.env.*.local
+!.env.example
+
+# Python Bytecode & Cache
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.DS_Store
-stafflytics_db.sqlite
-*.db
-node_modules/
-*.log
-scratch/
-mediamtx_*/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Large Model Weights, Face Embeddings & Binaries (>100MB)
 models/
 face_models/
+mediamtx_*/
+bin/
+
+# Databases & SQLite WAL Files
+stafflytics_db.sqlite
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.db
+!data/stafflytics.db
+
+# Logs & Runtime Process Dumps
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 test_out.txt
 test_err.txt
-bin/
+test_*.txt
+
+# Media Recordings & Temporary Video Captures
+recordings/
+temp_*.mp4
+temp_*.jpg
+temp_*.png
+test_raw_*.mp4
+current_scene.jpg
+preview_hud.jpg
+confusion_matrix.png
+Stafflytics_Coin_Spin.gif
+*.tmp
+*.temp
+
+# Local Scratchpad & Diagnostics
+scratch/
+
+# Node.js & Next.js Build Outputs
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# Operating System & Editor Artifacts
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
